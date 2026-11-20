@@ -4,7 +4,8 @@ version: 1
 updated: 2026-11-20T09:00:00+00:00
 preferences:
   pay_per_use: never                              # never | ask (ask once before spending pay-per-use APIs)
-  low_threshold: 85                               # used_percent >= threshold -> status: low (100% -> exhausted)
+  low_threshold: 85                               # used_percent >= low_threshold -> status: low
+  exhausted_threshold: 98                         # used_percent >= exhausted_threshold -> status: exhausted
   ui_fallback: proceed                            # proceed | defer | ask (when an offered UI/UX or repo Models preference is exhausted)
   new_conversations: ask                          # ask | allow (authorization to open new top-level conversations)
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
@@ -18,7 +19,7 @@ providers:
     policy: preserve
     status: ok
     probe: {kind: claude, config_dir: ~/.claude}
-    # When a child hits a limit or `orch.py probe` reports 100%, the helper writes:
+    # When a child hits a limit or `orch.py probe` reaches exhausted_threshold (default 98%), the helper writes:
     #   status: exhausted
     #   used_percent: 100
     #   window: 7d
@@ -68,9 +69,13 @@ providers:
     policy: avoid
     pay_per_use: true
     status: ok
-# Provisional fallback follow-ups recorded automatically by `orch.py select --ui` (when ui_fallback: proceed):
+# Provisional fallback reviews and scheduled resumes recorded in followups (`kind: ui-review | preferred-review | resume`):
 # followups:
 #   - kind: ui-review
 #     ref: "PR #42"
 #     needs: ui-ux-review
 #     after: 2026-11-23T08:00:00+00:00
+#   - kind: resume
+#     ref: "thread-child-1"
+#     needs: T3
+#     after: 2026-11-21T00:15:07+00:00

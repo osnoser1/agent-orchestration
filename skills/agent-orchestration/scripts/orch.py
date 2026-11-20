@@ -2,7 +2,7 @@
 """Optional, dependency-free helper for the agent-orchestration skill (Python 3.9+).
 
   orch.py check     [--catalog F] [--assets F] [--now ISO] [--lockfile F]
-  orch.py probe     [--provider P] [--low-threshold N] [--available ...] [--assets F] [--now ISO]
+  orch.py probe     [--provider P] [--low-threshold N] [--exhausted-threshold N] [--available ...] [--assets F] [--now ISO]
   orch.py select    --complexity trivial|standard|hard|frontier --risk low|medium|high
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
                     [--fallback proceed|defer|ask] [--ref TEXT] [--fail-on-low]
@@ -14,7 +14,7 @@
                     [--event select|complete] [--outcome ok|failed|quota|stall|rework]
                     [--findings N] [--repo NAME] [--provisional]
                     [--assets F] [--ledger F] [--now ISO]
-  orch.py exhaust   <provider> "<quota error message>" [--assets F] [--now ISO]
+  orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
 
 Exit codes:
@@ -22,7 +22,7 @@ Exit codes:
   1  validation or invocation error
   2  no candidate meets the required tier (select)
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
-  4  quota hit (probe at 100% exhausted, or select found only exhausted providers)
+  4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
 """
@@ -33,10 +33,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEF_CATALOG = os.path.join(HERE, "..", "catalog.yaml")
 ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_LOW_THRESHOLD = 85
+DEFAULT_EXHAUSTED_THRESHOLD = 98
 VALID_UI_FALLBACK = ("proceed", "defer", "ask")
 VALID_NEW_CONVERSATIONS = ("ask", "allow")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
 VALID_SURFACES = ("subagent", "conversation")
+VALID_FOLLOWUP_KINDS = ("ui-review", "preferred-review", "resume")
+RESUME_MARGIN = timedelta(minutes=2)
 STALE_INSTALL_DAYS = 7
 
 
@@ -64,6 +67,11 @@ def _opt_bool(a, name, default=False):
 def _opt_int(a, name, default=None):
     v = getattr(a, name, None)
     return v if (isinstance(v, int) and not isinstance(v, bool)) else default
+
+
+def _opt_num(a, name, default=None):
+    v = getattr(a, name, None)
+    return v if (isinstance(v, (int, float)) and not isinstance(v, bool)) else default
 
 
 # ---------- mini YAML ----------
@@ -389,10 +397,19 @@ def unrated_higher_efforts(m, emerg):
     ]
 
 
-def _model_matches_need(m, need):
+def _model_matches_need(m, need, floors=None, emerg=None):
     if not isinstance(m, dict) or not need:
         return False
     n = str(need).strip().lower()
+    if n in ("any", "*"):
+        return True
+    t_key = n[len("tier:"):].upper() if n.startswith("tier:") else n.upper()
+    if t_key in FLOORS:
+        fl = (floors or FLOORS).get(t_key, FLOORS[t_key])
+        em = emerg if emerg is not None else {"max", "ultra"}
+        return best_effort(m, fl, em) is not None
+    if norm(m.get("id") or "") == norm(n):
+        return True
     if n.startswith("family:"):
         return str(m.get("family") or "").lower() == n[len("family:"):]
     strengths = [str(s).lower() for s in (m.get("strengths") or [])]
@@ -420,6 +437,9 @@ def find_usable_in_available(catalog, assets, now, need, available):
     if not need or not available:
         return []
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    emerg = set((catalog or {}).get("emergency_efforts", ["max", "ultra"]))
+    prefs = ((assets or {}).get("preferences") or {}) if isinstance(assets, dict) else {}
+    floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     usable = []
     seen = set()
 
@@ -433,7 +453,7 @@ def find_usable_in_available(catalog, assets, now, need, available):
         m = cat.get(norm(mid))
         if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
             continue
-        if not _model_matches_need(m, need):
+        if not _model_matches_need(m, need, floors=floors, emerg=emerg):
             continue
         p, prov_st, _ = provider_state(assets, prov, now)
         if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st == "exhausted":
@@ -454,6 +474,9 @@ def find_usable_in_assets(catalog, assets, now, need):
     if not need:
         return []
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    emerg = set((catalog or {}).get("emergency_efforts", ["max", "ultra"]))
+    prefs = ((assets or {}).get("preferences") or {}) if isinstance(assets, dict) else {}
+    floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     usable = []
     seen = set()
 
@@ -481,7 +504,12 @@ def find_usable_in_assets(catalog, assets, now, need):
                     continue
                 for mid in g.get("models") or []:
                     m = cat.get(norm(mid))
-                    if m and m.get("cost") != "emergency" and m.get("rating") != "unrated" and _model_matches_need(m, need):
+                    if (
+                        m
+                        and m.get("cost") != "emergency"
+                        and m.get("rating") != "unrated"
+                        and _model_matches_need(m, need, floors=floors, emerg=emerg)
+                    ):
                         _add(f"{pid} ({g.get('name') or 'group'})")
                         break
         else:
@@ -492,7 +520,7 @@ def find_usable_in_assets(catalog, assets, now, need):
                         str(m.get("family") or "").lower() == fam
                         and m.get("cost") != "emergency"
                         and m.get("rating") != "unrated"
-                        and _model_matches_need(m, need)
+                        and _model_matches_need(m, need, floors=floors, emerg=emerg)
                     ):
                         _add(pid)
                         break
@@ -611,6 +639,46 @@ def classify_unmet_preference(catalog, assets, available, need, floor, now, fail
     if offered_exhausted:
         return "exhausted", (min(times).isoformat(timespec="seconds") if times else None)
     return "not-offered", None
+
+
+def earliest_exhausted_tier_reset(catalog, assets, available, floor, now):
+    if not available:
+        return False, None
+    cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    emerg = set((catalog or {}).get("emergency_efforts", ["max", "ultra"]))
+    saw_exhausted_tier_cand = False
+    times = []
+
+    def _collect(dt):
+        if dt and dt > now:
+            times.append(dt)
+
+    for pair in available:
+        prov, _, mid = pair.partition(":")
+        m = cat.get(norm(mid))
+        if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
+            continue
+        if best_effort(m, floor, emerg) is None:
+            continue
+        p, prov_st, _ = provider_state(assets, prov, now)
+        if p.get("pay_per_use") or p.get("policy") == "avoid":
+            continue
+        g = model_group(p, mid, m)
+        st = group_state(g, now)[0] if g is not None else prov_st
+        if st == "exhausted":
+            saw_exhausted_tier_cand = True
+            if g is not None and group_state(g, now)[0] == "exhausted":
+                _collect(
+                    parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
+                    or candidate_next_reset(p, g, now)
+                )
+            elif prov_st == "exhausted":
+                _collect(
+                    parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
+                    or provider_next_reset(p, now)
+                )
+
+    return saw_exhausted_tier_cand, (min(times) if times else None)
 
 
 def candidates(
@@ -761,7 +829,37 @@ def select(a):
     print(f"tier {tier} (>= {floors[tier]})")
     if not cands:
         print("NO CANDIDATE:", *notes, sep="\n  ")
-        if reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0:
+        saw_ex_tier, earliest_dt = earliest_exhausted_tier_reset(
+            catalog, assets, avail, floors[tier], now
+        )
+        if (saw_ex_tier and reasons["threshold"] == 0) or (
+            reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0
+        ):
+            if earliest_dt:
+                earliest_iso = earliest_dt.isoformat(timespec="seconds")
+                resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
+                print(
+                    f"SCHEDULE_RESUME: all usable {tier} candidates exhausted "
+                    f"(earliest reset: {earliest_iso}; schedule resume at {resume_iso})."
+                )
+                if ref_arg:
+                    existing_resume = find_existing_followup(ap, "resume", ref_arg) if os.path.exists(ap) else None
+                    if existing_resume:
+                        print(
+                            f"followup already scheduled: [resume] {ref_arg} "
+                            f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso})"
+                        )
+                    else:
+                        fu_entry = {
+                            "kind": "resume",
+                            "ref": ref_arg,
+                            "needs": tier,
+                            "after": resume_iso,
+                        }
+                        record_followup(ap, fu_entry, now=now)
+                        print(f"followup recorded: [resume] {ref_arg} (needs {tier}, after {resume_iso})")
+            else:
+                print(f"SCHEDULE_RESUME: all usable {tier} candidates exhausted (reset time unknown).")
             return 4
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
             return 3
@@ -1118,16 +1216,37 @@ def write_followups(path, followups, now=None):
         f.write("\n".join(lines).rstrip("\n") + "\n")
 
 
+def find_existing_followup(path, kind, ref, needs=None):
+    if not os.path.exists(path):
+        return None
+    assets = load_file(path) or {}
+    for fu in (assets.get("followups") or []):
+        if not isinstance(fu, dict):
+            continue
+        if kind == "resume":
+            if fu.get("kind") == "resume" and str(fu.get("ref") or "") == str(ref or ""):
+                return fu
+        elif (fu.get("kind"), fu.get("ref"), fu.get("needs")) == (kind, ref, needs):
+            return fu
+    return None
+
+
 def record_followup(path, item, now=None):
     now = now or get_now()
     ensure_assets(path, now)
     assets = load_file(path) or {}
     existing = [x for x in (assets.get("followups") or []) if isinstance(x, dict)]
-    key = (item.get("kind"), item.get("ref"), item.get("needs"))
+    is_resume = item.get("kind") == "resume"
+    key = ("resume", item.get("ref")) if is_resume else (item.get("kind"), item.get("ref"), item.get("needs"))
     updated = []
     replaced = False
     for fu in existing:
-        if (fu.get("kind"), fu.get("ref"), fu.get("needs")) == key:
+        fu_key = ("resume", fu.get("ref")) if (is_resume and fu.get("kind") == "resume") else (
+            fu.get("kind"),
+            fu.get("ref"),
+            fu.get("needs"),
+        )
+        if fu_key == key:
             updated.append(item)
             replaced = True
         else:
@@ -1138,16 +1257,99 @@ def record_followup(path, item, now=None):
     return updated
 
 
+def _find_provider_group(p, group_arg=None, model_arg=None, catalog=None):
+    groups = [g for g in ((p or {}).get("groups") or []) if isinstance(g, dict)]
+    if not groups:
+        return None
+    cat_models = (catalog or {}).get("models") or []
+    cat_by_id = {norm(m["id"]): m for m in cat_models if isinstance(m, dict) and m.get("id")}
+    name_map = _catalog_name_map(catalog)
+    if group_arg:
+        gn = norm(group_arg)
+        exact = next((g for g in groups if norm(g.get("name")) == gn), None)
+        if exact is not None:
+            return exact
+        low = group_arg.strip().lower()
+        sub = next((g for g in groups if low in str(g.get("name") or "").lower()), None)
+        if sub is not None:
+            return sub
+        cid = name_map.get(gn) or group_arg
+        return model_group(p, cid, cat_by_id.get(norm(cid)))
+    if model_arg:
+        raw_mid = model_arg.partition(":")[2] if ":" in model_arg else model_arg
+        cid = name_map.get(norm(raw_mid)) or raw_mid
+        return model_group(p, cid, cat_by_id.get(norm(cid)))
+    return None
+
+
 def exhaust(a):
-    now = get_now(a.now)
+    now = get_now(_opt_str(a, "now"))
     t = parse_reset(a.message, now)
-    note = '"' + a.message.replace('"', "'")[:200] + '"'
+    raw_note = a.message.replace('"', "'")[:200]
+    quoted_note = '"' + raw_note + '"'
     until = (t or now + timedelta(hours=1)).isoformat(timespec="seconds")
-    f = {"status": "exhausted", "exhausted_until": until, "status_note": note}
+    ap = _opt_str(a, "assets") or def_assets()
+    group_arg = _opt_str(a, "group")
+    model_arg = _opt_str(a, "model")
+
+    if group_arg or model_arg:
+        ensure_assets(ap, now)
+        assets = load_file(ap) or {}
+        p = next((x for x in (assets.get("providers") or []) if isinstance(x, dict) and x.get("id") == a.provider), None)
+        catalog_path = _opt_str(a, "catalog") or DEF_CATALOG
+        catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
+        groups = [g for g in ((p or {}).get("groups") or []) if isinstance(g, dict)]
+        if groups:
+            target_g = _find_provider_group(p, group_arg=group_arg, model_arg=model_arg, catalog=catalog)
+            if target_g is None:
+                print(f"{a.provider}: no matching quota group for {group_arg or model_arg}")
+                return 1
+            target_g["status"] = "exhausted"
+            target_g["exhausted_until"] = until
+            target_g["status_note"] = raw_note
+            if not t:
+                target_g["unparsed"] = True
+            else:
+                target_g.pop("unparsed", None)
+            best = _summarize_groups(groups, now)
+            st = best.get("status", "ok")
+            fields = {"status": st, "groups": groups}
+            clear = []
+            if st == "exhausted":
+                fields["exhausted_until"] = best.get("exhausted_until") or best.get("resets_at") or until
+                clear.extend(["status_note", "unparsed"])
+            else:
+                clear.extend(["exhausted_until", "status_note", "unparsed"])
+            edit_provider(ap, a.provider, fields, now=now, clear_keys=clear)
+            print(
+                f"{a.provider} ({target_g.get('name')}): exhausted until {until}"
+                + ("" if t else " (unparsed, +1h default)")
+            )
+            return 0
+
+        # Provider has no groups block yet; seed the targeted group entry so subsequent probe merges it.
+        name_map = _catalog_name_map(catalog)
+        raw_mid = (model_arg.partition(":")[2] if ":" in model_arg else model_arg) if model_arg else None
+        cid = (name_map.get(norm(raw_mid)) or raw_mid) if raw_mid else None
+        gname = group_arg or cid or "default"
+        seeded = {
+            "name": gname,
+            "models": [cid] if cid else [],
+            "status": "exhausted",
+            "exhausted_until": until,
+            "status_note": raw_note,
+        }
+        if not t:
+            seeded["unparsed"] = True
+        prov_st = (p or {}).get("status", "ok")
+        edit_provider(ap, a.provider, {"status": prov_st, "groups": [seeded]}, now=now)
+        print(f"{a.provider} ({gname}): exhausted until {until}" + ("" if t else " (unparsed, +1h default)"))
+        return 0
+
+    f = {"status": "exhausted", "exhausted_until": until, "status_note": quoted_note}
     clear = [] if not t else ["unparsed"]
     if not t:
         f["unparsed"] = "true"
-    ap = a.assets or def_assets()
     edit_provider(ap, a.provider, f, now=now, clear_keys=clear)
     print(f"{a.provider}: exhausted until {until}" + ("" if t else " (unparsed, +1h default)"))
     return 0
@@ -1371,8 +1573,8 @@ def _extract_group_models(group, name_map):
     return mapped, unmatched
 
 
-def _quota_status(used_percent, threshold):
-    if used_percent >= 100:
+def _quota_status(used_percent, threshold, exhausted_threshold=DEFAULT_EXHAUSTED_THRESHOLD):
+    if used_percent >= exhausted_threshold:
         return "exhausted"
     if used_percent >= threshold:
         return "low"
@@ -1381,15 +1583,53 @@ def _quota_status(used_percent, threshold):
 
 def _summarize_groups(groups, now):
     def _sort_key(g):
-        r_dt = parse_time(g.get("resets_at"), now)
+        st_rank = STATUS_RANK.get(g.get("status", "ok"), 0)
+        r_dt = parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
         r_ts = r_dt.timestamp() if r_dt else float("inf")
-        return (
-            STATUS_RANK.get(g.get("status", "ok"), 0),
-            float(g.get("used_percent") or 0),
-            r_ts,
-        )
+        pct = float(g.get("used_percent") or 0)
+        if st_rank == STATUS_RANK["exhausted"]:
+            return (st_rank, r_ts, pct)
+        return (st_rank, pct, r_ts)
 
     return min(groups, key=_sort_key)
+
+
+def _is_error_exhaustion(entry):
+    if not isinstance(entry, dict) or entry.get("status") != "exhausted":
+        return False
+    if not entry.get("exhausted_until"):
+        return False
+    return bool(
+        entry.get("status_note")
+        or entry.get("unparsed")
+        or entry.get("exhausted_until") != entry.get("resets_at")
+    )
+
+
+def _scope_recovered_in_probe(prev, probed_status, probed_pct, probed_window, probed_resets_at, now):
+    if probed_status == "exhausted":
+        return False
+    if probed_window == "reset" or float(probed_pct) == 0.0:
+        return True
+    prev_pct = prev.get("used_percent")
+    if isinstance(prev_pct, (int, float)) and not isinstance(prev_pct, bool):
+        if float(probed_pct) < float(prev_pct):
+            return True
+    prev_win = prev.get("window")
+    prev_reset = parse_time(prev.get("resets_at"), now)
+    new_reset = parse_time(probed_resets_at, now)
+    if prev_win and prev_win == probed_window and prev_reset and new_reset and new_reset > prev_reset:
+        return True
+    return False
+
+
+def _keep_error_exhaustion(prev, probed_status, probed_pct, probed_window, probed_resets_at, now):
+    if not _is_error_exhaustion(prev):
+        return False
+    until = parse_time(prev.get("exhausted_until"), now)
+    if not until or until <= now:
+        return False
+    return not _scope_recovered_in_probe(prev, probed_status, probed_pct, probed_window, probed_resets_at, now)
 
 
 def parse_antigravity_usage(data, now, catalog=None, group_filter=""):
@@ -1540,25 +1780,18 @@ def probe(a):
             providers.append({"id": "antigravity", "probe": {"kind": "antigravity"}})
 
     prefs = (assets.get("preferences") or {})
-    threshold = a.low_threshold if a.low_threshold is not None else prefs.get("low_threshold", DEFAULT_LOW_THRESHOLD)
+    low_arg = _opt_num(a, "low_threshold")
+    threshold = low_arg if low_arg is not None else prefs.get("low_threshold", DEFAULT_LOW_THRESHOLD)
+    ex_arg = _opt_num(a, "exhausted_threshold")
+    exhausted_threshold = (
+        ex_arg if ex_arg is not None else prefs.get("exhausted_threshold", DEFAULT_EXHAUSTED_THRESHOLD)
+    )
 
-    # 1. Auto-clear expired exhausted entries (provider and group level) and persist them.
+    # 1. Auto-clear expired exhausted entries (provider and group level) and persist them once per scope.
     for p in providers:
         pid = p.get("id")
         if not pid:
             continue
-        if p.get("status") == "exhausted":
-            until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
-            if until and until <= now:
-                edit_provider(
-                    ap,
-                    pid,
-                    {"status": "ok"},
-                    now=now,
-                    clear_keys=("exhausted_until", "status_note", "unparsed"),
-                )
-                p["status"] = "ok"
-                print(f"{pid}: expired lockout cleared -> ok")
         groups = p.get("groups")
         if isinstance(groups, list) and groups:
             cleared_names = []
@@ -1569,15 +1802,50 @@ def probe(a):
                 if g_until and g_until <= now:
                     g["status"] = "ok"
                     g.pop("exhausted_until", None)
+                    g.pop("status_note", None)
+                    g.pop("unparsed", None)
+                    g_reset = parse_time(g.get("resets_at"), now)
+                    if g_reset and g_reset <= now:
+                        g.pop("resets_at", None)
                     cleared_names.append(g.get("name") or "group")
-            if cleared_names:
+
+            p_until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
+            p_expired = p.get("status") == "exhausted" and p_until is not None and p_until <= now
+            had_own_lockout = bool(p.get("status_note") or p.get("unparsed"))
+
+            if cleared_names or p_expired:
                 best = _summarize_groups([g for g in groups if isinstance(g, dict)], now)
-                fields = {"status": best.get("status", "ok"), "groups": groups}
-                clear = ("exhausted_until", "status_note", "unparsed") if fields["status"] != "exhausted" else ()
+                keep_p_err = (
+                    _is_error_exhaustion(p)
+                    and not p_expired
+                    and (parse_time(p.get("exhausted_until"), now) or now) > now
+                )
+                st_after = "exhausted" if keep_p_err else best.get("status", "ok")
+                fields = {"status": st_after, "groups": groups}
+                clear = ["exhausted_until", "status_note", "unparsed"] if st_after != "exhausted" else []
+                p_reset = parse_time(p.get("resets_at"), now)
+                if p_reset and p_reset <= now:
+                    clear.append("resets_at")
                 edit_provider(ap, pid, fields, now=now, clear_keys=clear)
-                p["status"] = fields["status"]
+                p["status"] = st_after
+                for ck in clear:
+                    p.pop(ck, None)
+                if p_expired and (had_own_lockout or not cleared_names):
+                    print(f"{pid}: expired lockout cleared -> ok")
                 for gname in cleared_names:
                     print(f"{pid} ({gname}): expired lockout cleared -> ok")
+        elif p.get("status") == "exhausted":
+            until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
+            if until and until <= now:
+                clear = ["exhausted_until", "status_note", "unparsed"]
+                p_reset = parse_time(p.get("resets_at"), now)
+                if p_reset and p_reset <= now:
+                    clear.append("resets_at")
+                edit_provider(ap, pid, {"status": "ok"}, now=now, clear_keys=clear)
+                p["status"] = "ok"
+                for ck in clear:
+                    p.pop(ck, None)
+                print(f"{pid}: expired lockout cleared -> ok")
 
     # 2. Run probes.
     targets = [p for p in providers if (not a.provider or p.get("id") == a.provider)]
@@ -1602,9 +1870,33 @@ def probe(a):
             continue
 
         if "groups" in result:
+            existing_groups = [eg for eg in (p.get("groups") or []) if isinstance(eg, dict)]
+            g_model_map = {}
+            for eg in existing_groups:
+                for em in eg.get("models") or []:
+                    g_model_map[norm(em)] = eg
+            matched_ids = set()
             persisted_groups = []
             for g in result["groups"]:
-                gst = _quota_status(g["used_percent"], threshold)
+                prev_g = next(
+                    (eg for eg in existing_groups if norm(eg.get("name")) == norm(g["name"])),
+                    None,
+                )
+                if prev_g is None:
+                    for gm in g.get("models") or []:
+                        cand_eg = g_model_map.get(norm(gm))
+                        if cand_eg is not None and id(cand_eg) not in matched_ids:
+                            prev_g = cand_eg
+                            break
+                if prev_g is not None:
+                    matched_ids.add(id(prev_g))
+
+                gst = _quota_status(g["used_percent"], threshold, exhausted_threshold)
+                keep_g_err = prev_g is not None and _keep_error_exhaustion(
+                    prev_g, gst, g["used_percent"], g["window"], g.get("resets_at"), now
+                )
+                if keep_g_err:
+                    gst = "exhausted"
                 entry = {
                     "name": g["name"],
                     "models": g["models"],
@@ -1614,16 +1906,58 @@ def probe(a):
                 }
                 if g.get("resets_at"):
                     entry["resets_at"] = g["resets_at"]
+                if keep_g_err:
+                    entry["exhausted_until"] = prev_g["exhausted_until"]
+                    if prev_g.get("status_note"):
+                        entry["status_note"] = prev_g["status_note"]
+                    if prev_g.get("unparsed"):
+                        entry["unparsed"] = True
                 persisted_groups.append(entry)
+
+            if cfg.get("group"):
+                for eg in existing_groups:
+                    if id(eg) not in matched_ids:
+                        persisted_groups.append(eg)
 
             best = _summarize_groups(persisted_groups, now)
             st = best["status"]
+            r_at = best.get("exhausted_until") or best.get("resets_at")
+
+            keep_prov_err = False
+            if _is_error_exhaustion(p):
+                p_until = parse_time(p.get("exhausted_until"), now)
+                if p_until and p_until > now:
+                    prev_by_name = {norm(eg.get("name")): eg for eg in existing_groups if eg.get("name")}
+                    all_zero = all(
+                        g["status"] != "exhausted" and (g["window"] == "reset" or float(g["used_percent"]) == 0.0)
+                        for g in persisted_groups
+                    )
+                    any_group_recovered = (
+                        bool(prev_by_name)
+                        and all(g["status"] != "exhausted" for g in persisted_groups)
+                        and any(
+                            _scope_recovered_in_probe(
+                                prev_by_name[norm(g["name"])],
+                                g["status"],
+                                g["used_percent"],
+                                g["window"],
+                                g.get("resets_at"),
+                                now,
+                            )
+                            for g in persisted_groups
+                            if norm(g["name"]) in prev_by_name
+                            and float(prev_by_name[norm(g["name"])].get("used_percent") or 0) > 0
+                        )
+                    )
+                    if not (all_zero or any_group_recovered):
+                        keep_prov_err = True
+                        st = "exhausted"
+
             if st == "exhausted":
                 worst = max(worst, 4)
             elif st == "low":
                 worst = max(worst, 3)
 
-            r_at = best.get("resets_at")
             fields = {
                 "status": st,
                 "used_percent": best["used_percent"],
@@ -1631,21 +1965,26 @@ def probe(a):
                 "groups": persisted_groups,
             }
             clear = []
-            if r_at:
-                fields["resets_at"] = r_at
+            if best.get("resets_at"):
+                fields["resets_at"] = best["resets_at"]
             else:
                 clear.append("resets_at")
-            if st == "exhausted" and r_at:
+            if keep_prov_err:
+                fields["exhausted_until"] = p["exhausted_until"]
+            elif st == "exhausted" and r_at:
                 fields["exhausted_until"] = r_at
+                clear.extend(["status_note", "unparsed"])
             else:
                 clear.extend(["exhausted_until", "status_note", "unparsed"])
 
             edit_provider(ap, pid, fields, now=now, clear_keys=clear)
             usable = sum(1 for g in persisted_groups if g["status"] != "exhausted")
-            reset_msg = f", resets {r_at}" if (st == "exhausted" and r_at) else ""
+            eff_reset = p["exhausted_until"] if keep_prov_err else r_at
+            reset_msg = f", resets {eff_reset}" if (st == "exhausted" and eff_reset) else ""
             print(f"{pid}: {st} ({usable}/{len(persisted_groups)} groups usable{reset_msg})")
             for g in persisted_groups:
-                gr = f", resets {g['resets_at']}" if g.get("resets_at") else ""
+                g_eff_reset = g.get("exhausted_until") or g.get("resets_at")
+                gr = f", resets {g_eff_reset}" if g_eff_reset else ""
                 ms = ", ".join(g.get("models") or [])
                 print(f"  group {g['name']}: {g['status']} ({g['used_percent']}% of {g['window']}{gr}) [{ms}]")
             unmatched = result.get("unmatched") or []
@@ -1656,7 +1995,10 @@ def probe(a):
         pct = result["used_percent"]
         win = result["window"]
         r_at = result.get("resets_at")
-        st = _quota_status(pct, threshold)
+        st = _quota_status(pct, threshold, exhausted_threshold)
+        keep_err = _keep_error_exhaustion(p, st, pct, win, r_at, now)
+        if keep_err:
+            st = "exhausted"
         if st == "exhausted":
             worst = max(worst, 4)
         elif st == "low":
@@ -1668,13 +2010,17 @@ def probe(a):
             fields["resets_at"] = r_at
         else:
             clear.append("resets_at")
-        if st == "exhausted" and r_at:
+        if keep_err:
+            fields["exhausted_until"] = p["exhausted_until"]
+        elif st == "exhausted" and r_at:
             fields["exhausted_until"] = r_at
+            clear.extend(["status_note", "unparsed"])
         else:
             clear.extend(["exhausted_until", "status_note", "unparsed"])
 
         edit_provider(ap, pid, fields, now=now, clear_keys=clear)
-        reset_msg = f", resets {r_at}" if r_at else ""
+        eff_reset = p["exhausted_until"] if keep_err else r_at
+        reset_msg = f", resets {eff_reset}" if eff_reset else ""
         print(f"{pid}: {st} ({pct}% of {win}{reset_msg})")
 
     updated_assets = load_file(ap) or {}
@@ -1708,17 +2054,28 @@ def followups_cmd(a):
 
     if _opt_bool(a, "add"):
         kind = _opt_str(a, "kind") or "ui-review"
+        if kind not in VALID_FOLLOWUP_KINDS:
+            print(f"invalid followup kind: {kind} (expected {'|'.join(VALID_FOLLOWUP_KINDS)})")
+            return 1
         ref_val = _opt_str(a, "ref")
-        needs = _opt_str(a, "needs") or "ui-ux-review"
+        needs = _opt_str(a, "needs") or ("any" if kind == "resume" else "ui-ux-review")
         if not ref_val:
             print("followups --add requires --ref")
             return 1
-        entry = {"kind": kind, "ref": ref_val, "needs": needs}
         after = _opt_str(a, "after")
+        if kind == "resume":
+            existing_resume = find_existing_followup(ap, "resume", ref_val)
+            if existing_resume:
+                print(
+                    f"followup already scheduled: [resume] {ref_val} "
+                    f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or after or 'next reset'})"
+                )
+                return 0
+        entry = {"kind": kind, "ref": ref_val, "needs": needs}
         if after:
             entry["after"] = after
         record_followup(ap, entry, now=now)
-        print(f"followup recorded: [{kind}] {ref_val} (needs {needs})")
+        print(f"followup recorded: [{kind}] {ref_val} (needs {needs})" + (f", after {after}" if after else ""))
         return 0
 
     assets = load_file(ap) if os.path.exists(ap) else {}
@@ -1842,6 +2199,22 @@ def check(a):
                 errs.append(
                     f"assets preferences.new_conversations: bad value {nc} (expected {'|'.join(VALID_NEW_CONVERSATIONS)})"
                 )
+            lt = prefs.get("low_threshold")
+            if lt is not None and (isinstance(lt, bool) or not isinstance(lt, (int, float)) or not (0 < lt <= 100)):
+                errs.append(f"assets preferences.low_threshold: bad value {lt} (expected number in (0, 100])")
+            et = prefs.get("exhausted_threshold")
+            if et is not None and (isinstance(et, bool) or not isinstance(et, (int, float)) or not (0 < et <= 100)):
+                errs.append(f"assets preferences.exhausted_threshold: bad value {et} (expected number in (0, 100])")
+            if (
+                isinstance(lt, (int, float))
+                and not isinstance(lt, bool)
+                and isinstance(et, (int, float))
+                and not isinstance(et, bool)
+                and lt > et
+            ):
+                errs.append(
+                    f"assets preferences: low_threshold ({lt}) must not exceed exhausted_threshold ({et})"
+                )
         for p in loaded_assets.get("providers", []) or []:
             if "id" not in p:
                 errs.append("assets: provider without id")
@@ -1874,6 +2247,11 @@ def check(a):
                     for req_k in ("kind", "ref", "needs"):
                         if not fu.get(req_k):
                             errs.append(f"assets followups[{idx}]: missing {req_k}")
+                    if fu.get("kind") and fu.get("kind") not in VALID_FOLLOWUP_KINDS:
+                        errs.append(
+                            f"assets followups[{idx}].kind: bad value {fu.get('kind')} "
+                            f"(expected {'|'.join(VALID_FOLLOWUP_KINDS)})"
+                        )
     print("OK" if not errs else "\n".join(errs))
     if not errs:
         for note in check_install_staleness(now, lockfile_override=_opt_str(a, "lockfile")):
@@ -1904,6 +2282,7 @@ def main():
         if n == "probe":
             p.add_argument("--provider")
             p.add_argument("--low-threshold", type=float)
+            p.add_argument("--exhausted-threshold", type=float)
             p.add_argument("--available")
         if n == "select":
             p.add_argument("--complexity", required=True, choices=list(TIER))
@@ -1917,9 +2296,9 @@ def main():
         if n == "followups":
             p.add_argument("--due", action="store_true")
             p.add_argument("--add", action="store_true")
-            p.add_argument("--kind", default="ui-review")
+            p.add_argument("--kind", default="ui-review", choices=list(VALID_FOLLOWUP_KINDS))
             p.add_argument("--ref")
-            p.add_argument("--needs", default="ui-ux-review")
+            p.add_argument("--needs")
             p.add_argument("--after")
             p.add_argument("--done")
             p.add_argument("--available")
@@ -1942,6 +2321,8 @@ def main():
             p.add_argument("provider")
         if n == "exhaust":
             p.add_argument("message")
+            p.add_argument("--group")
+            p.add_argument("--model")
         if n == "status":
             p.add_argument("state", choices=["ok", "low"])
     a = ap.parse_args()

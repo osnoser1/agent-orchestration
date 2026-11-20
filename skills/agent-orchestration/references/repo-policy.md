@@ -25,14 +25,14 @@ Every line is optional. When the section is absent, the skill's defaults apply u
 | `PR` | Skill or workflow used to open/update pull requests (named explicitly in PR briefs). |
 | `Land` | Exact command or process used in Step 5 (Land). |
 | `High risk` | Extra paths, modules, or change classes treated as `high` risk in Step 2 (Classify), additive to `references/selection.md`. |
-| `Models` | Task-type model or family preferences (e.g. `UI/UX work → Anthropic`). Unmet preferences follow `references/selection.md`: `preferences.ui_fallback` applies when `exhausted`; `not offered here` proceeds with the best available model in this harness and one informational note. |
-| `Conversations` | Repo guidance for opening new top-level conversations (`references/harnesses.md`). |
+| `Models` | Task-type model or family preferences (e.g. `UI/UX work → Anthropic`). Unmet preferences follow `references/selection.md`: `preferences.ui_fallback` (from `assets.yaml`, Precedence 2) governs switching to another family when the preferred family is `exhausted` (including mid-task quota switches in `references/harnesses.md`); `not offered here` proceeds with the best available model in this harness and one informational note. |
+| `Conversations` | Repo guidance for opening new top-level conversations (`references/harnesses.md`). In-place model switches and scheduled resumes stay in the existing conversation and do not count as new conversations. |
 
 ## Precedence
 
 1. **User's explicit instruction** — overrides everything for the current request.
-2. **User's `assets.yaml` and harness rules** — keep authority over quota limits, `pay_per_use`, `policy: avoid`, emergency-spending approvals, and authorization to open new top-level conversations (`preferences.new_conversations`). Assets and harness rules always win on these.
-3. **Repository `## Orchestration`** — overrides skill defaults for process (phase skills/commands), extra high-risk triggers, and task-type model preferences.
+2. **User's `assets.yaml` and harness rules** — keep authority over quota limits (`low_threshold`, `exhausted_threshold`, `exhausted_until`), `preferences.ui_fallback` when a preferred family is exhausted, `pay_per_use`, `policy: avoid`, and the ask-once gates in `SKILL.md` Step 7 (`preferences.new_conversations`, emergency spending). Assets and harness rules always win on these.
+3. **Repository `## Orchestration`** — overrides skill defaults for process (phase skills/commands), extra high-risk triggers, and task-type model preferences (`Models:`).
 4. **Skill defaults** — apply for any omitted line or when `## Orchestration` is absent.
 
 ## Applying policy in briefs

@@ -1088,5 +1088,391 @@ class TestCheckExtensions(unittest.TestCase):
             self.assertNotIn("npx skills update", buf_fresh.getvalue())
 
 
+class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
+    def setUp(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            self.fixture = json.load(fh)
+
+    def test_exhaust_group_and_model_preserved_across_probe_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: ok\n"
+                    "    probe: {kind: antigravity}\n"
+                )
+
+            fake_proc = subprocess.CompletedProcess(
+                args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr=""
+            )
+            probe_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                provider="antigravity",
+                low_threshold=None,
+                exhausted_threshold=None,
+                available=None,
+            )
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_proc
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.probe(probe_args), 0)
+
+            # Exhaust Gemini Models via --model gemini-4-neon with relative duration "Resets in 3h13m7s."
+            exhaust_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                provider="antigravity",
+                message="Individual quota reached… Resets in 3h13m7s.",
+                group=None,
+                model="gemini-4-neon",
+            )
+            buf_ex = io.StringIO()
+            with contextlib.redirect_stdout(buf_ex):
+                self.assertEqual(orch.exhaust(exhaust_args), 0)
+            self.assertIn("antigravity (Gemini Models): exhausted until 2026-11-21T00:13:07+00:00", buf_ex.getvalue())
+
+            loaded_after_ex = orch.load_file(assets_path)
+            ag_ex = loaded_after_ex["providers"][0]
+            self.assertEqual(ag_ex["status"], "ok")  # Gemini 4 Argon is still ok
+            by_name_ex = {g["name"]: g for g in ag_ex["groups"]}
+            self.assertEqual(by_name_ex["Gemini Models"]["status"], "exhausted")
+            self.assertEqual(by_name_ex["Gemini Models"]["exhausted_until"], "2026-11-21T00:13:07+00:00")
+            self.assertIn("Resets in 3h13m7s", by_name_ex["Gemini Models"]["status_note"])
+
+            # Next probe (5 minutes later, same usage fixture) MUST merge and preserve Gemini Models exhaustion!
+            probe_later = mock.Mock(**{**probe_args.__dict__, "now": "2026-11-20T21:05:00Z"})
+            buf_probe = io.StringIO()
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_proc
+            ), contextlib.redirect_stdout(buf_probe):
+                self.assertEqual(orch.probe(probe_later), 0)
+            out_probe = buf_probe.getvalue()
+            self.assertIn("antigravity: ok (1/3 groups usable)", out_probe)
+            self.assertIn("group Gemini Models: exhausted", out_probe)
+
+            loaded_after_probe = orch.load_file(assets_path)
+            by_name_probe = {g["name"]: g for g in loaded_after_probe["providers"][0]["groups"]}
+            self.assertEqual(by_name_probe["Gemini Models"]["status"], "exhausted")
+            self.assertEqual(by_name_probe["Gemini Models"]["exhausted_until"], "2026-11-21T00:13:07+00:00")
+            self.assertEqual(by_name_probe["Gemini 4 Argon"]["status"], "ok")
+
+            # Selection skips gemini-4-neon (Gemini Models exhausted) and picks gemini-4-argon
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:05:00Z",
+                complexity="hard",
+                risk="low",
+                available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref=None,
+            )
+            buf_sel = io.StringIO()
+            with contextlib.redirect_stdout(buf_sel):
+                self.assertEqual(orch.select(sel_args), 0)
+            self.assertIn("implementer: antigravity / gemini-4-argon @ high", buf_sel.getvalue())
+            self.assertIn("antigravity:gemini-4-neon: group Gemini Models exhausted", buf_sel.getvalue())
+
+            # If a probe before exhausted_until shows Gemini Models genuinely recovered (0% used), clear exhaustion
+            recovered_data = copy.deepcopy(self.fixture)
+            for b in recovered_data["command"]["data"]["groups"][0]["buckets"]:
+                b["remaining_fraction"] = 1.0
+            fake_recovered = subprocess.CompletedProcess(
+                args=["agy"], returncode=0, stdout=json.dumps(recovered_data), stderr=""
+            )
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_recovered
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.probe(probe_later), 0)
+            by_name_rec = {g["name"]: g for g in orch.load_file(assets_path)["providers"][0]["groups"]}
+            self.assertEqual(by_name_rec["Gemini Models"]["status"], "ok")
+            self.assertNotIn("exhausted_until", by_name_rec["Gemini Models"])
+
+    def test_provider_level_exhaust_preserved_by_probe_until_expired_or_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: ok\n"
+                    "    probe: {kind: antigravity}\n"
+                )
+
+            # Provider-level exhaust without --group or --model
+            exhaust_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                provider="antigravity",
+                message="Individual quota reached… Resets in 3h13m7s.",
+                group=None,
+                model=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.exhaust(exhaust_args), 0)
+
+            fake_proc = subprocess.CompletedProcess(
+                args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr=""
+            )
+            probe_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:05:00Z",
+                provider="antigravity",
+                low_threshold=None,
+                exhausted_threshold=None,
+                available=None,
+            )
+            buf = io.StringIO()
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_proc
+            ), contextlib.redirect_stdout(buf):
+                rc = orch.probe(probe_args)
+            self.assertEqual(rc, 4)
+            ag = orch.load_file(assets_path)["providers"][0]
+            self.assertEqual(ag["status"], "exhausted")
+            self.assertEqual(ag["exhausted_until"], "2026-11-21T00:13:07+00:00")
+
+            # After exhausted_until expires (2026-11-21T00:15:00Z), probe clears lockout to ok (2/3 groups usable)
+            probe_expired = mock.Mock(**{**probe_args.__dict__, "now": "2026-11-21T00:15:00Z"})
+            buf_exp = io.StringIO()
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_proc
+            ), contextlib.redirect_stdout(buf_exp):
+                rc_exp = orch.probe(probe_expired)
+            self.assertEqual(rc_exp, 0)
+            self.assertIn("antigravity: ok (2/3 groups usable)", buf_exp.getvalue())
+            ag_exp = orch.load_file(assets_path)["providers"][0]
+            self.assertEqual(ag_exp["status"], "ok")
+            self.assertNotIn("exhausted_until", ag_exp)
+
+    def test_near_exhaustion_99_3_percent_marks_exhausted_by_default_and_configurable(self):
+        near_data = copy.deepcopy(self.fixture)
+        # Set Gemini Models 5h bucket to 99.3% used (remaining_fraction = 0.007)
+        near_data["command"]["data"]["groups"][0]["buckets"][1]["remaining_fraction"] = 0.007
+
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: ok\n"
+                    "    probe: {kind: antigravity}\n"
+                )
+
+            fake_proc = subprocess.CompletedProcess(
+                args=["agy"], returncode=0, stdout=json.dumps(near_data), stderr=""
+            )
+            probe_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                provider="antigravity",
+                low_threshold=None,
+                exhausted_threshold=None,
+                available=None,
+            )
+            buf = io.StringIO()
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_proc
+            ), contextlib.redirect_stdout(buf):
+                rc = orch.probe(probe_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("antigravity: ok (1/3 groups usable)", out)
+            self.assertIn("group Gemini Models: exhausted (99.3% of 5h", out)
+
+            loaded = orch.load_file(assets_path)
+            by_name = {g["name"]: g for g in loaded["providers"][0]["groups"]}
+            self.assertEqual(by_name["Gemini Models"]["status"], "exhausted")
+            self.assertEqual(by_name["Gemini Models"]["used_percent"], 99.3)
+            self.assertEqual(by_name["Gemini Models"]["window"], "5h")
+
+            # Raising preferences.exhausted_threshold to 99.5 marks 99.3% as low instead of exhausted
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  low_threshold: 85\n"
+                    "  exhausted_threshold: 99.5\n"
+                    "providers:\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: ok\n"
+                    "    probe: {kind: antigravity}\n"
+                )
+            buf_custom = io.StringIO()
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
+                "subprocess.run", return_value=fake_proc
+            ), contextlib.redirect_stdout(buf_custom):
+                self.assertEqual(orch.probe(probe_args), 0)
+            by_name_custom = {g["name"]: g for g in orch.load_file(assets_path)["providers"][0]["groups"]}
+            self.assertEqual(by_name_custom["Gemini Models"]["status"], "low")
+
+    def test_scheduled_resume_when_no_candidate_left_deduplicates_and_excludes_emergency_and_pay_per_use(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: claude\n"
+                    "    policy: preserve\n"
+                    "    status: exhausted\n"
+                    "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: exhausted\n"
+                    "    exhausted_until: 2026-11-21T00:13:07+00:00\n"
+                    "    groups:\n"
+                    '      - name: "Gemini Models"\n'
+                    "        models: [gemini-4-neon]\n"
+                    "        status: exhausted\n"
+                    "        used_percent: 99.3\n"
+                    "        window: 5h\n"
+                    "        resets_at: 2026-11-21T00:13:07+00:00\n"
+                    "  - id: openai-api\n"
+                    "    policy: avoid\n"
+                    "    pay_per_use: true\n"
+                    "    status: ok\n"
+                )
+
+            # Even with emergency (claude-fable-5-2) and pay-per-use (openai-api:gpt-6-2-sol) in available,
+            # select exits 4, computes earliest reset from non-emergency/non-pay-per-use tier candidates
+            # (2026-11-21T00:13:07+00:00 + 2m = 2026-11-21T00:15:07+00:00), and records kind: resume once.
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="low",
+                available="claude:claude-opus-5-5,claude:claude-fable-5-2,antigravity:gemini-4-neon,openai-api:gpt-6-2-sol",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref="thread-child-1",
+            )
+            buf1 = io.StringIO()
+            with contextlib.redirect_stdout(buf1):
+                rc1 = orch.select(sel_args)
+            self.assertEqual(rc1, 4)
+            out1 = buf1.getvalue()
+            self.assertIn("SCHEDULE_RESUME", out1)
+            self.assertIn("2026-11-21T00:13:07+00:00", out1)
+            self.assertIn("2026-11-21T00:15:07+00:00", out1)
+            self.assertIn("followup recorded: [resume] thread-child-1 (needs T3, after 2026-11-21T00:15:07+00:00)", out1)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "thread-child-1",
+                    "needs": "T3",
+                    "after": "2026-11-21T00:15:07+00:00",
+                },
+            )
+
+            # Second conversation / retry with same ref does not schedule a duplicate
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = orch.select(sel_args)
+            self.assertEqual(rc2, 4)
+            self.assertIn("followup already scheduled: [resume] thread-child-1", buf2.getvalue())
+            self.assertEqual(len(orch.load_file(assets_path).get("followups") or []), 1)
+
+            # Before reset: followups --due does not mark it due (even if pay-per-use or emergency is in available)
+            fu_before = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T22:00:00Z",
+                available="claude:claude-fable-5-2,openai-api:gpt-6-2-sol,antigravity:gemini-4-neon",
+                due=True,
+                add=False,
+                done=None,
+            )
+            buf_before = io.StringIO()
+            with contextlib.redirect_stdout(buf_before):
+                self.assertEqual(orch.followups_cmd(fu_before), 0)
+            self.assertEqual(buf_before.getvalue().strip(), "")
+
+            # After antigravity resets (2026-11-21T00:16:00Z): due when antigravity:gemini-4-neon is in available
+            fu_after = mock.Mock(
+                **{
+                    **fu_before.__dict__,
+                    "now": "2026-11-21T00:16:00Z",
+                    "available": "antigravity:gemini-4-neon",
+                }
+            )
+            buf_after = io.StringIO()
+            with contextlib.redirect_stdout(buf_after):
+                self.assertEqual(orch.followups_cmd(fu_after), 0)
+            self.assertIn("followup due: [resume] thread-child-1 (needs T3; usable via antigravity (Gemini Models))", buf_after.getvalue())
+
+            # Clear when the child resumes
+            fu_done = mock.Mock(**{**fu_after.__dict__, "done": "thread-child-1", "due": False})
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.followups_cmd(fu_done), 0)
+            self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+    def test_expired_group_lockout_clears_once_without_duplicate_provider_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: exhausted\n"
+                    "    exhausted_until: 2026-11-21T00:13:07+00:00\n"
+                    "    groups:\n"
+                    '      - name: "Gemini Models"\n'
+                    "        models: [gemini-4-neon]\n"
+                    "        status: exhausted\n"
+                    "        used_percent: 99.3\n"
+                    "        window: 5h\n"
+                    "        resets_at: 2026-11-21T00:13:07+00:00\n"
+                )
+            probe_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-21T00:20:00Z",
+                provider=None,
+                low_threshold=None,
+                exhausted_threshold=None,
+                available=None,
+            )
+            buf1 = io.StringIO()
+            with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf1):
+                self.assertEqual(orch.probe(probe_args), 0)
+            lines1 = [l for l in buf1.getvalue().splitlines() if "expired lockout cleared" in l]
+            self.assertEqual(lines1, ["antigravity (Gemini Models): expired lockout cleared -> ok"])
+
+            # Running probe a second time produces no duplicate recovery line
+            buf2 = io.StringIO()
+            with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf2):
+                self.assertEqual(orch.probe(probe_args), 0)
+            self.assertNotIn("expired lockout cleared", buf2.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

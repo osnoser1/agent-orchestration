@@ -14,7 +14,7 @@ Tiers are Artificial Analysis Intelligence Index floors (higher = smarter) from 
 | frontier (architecture, security, novel debugging) | T4 (≥57) | T4 | T4 + strongest review |
 
 ## Risk triggers (any one → high)
-Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money, plus any extra paths/areas listed under `High risk:` in the target repo's `## Orchestration` (`references/repo-policy.md`). High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step.
+Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money, plus any extra paths/areas listed under `High risk:` in the target repo's `## Orchestration` (`references/repo-policy.md`). High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step (`SKILL.md` Step 7).
 
 ## Complexity hints
 - `trivial`: fully specified, mechanical.
@@ -46,16 +46,20 @@ When `assets.yaml` is missing, default every discovered provider to `status: ok`
    5. **Lower cost class**: `cheap` < `normal` < `expensive`.
    6. **Lower effort** (`none` < `low` < `medium` < `high` < `xhigh`), then lower score.
 
-## Preferred-model fallback (`preferences.ui_fallback`)
-When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier, classify the unmet preference from this run's discovery (`--available`):
+## Preferred-model fallback (`preferences.ui_fallback`) and follow-ups
+When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier while at least one other tier-meeting candidate exists, classify the unmet preference from this run's discovery (`--available`):
 
 1. **`exhausted`** (a tier-meeting model of the preferred family is offered in this harness, and its provider or quota group is exhausted): apply `preferences.ui_fallback` (default `proceed`; override via `--fallback`) using the earliest reset among exhausted offered candidates:
-   - **`proceed`** (default): pick the best available candidate meeting the tier, mark the work **provisional**, and append `followups: [{kind, ref, needs, after}]` to `assets.yaml`.
+   - **`proceed`** (default): pick the best available candidate meeting the tier, mark the work **provisional**, and append `followups: [{kind, ref, needs, after}]` to `assets.yaml` (`kind: ui-review` with `needs: ui-ux-review` for `--ui`; `kind: preferred-review` with `needs: <family>` for `--prefer-family`).
    - **`defer`**: stop before dispatch (exit `3`), report the earliest preferred reset, and recommend waiting for non-urgent work.
-   - **`ask`**: stop before dispatch (exit `3`) and ask the user once whether to proceed provisionally (queuing a follow-up review) or wait for the reset.
+   - **`ask`**: stop before dispatch (exit `3`) and ask the user once (`SKILL.md` Step 7) whether to proceed provisionally (queuing a follow-up review) or wait for the reset.
 2. **`not offered here`** (absent from this harness's discovery, regardless of accounts in `assets.yaml`): treat the preference as satisfied by the best available model in this harness (preferring a matching `strengths` entry, else best by tier), print one informational note, and proceed immediately (skip follow-ups, reset times, and `ui_fallback` gates).
 
-**Follow-up due rule**: `orch.py select`, `orch.py followups --due`, and `orch.py probe` report a recorded follow-up as **due** only when the current run's discovery (`--available`) includes a usable model matching `needs`. When `--available` is omitted, `probe` and `followups --due` report ready follow-ups as `pending: needs <need>` rather than `due`. Clear completed follow-ups with `orch.py followups --done <ref>`.
+**When no tier-meeting candidate remains (`orch.py select` exits `4`)**: `ui_fallback` does not run. Instead, `select` reports the earliest reset among exhausted tier-meeting non-emergency, non-pay-per-use candidates (`earliest_reset + 2m` for scheduling) and, when `--ref <ref>` is passed (or via `orch.py followups --add --kind resume --ref <ref> --needs <tier> --after <iso>`), records a single `kind: resume` entry per `ref` so later conversations do not schedule duplicates (`references/harnesses.md`).
+
+**Follow-up kinds and due rule**:
+- Three distinct `kind`s share `followups` in `assets.yaml`: `ui-review` (`needs: ui-ux-review`), `preferred-review` (`needs: <family>`), and `resume` (`needs: <tier>`, model id, or `any`).
+- `orch.py select`, `orch.py followups --due`, and `orch.py probe` report a recorded follow-up as **due** only when the current run's discovery (`--available`) includes a usable (non-exhausted, non-emergency, non-pay-per-use) model matching `needs`. When `--available` is omitted, `probe` and `followups --due` report ready follow-ups as `pending: needs <need>` rather than `due`. Clear completed or resumed entries with `orch.py followups --done <ref>`.
 
 ## Reviewer and review gate
 - **Tier**: equal to the implementer's tier; `high` risk bumps the reviewer one tier up (capped at T4).
