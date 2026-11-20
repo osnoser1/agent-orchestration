@@ -25,8 +25,8 @@ Requires Node.js 22.20+ for the installer ([`skills`](https://github.com/vercel-
 ```bash
 # Project-level (current repo)
 npx skills add osnoser1/agent-orchestration
-# User-level, one agent
-npx skills add osnoser1/agent-orchestration --skill agent-orchestration -g -a claude-code -y
+# User-level for Claude Code and Codex (recommended; add -a gemini-cli / -a antigravity as needed)
+npx skills add osnoser1/agent-orchestration --skill agent-orchestration -g -a claude-code -a codex -y
 # Update / list / remove
 npx skills update agent-orchestration
 npx skills list
@@ -41,6 +41,8 @@ Claude Code plugin marketplace (alternative):
 /plugin marketplace update agent-orchestration     # update
 /plugin uninstall agent-orchestration@agent-orchestration
 ```
+
+Where it lands (user level): Codex reads `~/.agents/skills/` ([Codex skills docs](https://developers.openai.com/codex/skills)); Claude Code gets a symlink in `~/.claude/skills/`. If you run Claude Code with a custom `CLAUDE_CONFIG_DIR`, link it there too: `ln -s ~/.agents/skills/agent-orchestration "$CLAUDE_CONFIG_DIR/skills/"`.
 
 Manual: copy `skills/agent-orchestration/` into your harness's skills directory (e.g. `~/.claude/skills/`, `~/.agents/skills/`).
 
