@@ -20,7 +20,7 @@
 Exit codes:
   0  ok
   1  validation or invocation error
-  2  no candidate meets the required tier (select)
+  2  no candidate meets the required tier (select), or no reviewer is usable (select --implementer)
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
@@ -382,6 +382,15 @@ def best_effort(m, floor, emerg):
     return None
 
 
+def top_effort(m, emerg):
+    rated = [
+        (e, v)
+        for e, v in (m.get("scores") or {}).items()
+        if isinstance(v, (int, float)) and e not in emerg
+    ]
+    return max(rated, key=lambda kv: (kv[1], -EFFORT_ORDER.get(kv[0], 99))) if rated else None
+
+
 def unrated_higher_efforts(m, emerg):
     scores = m.get("scores") or {}
     rated_ranks = [
@@ -692,6 +701,7 @@ def candidates(
     ui_primary=False,
     prefer_family=None,
     fail_on_low=False,
+    pick_top=False,
 ):
     cat = {norm(m["id"]): m for m in catalog["models"]}
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
@@ -753,7 +763,7 @@ def candidates(
         if exclude_family and m["family"] == exclude_family:
             continue
 
-        be = best_effort(m, floor, emerg)
+        be = top_effort(m, emerg) if pick_top else best_effort(m, floor, emerg)
         if not be:
             missing = unrated_higher_efforts(m, emerg)
             if missing:
@@ -798,6 +808,97 @@ def candidates(
     return out, notes, reasons
 
 
+def _fmt_cand(c):
+    return (
+        f"{c['provider']} / {c['model']['id']} @ {c['effort']} "
+        f"(score {c['score']}, policy {c['policy']}"
+        + (f", status {c['status']}" if c["status"] != "ok" else "")
+        + ")"
+    )
+
+
+def reviewer_tier(tier, risk):
+    return tier if risk != "high" else "T" + str(min(4, int(tier[1]) + 1))
+
+
+def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low):
+    """Return `(stage, candidate, below_tier)` for the first usable reviewer, or None.
+
+    Capability before independence (references/selection.md): different family meeting `rt` ->
+    same family, different model, meeting `rt` -> different family below `rt` (best score) ->
+    same family, different model, below `rt` (best score) -> same model.
+    """
+    meet, _, _ = candidates(catalog, assets, avail, floors[rt], floors, now, fail_on_low=fail_on_low)
+    anyc, _, _ = candidates(catalog, assets, avail, 0, floors, now, fail_on_low=fail_on_low, pick_top=True)
+    meet.sort(key=lambda c: c["key"])
+    anyc.sort(key=lambda c: (-c["score"], c["key"]))
+    fam, mid = impl_model["family"], impl_model["id"]
+    diff = lambda c: c["model"]["family"] != fam
+    same_fam = lambda c: c["model"]["family"] == fam and c["model"]["id"] != mid
+    same_model = lambda c: c["model"]["id"] == mid
+    for stage, pool, pred in (
+        (1, meet, diff),
+        (2, meet, same_fam),
+        (3, anyc, diff),
+        (4, anyc, same_fam),
+        (5, meet, same_model),
+        (5, anyc, same_model),
+    ):
+        hit = [c for c in pool if pred(c)]
+        if hit:
+            return stage, hit[0], hit[0]["score"] < floors[rt]
+    return None
+
+
+def print_reviewer(rt, pick, impl_model, floor):
+    stage, c, below = pick
+    fam = impl_model["family"]
+    labels = {
+        1: "different family",
+        2: "same family, different model, fresh context",
+        3: "different family, below tier",
+        4: "same family, different model, fresh context, below tier",
+        5: "same model, fresh conversation",
+    }
+    print(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
+    if stage == 1:
+        return
+    if stage == 2:
+        why = f"no different-family candidate meets {rt}; using same family {fam}, different model, fresh context"
+    elif stage == 3:
+        why = f"no different-family or same-family candidate meets {rt}; using the best different-family score"
+    elif stage == 4:
+        why = f"no different-family candidate usable; using same family {fam}, different model, fresh context"
+    else:
+        why = "no other model usable; using the implementer's model in a fresh conversation"
+    if below:
+        why += f" (below {rt}: score {c['score']} < {floor})"
+    print(f"[note] reviewer degraded: {why}. State this in the report.")
+
+
+def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now):
+    """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
+    m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
+    if not m:
+        print(f"implementer {impl_id}: not in catalog")
+        return 1
+    rt = reviewer_tier(tier, a.risk)
+    fail_on_low = bool(a.fail_on_low)
+    print(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
+    print(f"implementer (given): {m['family']} / {m['id']}")
+    pick = pick_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low)
+    if pick:
+        print_reviewer(rt, pick, m, floors[rt])
+        return 0
+    _, notes, reasons = candidates(catalog, assets, avail, 0, floors, now, fail_on_low=fail_on_low, pick_top=True)
+    print("NO REVIEWER: no non-excluded model remains (quota recovery order in references/harnesses.md)")
+    for n in notes:
+        print("  note:", n)
+    if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["exhausted"] == 0):
+        return 3
+    return 4 if reasons["exhausted"] > 0 else 2
+
+
 def select(a):
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
@@ -813,6 +914,10 @@ def select(a):
     prefer_family = _opt_str(a, "prefer_family")
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
     ref_arg = _opt_str(a, "ref")
+
+    impl_id = _opt_str(a, "implementer")
+    if impl_id:
+        return select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now)
 
     cands, notes, reasons = candidates(
         catalog,
@@ -868,12 +973,7 @@ def select(a):
         return 2
 
     impl = cands[0]
-    fmt = lambda c: (
-        f"{c['provider']} / {c['model']['id']} @ {c['effort']} "
-        f"(score {c['score']}, policy {c['policy']}"
-        + (f", status {c['status']}" if c["status"] != "ok" else "")
-        + ")"
-    )
+    fmt = _fmt_cand
 
     pref_need = None
     pref_kind = None
@@ -933,23 +1033,10 @@ def select(a):
 
     print(f"implementer: {fmt(impl)}")
 
-    rt = tier if a.risk != "high" else "T" + str(min(4, int(tier[1]) + 1))
-    rc, _, _ = candidates(
-        catalog,
-        assets,
-        avail,
-        floors[rt],
-        floors,
-        now,
-        exclude_family=impl["model"]["family"],
-        ui_primary=False,
-        fail_on_low=bool(a.fail_on_low),
-    )
-    rc.sort(key=lambda c: c["key"])
-    if rc:
-        print(f"reviewer ({rt}, different family): {fmt(rc[0])}")
-    else:
-        print("reviewer: no different-family candidate; use a different model with fresh context and state it")
+    rt = reviewer_tier(tier, a.risk)
+    pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
+    if pick:
+        print_reviewer(rt, pick, impl["model"], floors[rt])
     for n in notes:
         print("  note:", n)
     for fu, usable in due_followups(catalog, assets, now, available=avail):
@@ -2293,6 +2380,7 @@ def main():
             p.add_argument("--fallback", choices=list(VALID_UI_FALLBACK))
             p.add_argument("--ref")
             p.add_argument("--fail-on-low", action="store_true")
+            p.add_argument("--implementer")
         if n == "followups":
             p.add_argument("--due", action="store_true")
             p.add_argument("--add", action="store_true")
