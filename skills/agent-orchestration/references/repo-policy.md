@@ -25,7 +25,7 @@ Every line is optional. When the section is absent, the skill's defaults apply u
 | `PR` | Skill or workflow used to open/update pull requests (named explicitly in PR briefs). |
 | `Land` | Exact command or process used in Step 5 (Land). |
 | `High risk` | Extra paths, modules, or change classes treated as `high` risk in Step 2 (Classify), additive to `references/selection.md`. |
-| `Models` | Task-type model or family preferences (e.g. `UI/UX work → Anthropic`). When the preferred family is unavailable, `preferences.ui_fallback` governs the fallback (`references/selection.md`). |
+| `Models` | Task-type model or family preferences (e.g. `UI/UX work → Anthropic`). Unmet preferences follow `references/selection.md`: `preferences.ui_fallback` applies when `exhausted`; `not offered here` proceeds with the best available model in this harness and one informational note. |
 | `Conversations` | Repo guidance for opening new top-level conversations (`references/harnesses.md`). |
 
 ## Precedence
