@@ -1,6 +1,6 @@
 # Brief template
 
-One outcome per child. Supply known facts directly so children skip re-discovery; give reviewers the raw diff (or shared evidence pack) alone so judgments stay independent. When resending after a quota switch, include partial work completed so far.
+One outcome per child. Supply known facts directly so children skip re-discovery; give reviewers the raw diff (or shared evidence pack) alone so judgments stay independent. When starting a new child after a quota error (because the harness cannot switch the existing child's model in place; `references/harnesses.md`), include the partial work completed so far.
 
 ```
 GOAL: <one-sentence outcome>

@@ -45,21 +45,21 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`) us
 *Done when*: red→green output is checked, review findings are resolved by the implementer, your own diff + key-test check passes, the change lands through the repo's process, and the outcome is logged.
 
 ## 6. Quota and failure handling
-- **Quota error**: parse the reset time (`references/quota-errors.md`), persist `exhausted` to assets (`scripts/orch.py exhaust`), log the `quota` outcome (`scripts/orch.py log`), switch to the next candidate, resend the same brief with partial results, and inform the user in one line.
+- **Quota error**: parse the reset time (`references/quota-errors.md`), persist `exhausted` to assets (`scripts/orch.py exhaust`, passing `--group` or `--model` when the provider uses quota groups), log `--outcome quota` (`scripts/orch.py log`), and follow the single decision order in `references/harnesses.md` (switch model in place → start a new child with partial results → schedule a resume at `earliest_reset + 2m` when no usable candidate remains). Inform the user in one line.
 - **Harness quirks or stalls**: follow the harness row in `references/harnesses.md` and `quirks` in `catalog.yaml`; log `stall` outcomes to the ledger.
 - **Manual fallback**: when the user reports facts probes cannot see (plan cancelled, renewal date, manual reset), update assets per `references/assets-updates.md`.
 
-*Done when*: exhausted providers carry reset times in assets, expired lockouts are cleared, interrupted work resumes on the next candidate, and failures are logged.
+*Done when*: exhausted providers or quota groups carry reset times in assets, expired lockouts are cleared, interrupted work either resumes on the next candidate (in place when supported, else in a new child with partial results) or is recorded and scheduled to resume after the earliest reset (`kind: resume` in `followups`), and `quota` plus continuation outcomes are logged.
 
 ## 7. Decide vs ask
-Execute routine orchestration choices and report them briefly. Ask the user once before destructive actions, publishing, spending emergency models/efforts or pay-per-use APIs, opening a new top-level conversation when `preferences.new_conversations: ask`, proceeding when `preferences.ui_fallback: ask`, or resolving ambiguity that changes the outcome.
+Execute routine orchestration choices (including in-place model switches and same-conversation scheduled resumes) and report them briefly. Ask the user once before destructive actions, publishing, spending emergency models/efforts or pay-per-use APIs, opening a new top-level conversation when `preferences.new_conversations: ask`, proceeding when `preferences.ui_fallback: ask`, or resolving ambiguity that changes the outcome.
 
 *Done when*: routine decisions are reported in-flight and every listed high-impact action waits for one explicit approval.
 
 ## References (load on demand)
-- `references/selection.md` — tier floors, risk triggers, effort knee, tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), review gate.
+- `references/selection.md` — tier floors, risk triggers, effort knee, tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), follow-up kinds and due rule, review gate.
 - `references/repo-policy.md` — target-repo `## Orchestration` contract, precedence, and explicit brief forwarding.
-- `references/harnesses.md` — delegation surface (`subagent` vs `conversation`) and alphabetical harness matrix.
+- `references/harnesses.md` — delegation surface (`subagent` vs `conversation`), in-place model switching and scheduled resume on quota exhaustion, and alphabetical harness matrix.
 - `references/brief-template.md` — delegation brief layout and mandatory report sections.
 - `references/quota-errors.md` — automatic probe thresholds, exit codes, and error-message parsing.
 - `references/assets-updates.md` — plain-language fallback updates for `assets.yaml`.
