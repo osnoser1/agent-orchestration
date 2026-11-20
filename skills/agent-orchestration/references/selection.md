@@ -14,7 +14,7 @@ Tiers are Artificial Analysis Intelligence Index floors (higher = smarter) from 
 | frontier (architecture, security, novel debugging) | T4 (≥57) | T4 | T4 + strongest review |
 
 ## Risk triggers (any one → high)
-Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money. High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step.
+Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money, plus any extra paths/areas listed under `High risk:` in the target repo's `## Orchestration` (`references/repo-policy.md`). High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step.
 
 ## Complexity hints
 - `trivial`: fully specified, mechanical.
@@ -39,12 +39,19 @@ When `assets.yaml` is missing, default every discovered provider to `status: ok`
    5. Exclude models with `rating: unrated` (note for one-time research).
    6. Exclude models whose rated non-emergency efforts fall below the tier floor.
 2. **Rank** remaining candidates by:
-   1. **UI/UX tasks (`--ui`, primary worker only)**: models with `ui-ux-review` in `strengths` (Anthropic) sort first.
+   1. **Preferred strength/family (primary worker only)**: `--ui` sorts models with `ui-ux-review` in `strengths` (Anthropic) first; `--prefer-family <family>` (from repo `Models:` in `references/repo-policy.md`) sorts that family first.
    2. **Quota health**: on T3+ work, `status: ok` sorts ahead of `status: low` (evaluated per model group when `groups` are present, otherwise per provider; `used_percent >= 85` by default).
    3. **Policy**: `ending` > `spend-first` > `normal` > `preserve`.
    4. **Sooner reset/renewal**: earliest future timestamp from `renews` (when `policy: ending`) or the model group's `resets_at` (when present) / provider `resets_at` / `resets` / `renews` (ISO time, date-only as end of day, or cadence `5h`/`daily`/`weekly`/`monthly`).
    5. **Lower cost class**: `cheap` < `normal` < `expensive`.
    6. **Lower effort** (`none` < `low` < `medium` < `high` < `xhigh`), then lower score.
+
+## Preferred-model fallback (`preferences.ui_fallback`)
+Applies whenever `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier (default `proceed`; override in `assets.yaml` under `preferences.ui_fallback` or via `--fallback`):
+
+- **`proceed`** (default): pick the best available candidate meeting the tier, mark the work **provisional**, and append a follow-up entry to `assets.yaml` (`followups: [{kind, ref, needs, after}]` with the earliest reset of the exhausted preferred provider/group). During discovery (`orch.py probe`, `orch.py select`, or `orch.py followups --due`), once a provider serving `needs` becomes usable again, run the deferred re-review and clear it with `orch.py followups --done <ref>`.
+- **`defer`**: stop before dispatch (exit `3`), report the earliest preferred reset, and recommend waiting for non-urgent work.
+- **`ask`**: stop before dispatch (exit `3`) and ask the user once whether to proceed provisionally (queuing a follow-up review) or wait for the reset.
 
 ## Reviewer and review gate
 - **Tier**: equal to the implementer's tier; `high` risk bumps the reviewer one tier up (capped at T4).

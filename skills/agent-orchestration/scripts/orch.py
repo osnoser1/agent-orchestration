@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """Optional, dependency-free helper for the agent-orchestration skill (Python 3.9+).
 
-  orch.py check   [--catalog F] [--assets F]
-  orch.py probe   [--provider P] [--low-threshold N] [--assets F] [--now ISO]
-  orch.py select  --complexity trivial|standard|hard|frontier --risk low|medium|high
-                  --available provider:model[,provider:model...] [--ui] [--fail-on-low]
-                  [--catalog F] [--assets F] [--now ISO]
-  orch.py exhaust <provider> "<quota error message>" [--assets F] [--now ISO]
-  orch.py status  <provider> ok|low [--assets F] [--now ISO]
+  orch.py check     [--catalog F] [--assets F] [--now ISO] [--lockfile F]
+  orch.py probe     [--provider P] [--low-threshold N] [--assets F] [--now ISO]
+  orch.py select    --complexity trivial|standard|hard|frontier --risk low|medium|high
+                    --available provider:model[,provider:model...] [--ui] [--prefer-family F]
+                    [--fallback proceed|defer|ask] [--ref TEXT] [--fail-on-low]
+                    [--catalog F] [--assets F] [--now ISO]
+  orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
+                    [--available ...] [--catalog F] [--assets F] [--now ISO]
+  orch.py log       --complexity C --risk R --provider P --model M --effort E
+                    [--ui] [--reviewer R] [--surface subagent|conversation]
+                    [--event select|complete] [--outcome ok|failed|quota|stall|rework]
+                    [--findings N] [--repo NAME] [--provisional]
+                    [--assets F] [--ledger F] [--now ISO]
+  orch.py exhaust   <provider> "<quota error message>" [--assets F] [--now ISO]
+  orch.py status    <provider> ok|low [--assets F] [--now ISO]
 
 Exit codes:
   0  ok
   1  validation or invocation error
   2  no candidate meets the required tier (select)
-  3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated providers)
+  3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
   4  quota hit (probe at 100% exhausted, or select found only exhausted providers)
 
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
@@ -25,12 +33,37 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEF_CATALOG = os.path.join(HERE, "..", "catalog.yaml")
 ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_LOW_THRESHOLD = 85
+VALID_UI_FALLBACK = ("proceed", "defer", "ask")
+VALID_NEW_CONVERSATIONS = ("ask", "allow")
+VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
+VALID_SURFACES = ("subagent", "conversation")
+STALE_INSTALL_DAYS = 7
 
 
 def def_assets():
     return os.environ.get("AGENT_ORCHESTRATION_ASSETS") or os.path.expanduser(
         "~/.config/agent-orchestration/assets.yaml"
     )
+
+
+def def_ledger(assets_path=None):
+    ap = assets_path or def_assets()
+    return os.path.join(os.path.dirname(os.path.abspath(ap)), "ledger.jsonl")
+
+
+def _opt_str(a, name, default=None):
+    v = getattr(a, name, None)
+    return v if isinstance(v, str) else default
+
+
+def _opt_bool(a, name, default=False):
+    v = getattr(a, name, default)
+    return v if isinstance(v, bool) else default
+
+
+def _opt_int(a, name, default=None):
+    v = getattr(a, name, None)
+    return v if (isinstance(v, int) and not isinstance(v, bool)) else default
 
 
 # ---------- mini YAML ----------
@@ -356,12 +389,183 @@ def unrated_higher_efforts(m, emerg):
     ]
 
 
-def candidates(catalog, assets, available, floor, floors, now, exclude_family=None, ui_primary=False, fail_on_low=False):
+def _model_matches_need(m, need):
+    if not isinstance(m, dict) or not need:
+        return False
+    n = str(need).strip().lower()
+    if n.startswith("family:"):
+        return str(m.get("family") or "").lower() == n[len("family:"):]
+    strengths = [str(s).lower() for s in (m.get("strengths") or [])]
+    if n in strengths:
+        return True
+    return str(m.get("family") or "").lower() == n
+
+
+def _provider_inferred_family(p):
+    probe_cfg = p.get("probe") if isinstance(p.get("probe"), dict) else {}
+    kind = str(probe_cfg.get("kind") or "").lower()
+    pid = str(p.get("id") or "").lower()
+    if kind == "claude" or "claude" in pid or "anthropic" in pid:
+        return "anthropic"
+    if kind == "codex" or "codex" in pid or "openai" in pid:
+        return "openai"
+    if kind == "antigravity" or "gemini" in pid or "google" in pid:
+        return "google"
+    return None
+
+
+def find_usable_for_need(catalog, assets, now, need, available=None):
+    if not need:
+        return []
+    cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    usable = []
+    seen = set()
+
+    def _add(label):
+        if label not in seen:
+            seen.add(label)
+            usable.append(label)
+
+    if available:
+        for pair in available:
+            prov, _, mid = pair.partition(":")
+            m = cat.get(norm(mid))
+            if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
+                continue
+            if not _model_matches_need(m, need):
+                continue
+            p, prov_st, _ = provider_state(assets, prov, now)
+            if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st == "exhausted":
+                continue
+            g = model_group(p, mid, m)
+            if g is not None:
+                gst, _ = group_state(g, now)
+                if gst == "exhausted":
+                    continue
+                _add(f"{prov} ({g.get('name') or 'group'})")
+            else:
+                _add(prov)
+
+    for p in (assets or {}).get("providers") or []:
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        if p.get("pay_per_use") or p.get("policy") == "avoid":
+            continue
+        pid = p["id"]
+        _, prov_st, _ = provider_state(assets, pid, now)
+        if prov_st == "exhausted":
+            continue
+        groups = p.get("groups")
+        if isinstance(groups, list) and groups:
+            for g in groups:
+                if not isinstance(g, dict):
+                    continue
+                gst, _ = group_state(g, now)
+                if gst == "exhausted":
+                    continue
+                for mid in g.get("models") or []:
+                    m = cat.get(norm(mid))
+                    if m and m.get("cost") != "emergency" and m.get("rating") != "unrated" and _model_matches_need(m, need):
+                        _add(f"{pid} ({g.get('name') or 'group'})")
+                        break
+        else:
+            fam = _provider_inferred_family(p)
+            if fam:
+                for m in (catalog or {}).get("models") or []:
+                    if (
+                        str(m.get("family") or "").lower() == fam
+                        and m.get("cost") != "emergency"
+                        and m.get("rating") != "unrated"
+                        and _model_matches_need(m, need)
+                    ):
+                        _add(pid)
+                        break
+
+    return usable
+
+
+def due_followups(catalog, assets, now, available=None):
+    due = []
+    for fu in (assets or {}).get("followups") or []:
+        if not isinstance(fu, dict):
+            continue
+        needs = fu.get("needs")
+        usable = find_usable_for_need(catalog, assets, now, needs, available=available)
+        if usable:
+            due.append((fu, usable))
+    return due
+
+
+def earliest_preferred_reset(catalog, assets, available, need, now):
+    if not need:
+        return None
+    cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    times = []
+
+    def _collect(dt):
+        if dt and dt > now:
+            times.append(dt)
+
+    for pair in available or []:
+        prov, _, mid = pair.partition(":")
+        m = cat.get(norm(mid))
+        if not m or not _model_matches_need(m, need):
+            continue
+        p, prov_st, _ = provider_state(assets, prov, now)
+        if p.get("pay_per_use") or p.get("policy") == "avoid":
+            continue
+        g = model_group(p, mid, m)
+        if g is not None and group_state(g, now)[0] == "exhausted":
+            _collect(parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now))
+        elif prov_st == "exhausted":
+            _collect(parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now))
+
+    for p in (assets or {}).get("providers") or []:
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        if p.get("pay_per_use") or p.get("policy") == "avoid":
+            continue
+        pid = p["id"]
+        _, prov_st, _ = provider_state(assets, pid, now)
+        groups = p.get("groups")
+        if isinstance(groups, list) and groups:
+            for g in groups:
+                if not isinstance(g, dict) or group_state(g, now)[0] != "exhausted":
+                    continue
+                if any(
+                    (m := cat.get(norm(mid))) and _model_matches_need(m, need)
+                    for mid in (g.get("models") or [])
+                ):
+                    _collect(parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now))
+        elif prov_st == "exhausted":
+            fam = _provider_inferred_family(p)
+            if fam and any(
+                str(m.get("family") or "").lower() == fam and _model_matches_need(m, need)
+                for m in (catalog or {}).get("models") or []
+            ):
+                _collect(parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now))
+
+    return min(times).isoformat(timespec="seconds") if times else None
+
+
+def candidates(
+    catalog,
+    assets,
+    available,
+    floor,
+    floors,
+    now,
+    exclude_family=None,
+    ui_primary=False,
+    prefer_family=None,
+    fail_on_low=False,
+):
     cat = {norm(m["id"]): m for m in catalog["models"]}
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     out, notes = [], []
     reasons = {"exhausted": 0, "threshold": 0, "gated": 0, "tier": 0}
     t3_floor = floors.get("T3", FLOORS["T3"])
+    pref_fam = prefer_family.strip().lower() if prefer_family else None
 
     for pair in available:
         prov, _, mid = pair.partition(":")
@@ -434,8 +638,10 @@ def candidates(catalog, assets, available, floor, floors, now, exclude_family=No
         nxt = candidate_next_reset(p, g, now)
         reset_ts = nxt.timestamp() if nxt else float("inf")
         ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
+        fam_rank = (0 if str(m.get("family") or "").lower() == pref_fam else 1) if pref_fam else 0
         key = (
             ui_rank,
+            fam_rank,
             low_pen,
             pol_rank,
             reset_ts,
@@ -460,15 +666,20 @@ def candidates(catalog, assets, available, floor, floors, now, exclude_family=No
 
 
 def select(a):
-    now = get_now(a.now)
-    ap = a.assets or def_assets()
-    catalog = load_catalog_with_local(DEF_CATALOG if not a.catalog else a.catalog, ap)
-    assets = load_file(ap) if os.path.exists(ap) else None
+    now = get_now(_opt_str(a, "now"))
+    ap = _opt_str(a, "assets") or def_assets()
+    catalog = load_catalog_with_local(DEF_CATALOG if not _opt_str(a, "catalog") else _opt_str(a, "catalog"), ap)
+    assets_exists = os.path.exists(ap)
+    assets = load_file(ap) if assets_exists else None
     if assets is None:
         print(f"[note] no assets file at {ap}: defaults (all providers ok, policy normal)")
-    floors = {**FLOORS, **((assets or {}).get("preferences", {}) or {}).get("tier_floors", {})}
+    prefs = (assets or {}).get("preferences") or {}
+    floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     tier = TIER[a.complexity][a.risk]
     avail = [x.strip() for x in a.available.split(",") if x.strip()]
+    prefer_family = _opt_str(a, "prefer_family")
+    fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
+    ref_arg = _opt_str(a, "ref")
 
     cands, notes, reasons = candidates(
         catalog,
@@ -477,8 +688,9 @@ def select(a):
         floors[tier],
         floors,
         now,
-        ui_primary=a.ui,
-        fail_on_low=a.fail_on_low,
+        ui_primary=bool(a.ui),
+        prefer_family=prefer_family,
+        fail_on_low=bool(a.fail_on_low),
     )
     cands.sort(key=lambda c: c["key"])
     print(f"tier {tier} (>= {floors[tier]})")
@@ -493,15 +705,61 @@ def select(a):
         return 2
 
     impl = cands[0]
-    if a.ui and "ui-ux-review" not in (impl["model"].get("strengths") or []):
-        print("[note] no ui-ux-review candidate available; falling back to best available model")
-
     fmt = lambda c: (
         f"{c['provider']} / {c['model']['id']} @ {c['effort']} "
         f"(score {c['score']}, policy {c['policy']}"
         + (f", status {c['status']}" if c["status"] != "ok" else "")
         + ")"
     )
+
+    pref_need = None
+    pref_kind = None
+    if a.ui and "ui-ux-review" not in (impl["model"].get("strengths") or []):
+        pref_need = "ui-ux-review"
+        pref_kind = "ui-review"
+    elif prefer_family and str(impl["model"].get("family") or "").lower() != prefer_family.strip().lower():
+        pref_need = prefer_family.strip().lower()
+        pref_kind = "preferred-review"
+
+    if pref_need:
+        earliest = earliest_preferred_reset(catalog, assets, avail, pref_need, now)
+        reset_txt = earliest or "unknown"
+        if fallback_mode == "defer":
+            print(
+                f"DEFER: preferred {pref_need} unavailable (earliest reset: {reset_txt}). "
+                "Recommend waiting for reset (non-urgent work)."
+            )
+            print(f"  fallback if urgent: {fmt(impl)}")
+            for n in notes:
+                print("  note:", n)
+            return 3
+        if fallback_mode == "ask":
+            print(
+                f"ASK: preferred {pref_need} unavailable (earliest reset: {reset_txt}). "
+                f"Ask the user once: proceed provisionally with {fmt(impl)} (and queue follow-up review) or wait for reset?"
+            )
+            for n in notes:
+                print("  note:", n)
+            return 3
+        # proceed (default)
+        print(
+            f"[provisional] preferred {pref_need} unavailable (earliest reset: {reset_txt}); "
+            "proceeding with fallback model — follow-up review required"
+        )
+        if assets_exists or ref_arg:
+            fu_entry = {
+                "kind": pref_kind,
+                "ref": ref_arg or "current-task",
+                "needs": pref_need,
+            }
+            if earliest:
+                fu_entry["after"] = earliest
+            record_followup(ap, fu_entry, now=now)
+            print(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
+            assets = load_file(ap)
+        else:
+            print("[note] no assets file; skipped recording follow-up")
+
     print(f"implementer: {fmt(impl)}")
 
     rt = tier if a.risk != "high" else "T" + str(min(4, int(tier[1]) + 1))
@@ -514,7 +772,7 @@ def select(a):
         now,
         exclude_family=impl["model"]["family"],
         ui_primary=False,
-        fail_on_low=a.fail_on_low,
+        fail_on_low=bool(a.fail_on_low),
     )
     rc.sort(key=lambda c: c["key"])
     if rc:
@@ -523,6 +781,11 @@ def select(a):
         print("reviewer: no different-family candidate; use a different model with fresh context and state it")
     for n in notes:
         print("  note:", n)
+    for fu, usable in due_followups(catalog, assets, now, available=avail):
+        print(
+            f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+            f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+        )
     return 0
 
 
@@ -746,6 +1009,60 @@ def edit_provider(path, pid, fields, now=None, clear_keys=()):
     lines[start + 1 : end] = new + keep
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip("\n") + "\n")
+
+
+def _top_section_span(lines, key):
+    pat = re.compile(rf"^{re.escape(key)}:\s*(?:#.*)?$|^{re.escape(key)}:\s*\[\s*\]\s*(?:#.*)?$")
+    start = next((i for i, l in enumerate(lines) if pat.match(l)), None)
+    if start is None:
+        return None, None
+    end = start + 1
+    while end < len(lines):
+        l = lines[end]
+        if l.strip() and not l.startswith(" ") and not l.startswith("#"):
+            break
+        end += 1
+    return start, end
+
+
+def write_followups(path, followups, now=None):
+    now = now or get_now()
+    ensure_assets(path, now)
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    _update_top_updated(lines, now.isoformat(timespec="seconds"))
+
+    fstart, fend = _top_section_span(lines, "followups")
+    rendered = _format_yaml_field(0, "followups", followups) if followups else []
+    if fstart is not None:
+        lines[fstart:fend] = rendered
+    elif rendered:
+        lines.extend(rendered)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).rstrip("\n") + "\n")
+
+
+def record_followup(path, item, now=None):
+    now = now or get_now()
+    ensure_assets(path, now)
+    assets = load_file(path) or {}
+    existing = [x for x in (assets.get("followups") or []) if isinstance(x, dict)]
+    key = (item.get("kind"), item.get("ref"), item.get("needs"))
+    updated = []
+    replaced = False
+    for fu in existing:
+        if (fu.get("kind"), fu.get("ref"), fu.get("needs")) == key:
+            updated.append(item)
+            replaced = True
+        else:
+            updated.append(fu)
+    if not replaced:
+        updated.append(item)
+    write_followups(path, updated, now=now)
+    return updated
 
 
 def exhaust(a):
@@ -1287,13 +1604,165 @@ def probe(a):
         reset_msg = f", resets {r_at}" if r_at else ""
         print(f"{pid}: {st} ({pct}% of {win}{reset_msg})")
 
+    updated_assets = load_file(ap) or {}
+    for fu, usable in due_followups(catalog, updated_assets, now):
+        print(
+            f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+            f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+        )
+
     return worst
 
 
+def followups_cmd(a):
+    now = get_now(_opt_str(a, "now"))
+    ap = _opt_str(a, "assets") or def_assets()
+    catalog_path = _opt_str(a, "catalog") or DEF_CATALOG
+    catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
+    avail_str = _opt_str(a, "available")
+    avail = [x.strip() for x in avail_str.split(",") if x.strip()] if avail_str else None
+
+    done_ref = _opt_str(a, "done")
+    if done_ref:
+        if not os.path.exists(ap):
+            print(f"no assets file at {ap}")
+            return 0
+        assets = load_file(ap) or {}
+        existing = [x for x in (assets.get("followups") or []) if isinstance(x, dict)]
+        kept = [x for x in existing if str(x.get("ref") or "") != done_ref]
+        removed = len(existing) - len(kept)
+        write_followups(ap, kept, now=now)
+        print(f"cleared {removed} followup(s) for {done_ref}")
+        return 0
+
+    if _opt_bool(a, "add"):
+        kind = _opt_str(a, "kind") or "ui-review"
+        ref_val = _opt_str(a, "ref")
+        needs = _opt_str(a, "needs") or "ui-ux-review"
+        if not ref_val:
+            print("followups --add requires --ref")
+            return 1
+        entry = {"kind": kind, "ref": ref_val, "needs": needs}
+        after = _opt_str(a, "after")
+        if after:
+            entry["after"] = after
+        record_followup(ap, entry, now=now)
+        print(f"followup recorded: [{kind}] {ref_val} (needs {needs})")
+        return 0
+
+    assets = load_file(ap) if os.path.exists(ap) else {}
+    all_fus = [x for x in (assets.get("followups") or []) if isinstance(x, dict)]
+    due = due_followups(catalog, assets, now, available=avail)
+    due_ids = {id(fu) for fu, _ in due}
+
+    for fu, usable in due:
+        print(
+            f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+            f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+        )
+    if not _opt_bool(a, "due"):
+        for fu in all_fus:
+            if id(fu) not in due_ids:
+                after = fu.get("after") or "next reset"
+                print(
+                    f"followup pending: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+                    f"(needs {fu.get('needs')}; after {after})"
+                )
+        if not all_fus:
+            print("no followups")
+    return 0
+
+
+def log_cmd(a):
+    now = get_now(_opt_str(a, "now"))
+    ap = _opt_str(a, "assets") or def_assets()
+    ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
+
+    outcome = _opt_str(a, "outcome")
+    event = _opt_str(a, "event") or ("complete" if outcome else "select")
+    if event not in ("select", "complete"):
+        print(f"invalid event: {event}")
+        return 1
+    if outcome is not None and outcome not in VALID_OUTCOMES:
+        print(f"invalid outcome: {outcome}")
+        return 1
+    surface = _opt_str(a, "surface") or "subagent"
+    if surface not in VALID_SURFACES:
+        print(f"invalid surface: {surface}")
+        return 1
+
+    raw_repo = _opt_str(a, "repo") or os.getcwd()
+    repo = os.path.basename(os.path.normpath(raw_repo)) or "unknown"
+
+    entry = {
+        "ts": now.isoformat(timespec="seconds"),
+        "event": event,
+        "repo": repo,
+        "surface": surface,
+        "complexity": a.complexity,
+        "risk": a.risk,
+        "ui": bool(a.ui),
+        "provider": a.provider,
+        "model": a.model,
+        "effort": a.effort,
+        "reviewer": _opt_str(a, "reviewer"),
+        "outcome": outcome,
+        "findings": _opt_int(a, "findings"),
+    }
+    if _opt_bool(a, "provisional"):
+        entry["provisional"] = True
+
+    parent = os.path.dirname(os.path.abspath(ledger_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    print(f"logged {event} ({repo}) -> {ledger_path}")
+    return 0
+
+
+def check_install_staleness(now, lockfile_override=None):
+    notes = []
+    if lockfile_override is not None:
+        if not lockfile_override:
+            return notes
+        candidates_locks = [(lockfile_override, "global", "-g")]
+    else:
+        candidates_locks = [
+            (os.path.expanduser("~/.agents/.skill-lock.json"), "global", "-g"),
+            (os.path.join(os.getcwd(), "skills-lock.json"), "project", "-p"),
+        ]
+
+    for path, scope_name, flag in candidates_locks:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        skill = ((data.get("skills") or {}) if isinstance(data, dict) else {}).get("agent-orchestration")
+        if not isinstance(skill, dict):
+            continue
+        ts = parse_time(skill.get("updatedAt") or skill.get("installedAt"), now)
+        if ts is None:
+            try:
+                ts = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc)
+            except OSError:
+                continue
+        if (now - ts) > timedelta(days=STALE_INSTALL_DAYS):
+            notes.append(
+                f"[note] installed agent-orchestration ({scope_name}) last updated {ts.date().isoformat()} "
+                f"(>{STALE_INSTALL_DAYS}d ago); run: npx skills check {flag} && npx skills update agent-orchestration {flag}"
+            )
+    return notes
+
+
 def check(a):
+    now = get_now(_opt_str(a, "now"))
     errs = []
-    ap = a.assets or def_assets()
-    c = load_catalog_with_local(a.catalog or DEF_CATALOG, ap)
+    ap = _opt_str(a, "assets") or def_assets()
+    c = load_catalog_with_local(_opt_str(a, "catalog") or DEF_CATALOG, ap)
     ids = set()
     for m in c.get("models", []):
         for k in ("id", "name", "family", "cost", "rating"):
@@ -1308,8 +1777,19 @@ def check(a):
             m.get("scores") and m.get("source") in (c.get("index_versions") or {})
         ):
             errs.append(f"{m['id']}: rated needs scores + known source")
-    if a.assets or os.path.exists(ap):
-        for p in (load_file(ap) or {}).get("providers", []) or []:
+    if _opt_str(a, "assets") or os.path.exists(ap):
+        loaded_assets = load_file(ap) or {}
+        prefs = loaded_assets.get("preferences") or {}
+        if isinstance(prefs, dict):
+            uif = prefs.get("ui_fallback")
+            if uif is not None and uif not in VALID_UI_FALLBACK:
+                errs.append(f"assets preferences.ui_fallback: bad value {uif} (expected {'|'.join(VALID_UI_FALLBACK)})")
+            nc = prefs.get("new_conversations")
+            if nc is not None and nc not in VALID_NEW_CONVERSATIONS:
+                errs.append(
+                    f"assets preferences.new_conversations: bad value {nc} (expected {'|'.join(VALID_NEW_CONVERSATIONS)})"
+                )
+        for p in loaded_assets.get("providers", []) or []:
             if "id" not in p:
                 errs.append("assets: provider without id")
             if p.get("policy", "normal") not in list(POLICY) + ["avoid"]:
@@ -1329,7 +1809,22 @@ def check(a):
                             errs.append(f"assets {p.get('id')} group {g.get('name')}: bad status")
                         if g.get("models") is not None and not isinstance(g.get("models"), list):
                             errs.append(f"assets {p.get('id')} group {g.get('name')}: models must be a list")
+        followups = loaded_assets.get("followups")
+        if followups is not None:
+            if not isinstance(followups, list):
+                errs.append("assets followups: must be a list")
+            else:
+                for idx, fu in enumerate(followups):
+                    if not isinstance(fu, dict):
+                        errs.append(f"assets followups[{idx}]: must be a map")
+                        continue
+                    for req_k in ("kind", "ref", "needs"):
+                        if not fu.get(req_k):
+                            errs.append(f"assets followups[{idx}]: missing {req_k}")
     print("OK" if not errs else "\n".join(errs))
+    if not errs:
+        for note in check_install_staleness(now, lockfile_override=_opt_str(a, "lockfile")):
+            print(note)
     return 1 if errs else 0
 
 
@@ -1345,12 +1840,14 @@ def status_cmd(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "select", "exhaust", "status"):
+    for n in ("check", "probe", "select", "followups", "log", "exhaust", "status"):
         p = sub.add_parser(n)
         p.add_argument("--assets")
-        p.add_argument("--catalog")
-        if n in ("probe", "select", "exhaust", "status"):
-            p.add_argument("--now")
+        if n != "log":
+            p.add_argument("--catalog")
+        p.add_argument("--now")
+        if n == "check":
+            p.add_argument("--lockfile")
         if n == "probe":
             p.add_argument("--provider")
             p.add_argument("--low-threshold", type=float)
@@ -1359,7 +1856,34 @@ def main():
             p.add_argument("--risk", required=True, choices=["low", "medium", "high"])
             p.add_argument("--available", required=True)
             p.add_argument("--ui", action="store_true")
+            p.add_argument("--prefer-family")
+            p.add_argument("--fallback", choices=list(VALID_UI_FALLBACK))
+            p.add_argument("--ref")
             p.add_argument("--fail-on-low", action="store_true")
+        if n == "followups":
+            p.add_argument("--due", action="store_true")
+            p.add_argument("--add", action="store_true")
+            p.add_argument("--kind", default="ui-review")
+            p.add_argument("--ref")
+            p.add_argument("--needs", default="ui-ux-review")
+            p.add_argument("--after")
+            p.add_argument("--done")
+            p.add_argument("--available")
+        if n == "log":
+            p.add_argument("--ledger")
+            p.add_argument("--event", choices=["select", "complete"])
+            p.add_argument("--complexity", required=True, choices=list(TIER))
+            p.add_argument("--risk", required=True, choices=["low", "medium", "high"])
+            p.add_argument("--ui", action="store_true")
+            p.add_argument("--surface", choices=list(VALID_SURFACES), default="subagent")
+            p.add_argument("--provider", required=True)
+            p.add_argument("--model", required=True)
+            p.add_argument("--effort", required=True)
+            p.add_argument("--reviewer")
+            p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
+            p.add_argument("--findings", type=int)
+            p.add_argument("--repo")
+            p.add_argument("--provisional", action="store_true")
         if n in ("exhaust", "status"):
             p.add_argument("provider")
         if n == "exhaust":
@@ -1371,6 +1895,8 @@ def main():
         "check": check,
         "probe": probe,
         "select": select,
+        "followups": followups_cmd,
+        "log": log_cmd,
         "exhaust": exhaust,
         "status": status_cmd,
     }[a.cmd](a)

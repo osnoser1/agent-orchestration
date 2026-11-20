@@ -5,6 +5,8 @@ updated: 2026-11-20T09:00:00+00:00
 preferences:
   pay_per_use: never                              # never | ask (ask once before spending pay-per-use APIs)
   low_threshold: 85                               # used_percent >= threshold -> status: low (100% -> exhausted)
+  ui_fallback: proceed                            # proceed | defer | ask (when UI/UX or repo Models preference is unavailable)
+  new_conversations: ask                          # ask | allow (authorization to open new top-level conversations)
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
 providers:
   # id = provider id your harness uses for delegation.
@@ -66,3 +68,9 @@ providers:
     policy: avoid
     pay_per_use: true
     status: ok
+# Provisional fallback follow-ups recorded automatically by `orch.py select --ui` (when ui_fallback: proceed):
+# followups:
+#   - kind: ui-review
+#     ref: "PR #42"
+#     needs: ui-ux-review
+#     after: 2026-11-23T08:00:00+00:00
