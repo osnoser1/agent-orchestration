@@ -1,52 +1,47 @@
 # agent-orchestration
 
-An [Agent Skill](https://agentskills.io/specification) that turns any coding-agent conversation into a **quota-aware orchestrator**: it routes work to subagents and models by task complexity, risk and remaining provider quota, and enforces quality gates (test-first evidence, independent cross-family review, a cheap final check by the orchestrator).
+An [Agent Skill](https://agentskills.io/specification) that turns a coding-agent conversation into a **quota-aware orchestrator**: it routes work to subagents and models by task complexity, risk, and live provider quota, and enforces quality gates (red→green evidence, cross-family review, and a cheap final check by the orchestrator).
 
-Works in multi-provider harnesses (T3 Code `delegate_task`) and inside a single harness with its native models (Claude Code `Agent`, Codex subagents, Gemini/Antigravity). It never assumes a model exists: it discovers what the harness offers.
+Works in multi-provider harnesses and inside single-provider harnesses. Models are read from harness discovery and `catalog.yaml`.
 
 ## How it is organized
 
 | File | What | Changes |
 |---|---|---|
-| `skills/agent-orchestration/SKILL.md` | Short, stable process: classify → choose model+effort → brief → gates → land | rarely |
-| `skills/agent-orchestration/catalog.yaml` | Shared model facts: score per effort (with source+date), cost class, strengths, quirks | PRs |
-| `~/.config/agent-orchestration/assets.yaml` | **Your** providers, reset dates, policy, status. Lives outside the repo. Example: `skills/agent-orchestration/assets/assets.example.yaml` | you / the agent |
-| `skills/agent-orchestration/references/` | Selection tables, brief template, quota-error parsing, harness notes | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, dependency-free Python 3 helper (`select`, `exhaust`, `status`, `check`) | rarely |
+| `skills/agent-orchestration/SKILL.md` | Process steps with completion criteria: discover → classify → choose → brief → gates → land | rarely |
+| `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
+| `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
+| `skills/agent-orchestration/references/` | Selection rules, harness matrix, brief template, quota probe/error rules, unrated-model research | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `exhaust`, `status`, `check`) | rarely |
 
-Selection in one line: required tier from complexity × risk → candidates = available in harness ∩ not exhausted ∩ not emergency ∩ not pay-per-use ∩ tier met → prefer quota that expires first (`ending` > `spend-first` > `normal` > `preserve`) → lowest effort that meets the tier → reviewer from a different model family (UI/UX review prefers Anthropic).
+Selection summary (authoritative rules in `skills/agent-orchestration/references/selection.md`): complexity × risk → tier floor → filter out pay-per-use, exhausted, emergency, unrated, and below-floor models → rank by UI/UX strength (when `--ui`, primary worker), quota health, policy (`ending` > `spend-first` > `normal` > `preserve`), sooner reset/renewal, lower cost class, and lower effort (with `<3`-point effort knee) → reviewer from a different model family.
 
-Emergency models/efforts (e.g. `max`, `ultra`, top-priced tiers) and pay-per-use API providers are never used without your approval. A missing or stale assets file never blocks: the skill falls back to defaults and tells you.
+Emergency models, `max`/`ultra` efforts, and pay-per-use APIs require one explicit approval. A missing or stale assets file falls back to defaults (all discovered providers `ok`, policy `normal`) and reports that in one line.
 
 ## Install
 
-Use the current [Node.js LTS](https://nodejs.org/en/about/previous-releases) for the installer, which itself needs Node.js 22.20 or later ([`skills`](https://github.com/vercel-labs/skills), covers Claude Code, Codex, Gemini CLI, Antigravity, Cursor and 70+ others).
+Use the current [Node.js LTS](https://nodejs.org/en/about/previous-releases) for the installer, which itself needs Node.js 22.20 or later ([`skills`](https://github.com/vercel-labs/skills)).
 
 ```bash
-# Project-level (current repo)
-npx skills add osnoser1/agent-orchestration
-# User-level for Claude Code and Codex (recommended; add -a gemini-cli / -a antigravity as needed)
-npx skills add osnoser1/agent-orchestration --skill agent-orchestration -g -a claude-code -a codex -y
-# Update / list / remove
+npx skills add osnoser1/agent-orchestration --skill agent-orchestration -g
 npx skills update agent-orchestration
-npx skills list
 npx skills remove agent-orchestration
 ```
 
-Claude Code plugin marketplace (alternative):
+For project-level installs, omit `-g`.
 
-```
-/plugin marketplace add osnoser1/agent-orchestration
-/plugin install agent-orchestration@agent-orchestration
-/plugin marketplace update agent-orchestration     # update
-/plugin uninstall agent-orchestration@agent-orchestration
-```
+| Harness | User-level path | Native install option | Config-dir override |
+|---|---|---|---|
+| Antigravity | `~/.gemini/antigravity/skills/` (or `~/.agents/skills/`) | Copy `skills/agent-orchestration/` or pass `-a antigravity` | — (project `.agents/skills/`) |
+| Claude Code | `~/.claude/skills/` | `/plugin marketplace add osnoser1/agent-orchestration` then `/plugin install agent-orchestration@agent-orchestration` | `CLAUDE_CONFIG_DIR` (symlink `~/.agents/skills/agent-orchestration` into `$CLAUDE_CONFIG_DIR/skills/`) |
+| Codex | `~/.agents/skills/` | `codex plugin marketplace add osnoser1/agent-orchestration` then `codex plugin add agent-orchestration@agent-orchestration` (also ships `agents/openai.yaml`) | `CODEX_HOME` |
+| Gemini CLI | `~/.gemini/skills/` (or `~/.agents/skills/`) | `gemini skills install` or pass `-a gemini-cli` | — (project `.gemini/skills/`) |
+| T3 Code | Inherits linked provider harness skill paths | Uses each linked provider's skill install | Per-provider (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) |
+| Others via `skills` | Harness-specific path managed by `npx skills` | `npx skills add osnoser1/agent-orchestration --skill agent-orchestration -g -a <harness>` | Per-harness |
 
-Where it lands (user level): Codex reads `~/.agents/skills/` ([Codex skills docs](https://developers.openai.com/codex/skills)); Claude Code gets a symlink in `~/.claude/skills/`. If you run Claude Code with a custom `CLAUDE_CONFIG_DIR`, link it there too: `ln -s ~/.agents/skills/agent-orchestration "$CLAUDE_CONFIG_DIR/skills/"`.
+## Automatic quota tracking
 
-Manual: copy `skills/agent-orchestration/` into your harness's skills directory (e.g. `~/.claude/skills/`, `~/.agents/skills/`).
-
-## Your assets file
+Copy the example assets file (override the path with `$AGENT_ORCHESTRATION_ASSETS`):
 
 ```bash
 mkdir -p ~/.config/agent-orchestration
@@ -54,25 +49,38 @@ curl -fsSL https://raw.githubusercontent.com/osnoser1/agent-orchestration/main/s
   -o ~/.config/agent-orchestration/assets.yaml
 ```
 
-Then just tell the agent in plain language: "Claude reset", "I cancelled X", "Antigravity is almost out", "Codex quota is use-it-or-lose-it". When a child hits a quota error (`You've hit your weekly limit · resets Nov 23, 3am …`, `Resets in 4h29m1s`, `try again at Nov 26th, 2026 8:01 AM`) the skill records the reset time and switches to the next best model, resending the same brief. Override the path with `$AGENT_ORCHESTRATION_ASSETS`.
+During discovery, `orch.py probe` updates `used_percent`, `window`, and `resets_at` automatically, marks providers `low` at `>=85%` (configurable via `preferences.low_threshold`) and `exhausted` at `100%`, and clears expired lockouts back to `ok`:
+
+- **Codex**: scans today + yesterday `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count` events (`payload.rate_limits.{primary,secondary}`), ignoring expired windows (`resets_at <= now`).
+- **Claude**: calls `GET https://api.anthropic.com/api/oauth/usage` per configured directory (`~/.claude` and any `$CLAUDE_CONFIG_DIR` via `probe: {kind: claude, config_dir: ...}`). Credentials stay local and are omitted from logs and `assets.yaml`; missing tokens or HTTP 401 report `unverified`.
+- **Antigravity**: queries `agy -p "/usage" --output-format json` when `agy` is installed; otherwise reports `unverified`.
+
+When a child hits a quota error mid-run, the skill parses the reset time (`orch.py exhaust`), switches to the next candidate, and resends the brief with partial results.
+
+*Manual fallback*: for facts no tool exposes (cancelling a plan, renewal dates, manual resets), tell the agent in plain language (e.g., `"I cancelled Codex, ends Nov 30"` or `"Claude reset"`); see `references/assets-updates.md`.
 
 ## Optional helper
 
 ```bash
+python3 skills/agent-orchestration/scripts/orch.py probe
 python3 skills/agent-orchestration/scripts/orch.py select --complexity hard --risk high \
-  --available antigravity:gemini-4-neon,claude:claude-opus-5-5
+  --available antigravity:gemini-4-neon,claude:claude-opus-5-5,codex:gpt-6-2-sol
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
+python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py check
 ```
 
+Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold (`low` ≥85% or gated) · `4` quota hit (`exhausted` / 100%).
+
 ## Contributing
 
-New or re-rated models: edit `catalog.yaml` (score per effort, `source`, retrieval date, `confidence` if uncertain; mark `rating: unrated` if you have no data) and open a PR. Run `python3 skills/agent-orchestration/scripts/orch.py check`. Never commit personal quota data, emails or private project names.
+To add or re-rate models, edit `skills/agent-orchestration/catalog.yaml` (scores per effort, `source`, retrieval date, `confidence`; `rating: unrated` when data is unavailable), run `python3 skills/agent-orchestration/scripts/orch.py check`, and open a PR. Keep personal quota data, emails, and private project names out of commits.
 
 ## Standards followed
 
-- [Agent Skills specification](https://agentskills.io/specification) (validated with the reference `skills-ref`)
+- [Agent Skills specification](https://agentskills.io/specification) (validated with `skills-ref`)
 - [`skills` installer layout](https://github.com/vercel-labs/skills/blob/main/docs/creating-skills.md) (`skills/<name>/SKILL.md`)
-- [Claude Code plugin marketplace format](https://code.claude.com/docs/en/plugin-marketplaces) (`.claude-plugin/marketplace.json`, validated with `claude plugin validate`)
+- [Claude Code plugin marketplace format](https://code.claude.com/docs/en/plugin-marketplaces) (`.claude-plugin/marketplace.json`)
+- Codex/agent plugin marketplace and UI metadata (`.agents/plugins/marketplace.json`, `skills/agent-orchestration/agents/openai.yaml`)
 
 MIT licensed.

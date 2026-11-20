@@ -1,7 +1,10 @@
-# One-time research for `unrated` models
+# One-time research for unrated models
 
-1. Check `catalog.yaml` and `catalog.local.yaml` again; if the model is `rating: unrated` (or lacks scores for the efforts you need: e.g. only `max` is rated), continue.
-2. Look up the model once: prefer the Artificial Analysis Intelligence Index (artificialanalysis.ai) per reasoning effort; else a vendor eval; else mark `rating: estimated` with a note.
-3. Record per effort `{score, source, date, version}`, plus `cost` class and `family`, in `catalog.yaml` (if you can edit/PR it) or `catalog.local.yaml`. Uncertain → `confidence: low`.
-4. Don't re-research on later tasks. Suggest a PR upstream with the data.
-Cost class guide: cheap = high-volume/mini tiers; normal = default flagship; expensive = top tier, scarce quota; emergency = priciest tier/effort, only if all else exhausted or the user asks.
+Run this once when discovery returns a model missing from `catalog.yaml` + `catalog.local.yaml`, marked `rating: unrated`, or lacking rated scores for needed non-emergency efforts.
+
+1. Re-check `catalog.yaml` and `catalog.local.yaml` (next to `assets.yaml`) to confirm the score is still absent.
+2. Look up intelligence scores per reasoning effort once: prefer Artificial Analysis Intelligence Index (`artificialanalysis.ai/models/<id>`), then vendor evaluations; when no benchmark exists, record `rating: estimated` with a brief note.
+3. Record `scores`, `source` (with version + retrieval date in `index_versions`), `cost`, `family`, and `confidence` (`high` or `low`) in `catalog.yaml` (via PR) or `catalog.local.yaml`.
+4. Reuse the recorded entry on subsequent tasks and suggest an upstream PR with the new data.
+
+Cost classes: `cheap` (high-volume/mini tiers) · `normal` (default flagship) · `expensive` (scarce/verbose top tier) · `emergency` (highest-cost tier, ask once before use).
