@@ -25,7 +25,7 @@ Destructive or irreversible operations, security/auth/secrets, production data o
 ## Effort knee and missing efforts
 Evaluate rated non-emergency efforts in order (`none < low < medium < high < xhigh`), excluding `emergency_efforts` (`max`, `ultra`).
 1. Pick the lowest rated effort whose score meets the tier floor.
-2. **Effort knee**: if stepping down to the immediately lower rated effort drops the score by `<3` points, take that lower effort once.
+2. **Effort knee**: if stepping down to the immediately lower rated effort drops the score by `<3` points and the lower score still meets the tier floor, take that lower effort once.
 3. **Missing efforts**: evaluate only rated efforts during selection. When no rated effort meets the floor and higher non-emergency efforts are missing, skip the model and note those efforts for one-time research (`references/research-unrated.md`).
 
 ## Filter and ranking order

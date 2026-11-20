@@ -283,8 +283,8 @@ def best_effort(m, floor, emerg):
     rated.sort(key=lambda kv: (EFFORT_ORDER.get(kv[0], 99), kv[1]))
     for idx, (e, v) in enumerate(rated):
         if v >= floor:
-            # Effort knee: if stepping down one rated effort drops <3 points, take the lower effort.
-            if idx > 0 and (v - rated[idx - 1][1]) < 3:
+            # Effort knee: if stepping down one rated effort drops <3 points and still meets the floor, take the lower effort.
+            if idx > 0 and (v - rated[idx - 1][1]) < 3 and rated[idx - 1][1] >= floor:
                 return rated[idx - 1]
             return e, v
     return None
