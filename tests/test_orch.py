@@ -1474,5 +1474,136 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             self.assertNotIn("expired lockout cleared", buf2.getvalue())
 
 
+class TestReviewerFallbackOrder(unittest.TestCase):
+    """select always names a reviewer when any non-excluded model exists (references/selection.md)."""
+
+    def _select(self, available, complexity="standard", risk="low", assets_text=None, implementer=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            if assets_text is not None:
+                with open(assets_path, "w", encoding="utf-8") as fh:
+                    fh.write(assets_text)
+            args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity=complexity,
+                risk=risk,
+                available=available,
+                ui=False,
+                fail_on_low=False,
+                implementer=implementer,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(args)
+            return rc, buf.getvalue()
+
+    def test_stage1_different_family_meeting_tier_has_no_degradation_note(self):
+        rc, out = self._select("codex:gpt-6-2-sol,claude:claude-sonnet-5-5")
+        self.assertEqual(rc, 0)
+        self.assertIn("reviewer (T2, different family): claude / claude-sonnet-5-5", out)
+        self.assertNotIn("reviewer degraded", out)
+
+    def test_stage2_different_family_below_tier_picks_best_score_and_notes(self):
+        rc, out = self._select(
+            "codex:gpt-6-2-sol,claude:claude-haiku-5-5,claude:claude-sonnet-5-5",
+            risk="high",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("implementer: codex / gpt-6-2-sol", out)
+        self.assertIn("reviewer (T4, different family, below tier): claude / claude-sonnet-5-5 @ xhigh", out)
+        self.assertIn("[note] reviewer degraded: no different-family candidate meets T4", out)
+
+    def test_stage3_same_family_different_model_prefers_tier_meeting(self):
+        rc, out = self._select("claude:claude-opus-5-5,claude:claude-sonnet-5-5")
+        self.assertEqual(rc, 0)
+        self.assertIn("implementer: claude / claude-sonnet-5-5", out)
+        self.assertIn("reviewer (T2, same family, different model, fresh context): claude / claude-opus-5-5", out)
+        self.assertIn("[note] reviewer degraded: no different-family candidate usable", out)
+        self.assertNotIn("below tier", out)
+
+    def test_stage3_same_family_below_tier_when_nothing_meets(self):
+        rc, out = self._select("claude:claude-opus-5-5,claude:claude-sonnet-5-5", complexity="hard")
+        self.assertEqual(rc, 0)
+        self.assertIn("implementer: claude / claude-opus-5-5 @ high", out)
+        self.assertIn(
+            "reviewer (T3, same family, different model, fresh context, below tier): claude / claude-sonnet-5-5 @ xhigh",
+            out,
+        )
+        self.assertIn("[note] reviewer degraded", out)
+
+    def test_stage4_same_model_fresh_conversation_when_single_model(self):
+        rc, out = self._select("codex:gpt-6-2-sol")
+        self.assertEqual(rc, 0)
+        self.assertIn("reviewer (T2, same model, fresh conversation): codex / gpt-6-2-sol", out)
+        self.assertIn("[note] reviewer degraded: no other model usable", out)
+
+    def test_emergency_pay_per_use_and_exhausted_stay_excluded(self):
+        assets = (
+            "version: 1\n"
+            "providers:\n"
+            "  - id: claude\n"
+            "    status: exhausted\n"
+            "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: api\n"
+            "    pay_per_use: true\n"
+            "  - id: codex\n"
+            "    status: ok\n"
+        )
+        rc, out = self._select(
+            "codex:gpt-6-2-sol,claude:claude-sonnet-5-5,api:gemini-4-neon,codex:gpt-6-2-astra",
+            assets_text=assets,
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("reviewer (T2, same model, fresh conversation): codex / gpt-6-2-sol", out)
+        self.assertNotIn("reviewer (T2, different family", out)
+
+    def test_implementer_flag_ranks_reviewer_against_the_model_that_ran(self):
+        rc, out = self._select(
+            "claude:claude-opus-5-5,codex:gpt-6-2-sol",
+            complexity="hard",
+            implementer="claude-opus-5-5",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("implementer (given): anthropic / claude-opus-5-5", out)
+        self.assertIn("reviewer (T3, different family): codex / gpt-6-2-sol", out)
+
+    def test_implementer_flag_falls_back_when_other_family_exhausted(self):
+        assets = (
+            "version: 1\n"
+            "providers:\n"
+            "  - id: codex\n"
+            "    status: exhausted\n"
+            "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: claude\n"
+            "    status: ok\n"
+        )
+        rc, out = self._select(
+            "claude:claude-opus-5-5,claude:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            assets_text=assets,
+            implementer="claude-opus-5-5",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("reviewer (T2, same family, different model, fresh context): claude / claude-sonnet-5-5", out)
+
+    def test_implementer_flag_reports_no_reviewer_when_everything_is_exhausted(self):
+        assets = (
+            "version: 1\n"
+            "providers:\n"
+            "  - id: claude\n"
+            "    status: exhausted\n"
+            "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+        )
+        rc, out = self._select("claude:claude-opus-5-5", assets_text=assets, implementer="claude-opus-5-5")
+        self.assertEqual(rc, 4)
+        self.assertIn("NO REVIEWER", out)
+
+    def test_implementer_flag_rejects_unknown_model(self):
+        rc, out = self._select("codex:gpt-6-2-sol", implementer="not-a-model")
+        self.assertEqual(rc, 1)
+        self.assertIn("not in catalog", out)
+
+
 if __name__ == "__main__":
     unittest.main()

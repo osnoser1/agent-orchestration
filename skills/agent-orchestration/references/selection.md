@@ -63,7 +63,15 @@ When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-fa
 
 ## Reviewer and review gate
 - **Tier**: equal to the implementer's tier; `high` risk bumps the reviewer one tier up (capped at T4).
-- **Family**: exclude the primary worker's `family`. On a UI/UX task, the primary already carries `ui-ux-review`, so any second reviewer comes from another family without requiring `ui-ux-review`. When only one family is available, use a different model with fresh context and state that in the report.
+- **Chosen at step start**: models a plan names ahead of time are provisional. When each role's step starts (implementer, then reviewer), run `scripts/orch.py probe`, then `select` from the models usable at that moment. At the reviewer step pass `--implementer <model-id>` so the reviewer is ranked against the model that actually implemented.
+- **Fallback order** (never blocking: the first step with a usable model wins, and steps 2-4 are noted in the report):
+  1. Different family meeting the reviewer tier. On a UI/UX task the primary already carries `ui-ux-review`, so this reviewer needs no `ui-ux-review`.
+  2. Different family below the tier: the best score available.
+  3. Same family, different model, fresh context: tier-meeting first, else the best score.
+  4. Same model in a fresh conversation.
+- **Exclusions**: exhausted, emergency, pay-per-use, `policy: avoid`, and unrated models stay out at every step (`SKILL.md` Step 7 gates). `preferences.ui_fallback` and `--prefer-family` govern primaries only, so reviewer selection always proceeds down the order.
+- **`select` output**: always prints a `reviewer` line with a `[note] reviewer degraded` for steps 2-4, and exits `0` when any model qualifies. With `--implementer` and no usable model it prints `NO REVIEWER` and exits `4`, `3`, or `2` like the Filter rules; quota recovery then applies (`references/harnesses.md`).
+- **Mid-review quota exhaustion**: reviewer children follow the same switch-in-place, new-child, scheduled-resume order as implementers (`references/harnesses.md`).
 - **Shared evidence pack**: for multi-angle or cross-family reviews on large diffs, have a cheap model assemble one `path:line` evidence pack first, then hand the same pack and raw diff alone to each reviewer so judgments compare identical facts independently.
 
 ## Tool needs

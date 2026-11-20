@@ -26,9 +26,9 @@ Assign complexity (`trivial|standard|hard|frontier`), risk (`low|medium|high`, a
 *Done when*: complexity, risk, required tier, preferred strength/family, tool needs, and delegation surface are stated before model selection.
 
 ## 3. Choose model + effort
-Apply the filter, tie-break, effort knee, and preferred-model fallback rules (`preferences.ui_fallback`) in `references/selection.md` (or run `python3 scripts/orch.py select`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs or opening a new top-level conversation. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`).
+Apply the filter, tie-break, effort knee, and preferred-model fallback rules (`preferences.ui_fallback`) in `references/selection.md` (or run `python3 scripts/orch.py select`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs or opening a new top-level conversation. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). Models a plan names ahead are provisional: repeat this step for each role when its step starts, after a fresh `probe`.
 
-*Done when*: a primary `provider / model @ effort`, delegation surface, and (for reviewed work) cross-family reviewer are selected with quirks noted and logged.
+*Done when*: a primary `provider / model @ effort`, delegation surface, and (for reviewed work) a reviewer from the fallback order in `references/selection.md` are selected at their step starts with quirks noted and logged.
 
 ## 4. Brief
 Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md` (`GOAL`, `CONTEXT / KNOWN FACTS`, `CONSTRAINTS`, `VERIFICATION`, `REPORT`, `IF BLOCKED`). Name the active phase's skills or commands from the repo's `## Orchestration` section explicitly in the brief (`references/repo-policy.md`). For workers writing agent-facing docs, instruct them to follow the target repo's writing guide or `writing-for-agents` when none exists. Require every report to close with `## Obstacles / not verified`.
@@ -37,7 +37,7 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`) us
 
 ## 5. Quality gates
 1. **Red→green evidence**: require failing repro/test output before the fix and passing output after.
-2. **Cross-family review**: review with a different model family given the diff or a shared **evidence pack** (`references/selection.md`). Send fixes back to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
+2. **Cross-family review**: review with a different model family given the diff or a shared **evidence pack**; when no such model is usable, take the next step of the reviewer fallback order and note it in the report (`references/selection.md`). Send fixes back to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
 3. **Final cheap check**: read the diff and run one key test yourself; send follow-up fixes to the implementing child.
 4. **Land**: follow the repo's `Land:` policy (`references/repo-policy.md`) or documented process (`AGENTS.md`/`CLAUDE.md`).
 5. **Log outcome**: append completion (`ok|failed|quota|stall|rework` + findings count) to the decision ledger (`scripts/orch.py log`, `references/improvement.md`).
@@ -45,7 +45,7 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`) us
 *Done when*: red→green output is checked, review findings are resolved by the implementer, your own diff + key-test check passes, the change lands through the repo's process, and the outcome is logged.
 
 ## 6. Quota and failure handling
-- **Quota error**: parse the reset time (`references/quota-errors.md`), persist `exhausted` to assets (`scripts/orch.py exhaust`, passing `--group` or `--model` when the provider uses quota groups), log `--outcome quota` (`scripts/orch.py log`), and follow the single decision order in `references/harnesses.md` (switch model in place → start a new child with partial results → schedule a resume at `earliest_reset + 2m` when no usable candidate remains). Inform the user in one line.
+- **Quota error** (any child, implementer or reviewer): parse the reset time (`references/quota-errors.md`), persist `exhausted` to assets (`scripts/orch.py exhaust`, passing `--group` or `--model` when the provider uses quota groups), log `--outcome quota` (`scripts/orch.py log`), and follow the single decision order in `references/harnesses.md` (switch model in place → start a new child with partial results → schedule a resume at `earliest_reset + 2m` when no usable candidate remains). Inform the user in one line.
 - **Harness quirks or stalls**: follow the harness row in `references/harnesses.md` and `quirks` in `catalog.yaml`; log `stall` outcomes to the ledger.
 - **Manual fallback**: when the user reports facts probes cannot see (plan cancelled, renewal date, manual reset), update assets per `references/assets-updates.md`.
 
@@ -57,7 +57,7 @@ Execute routine orchestration choices (including in-place model switches and sam
 *Done when*: routine decisions are reported in-flight and every listed high-impact action waits for one explicit approval.
 
 ## References (load on demand)
-- `references/selection.md` — tier floors, risk triggers, effort knee, tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), follow-up kinds and due rule, review gate.
+- `references/selection.md` — tier floors, risk triggers, effort knee, tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), follow-up kinds and due rule, reviewer timing and fallback order, review gate.
 - `references/repo-policy.md` — target-repo `## Orchestration` contract, precedence, and explicit brief forwarding.
 - `references/harnesses.md` — delegation surface (`subagent` vs `conversation`), in-place model switching and scheduled resume on quota exhaustion, and alphabetical harness matrix.
 - `references/brief-template.md` — delegation brief layout and mandatory report sections.
