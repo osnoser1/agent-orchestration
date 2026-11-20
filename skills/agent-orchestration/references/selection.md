@@ -47,11 +47,15 @@ When `assets.yaml` is missing, default every discovered provider to `status: ok`
    6. **Lower effort** (`none` < `low` < `medium` < `high` < `xhigh`), then lower score.
 
 ## Preferred-model fallback (`preferences.ui_fallback`)
-Applies whenever `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier (default `proceed`; override in `assets.yaml` under `preferences.ui_fallback` or via `--fallback`):
+When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier, classify the unmet preference from this run's discovery (`--available`):
 
-- **`proceed`** (default): pick the best available candidate meeting the tier, mark the work **provisional**, and append a follow-up entry to `assets.yaml` (`followups: [{kind, ref, needs, after}]` with the earliest reset of the exhausted preferred provider/group). During discovery (`orch.py probe`, `orch.py select`, or `orch.py followups --due`), once a provider serving `needs` becomes usable again, run the deferred re-review and clear it with `orch.py followups --done <ref>`.
-- **`defer`**: stop before dispatch (exit `3`), report the earliest preferred reset, and recommend waiting for non-urgent work.
-- **`ask`**: stop before dispatch (exit `3`) and ask the user once whether to proceed provisionally (queuing a follow-up review) or wait for the reset.
+1. **`exhausted`** (a tier-meeting model of the preferred family is offered in this harness, and its provider or quota group is exhausted): apply `preferences.ui_fallback` (default `proceed`; override via `--fallback`) using the earliest reset among exhausted offered candidates:
+   - **`proceed`** (default): pick the best available candidate meeting the tier, mark the work **provisional**, and append `followups: [{kind, ref, needs, after}]` to `assets.yaml`.
+   - **`defer`**: stop before dispatch (exit `3`), report the earliest preferred reset, and recommend waiting for non-urgent work.
+   - **`ask`**: stop before dispatch (exit `3`) and ask the user once whether to proceed provisionally (queuing a follow-up review) or wait for the reset.
+2. **`not offered here`** (absent from this harness's discovery, regardless of accounts in `assets.yaml`): treat the preference as satisfied by the best available model in this harness (preferring a matching `strengths` entry, else best by tier), print one informational note, and proceed immediately (skip follow-ups, reset times, and `ui_fallback` gates).
+
+**Follow-up due rule**: `orch.py select`, `orch.py followups --due`, and `orch.py probe` report a recorded follow-up as **due** only when the current run's discovery (`--available`) includes a usable model matching `needs`. When `--available` is omitted, `probe` and `followups --due` report ready follow-ups as `pending: needs <need>` rather than `due`. Clear completed follow-ups with `orch.py followups --done <ref>`.
 
 ## Reviewer and review gate
 - **Tier**: equal to the implementer's tier; `high` risk bumps the reviewer one tier up (capped at T4).

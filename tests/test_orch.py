@@ -639,27 +639,64 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertNotIn("PR #99", buf_before.getvalue())
 
-            # After claude resets (2026-11-23T08:00:00+00:00): probe reports it due
+            # After claude resets (2026-11-23T08:00:00+00:00) without discovery:
+            # probe and followups --due report pending (not due) because no --available was passed.
             probe_after = mock.Mock(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-23T09:00:00Z",
                 provider=None,
                 low_threshold=None,
+                available=None,
             )
             buf_probe = io.StringIO()
             with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf_probe):
                 orch.probe(probe_after)
             out_probe = buf_probe.getvalue()
-            self.assertIn("followup due", out_probe)
+            self.assertIn("pending: needs ui-ux-review", out_probe)
+            self.assertNotIn("followup due", out_probe)
             self.assertIn("PR #99", out_probe)
             self.assertIn("claude", out_probe)
 
-            # followups --due also reports it
-            fu_after = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-23T09:00:00Z"})
+            fu_after_nodisc = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-23T09:00:00Z", "available": None})
+            buf_after_nodisc = io.StringIO()
+            with contextlib.redirect_stdout(buf_after_nodisc):
+                orch.followups_cmd(fu_after_nodisc)
+            self.assertIn("pending: needs ui-ux-review", buf_after_nodisc.getvalue())
+            self.assertNotIn("followup due", buf_after_nodisc.getvalue())
+            self.assertIn("PR #99", buf_after_nodisc.getvalue())
+
+            # With discovery excluding Claude: not due in probe or followups --due
+            probe_other = mock.Mock(**{**probe_after.__dict__, "available": "antigravity:gemini-4-neon"})
+            buf_probe_other = io.StringIO()
+            with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf_probe_other):
+                orch.probe(probe_other)
+            self.assertNotIn("followup due", buf_probe_other.getvalue())
+
+            fu_other = mock.Mock(**{**fu_after_nodisc.__dict__, "available": "antigravity:gemini-4-neon"})
+            buf_fu_other = io.StringIO()
+            with contextlib.redirect_stdout(buf_fu_other):
+                orch.followups_cmd(fu_other)
+            self.assertNotIn("followup due", buf_fu_other.getvalue())
+
+            # With discovery including Claude: both probe and followups --due report it due
+            probe_with_claude = mock.Mock(
+                **{**probe_after.__dict__, "available": "claude:claude-sonnet-5-5,antigravity:gemini-4-neon"}
+            )
+            buf_probe_claude = io.StringIO()
+            with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf_probe_claude):
+                orch.probe(probe_with_claude)
+            self.assertIn("followup due", buf_probe_claude.getvalue())
+            self.assertIn("PR #99", buf_probe_claude.getvalue())
+            self.assertIn("claude", buf_probe_claude.getvalue())
+
+            fu_after = mock.Mock(
+                **{**fu_after_nodisc.__dict__, "available": "claude:claude-sonnet-5-5,antigravity:gemini-4-neon"}
+            )
             buf_after = io.StringIO()
             with contextlib.redirect_stdout(buf_after):
                 orch.followups_cmd(fu_after)
+            self.assertIn("followup due", buf_after.getvalue())
             self.assertIn("PR #99", buf_after.getvalue())
 
             # Mark done -> removed from assets.yaml
@@ -667,6 +704,205 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.followups_cmd(fu_done), 0)
             self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+    def test_not_offered_repro_proceeds_with_note_no_reset_no_followup_no_due(self):
+        example_assets = os.path.join(REPO_ROOT, "skills", "agent-orchestration", "assets", "assets.example.yaml")
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "a.yaml")
+            with open(example_assets, encoding="utf-8") as src, open(assets_path, "w", encoding="utf-8") as dst:
+                dst.write(src.read())
+
+            for mode in (None, "proceed", "defer", "ask"):
+                sel_args = mock.Mock(
+                    assets=assets_path,
+                    catalog=CATALOG_PATH,
+                    now="2026-11-20T21:00:00Z",
+                    complexity="standard",
+                    risk="medium",
+                    available="codex:gpt-6-2-sol,antigravity:gemini-4-neon",
+                    ui=True,
+                    fail_on_low=False,
+                    prefer_family=None,
+                    fallback=mode,
+                    ref="demo",
+                )
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = orch.select(sel_args)
+                self.assertEqual(rc, 0, msg=f"mode={mode} should never block when preferred family is not offered here")
+                out = buf.getvalue()
+                self.assertIn("[note]", out)
+                self.assertIn("not offered", out)
+                self.assertNotIn("[provisional]", out)
+                self.assertNotIn("DEFER", out)
+                self.assertNotIn("ASK", out)
+                self.assertNotIn("2026-12-02", out)
+                self.assertNotIn("earliest reset", out)
+                self.assertNotIn("followup recorded", out)
+                self.assertNotIn("followup due", out)
+                self.assertIn("implementer: codex / gpt-6-2-sol @ low", out)
+                self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+    def test_not_offered_without_assets_account_or_with_prefer_family_never_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "codex-only.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  ui_fallback: defer\n"
+                    "providers:\n"
+                    "  - id: codex\n"
+                    "    policy: normal\n"
+                    "    status: ok\n"
+                    "  - id: anthropic-api\n"
+                    "    policy: avoid\n"
+                    "    pay_per_use: true\n"
+                    "    status: ok\n"
+                )
+
+            for mode in (None, "proceed", "defer", "ask"):
+                sel_args = mock.Mock(
+                    assets=assets_path,
+                    catalog=CATALOG_PATH,
+                    now="2026-11-20T21:00:00Z",
+                    complexity="standard",
+                    risk="medium",
+                    available="codex:gpt-6-2-sol",
+                    ui=True,
+                    fail_on_low=False,
+                    prefer_family=None,
+                    fallback=mode,
+                    ref="codex-ui",
+                )
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = orch.select(sel_args)
+                self.assertEqual(rc, 0, msg=f"mode={mode} should never block")
+                out = buf.getvalue()
+                self.assertIn("[note]", out)
+                self.assertIn("not offered", out)
+                self.assertNotIn("[provisional]", out)
+                self.assertNotIn("DEFER", out)
+                self.assertNotIn("ASK", out)
+                self.assertNotIn("followup recorded", out)
+                self.assertIn("implementer: codex / gpt-6-2-sol @ low", out)
+                self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+            # Repo --prefer-family absent from this harness also proceeds with a note and no follow-up
+            sel_pf = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="codex:gpt-6-2-sol",
+                ui=False,
+                fail_on_low=False,
+                prefer_family="anthropic",
+                fallback="defer",
+                ref="codex-pf",
+            )
+            buf_pf = io.StringIO()
+            with contextlib.redirect_stdout(buf_pf):
+                rc_pf = orch.select(sel_pf)
+            self.assertEqual(rc_pf, 0)
+            self.assertIn("[note]", buf_pf.getvalue())
+            self.assertIn("anthropic", buf_pf.getvalue())
+            self.assertNotIn("[provisional]", buf_pf.getvalue())
+            self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+            # When a local model carries matching strengths (e.g. ui-ux-review), it satisfies --ui directly
+            local_cat = os.path.join(tmp, "catalog.local.yaml")
+            with open(local_cat, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "models:\n"
+                    "  - id: gpt-6-1-terra\n"
+                    "    name: GPT-6.1 Terra\n"
+                    "    family: openai\n"
+                    "    cost: normal\n"
+                    "    rating: rated\n"
+                    "    scores: {high: 42.43}\n"
+                    "    source: aa-v5.0.1\n"
+                    "    strengths: [general-coding, ui-ux-review]\n"
+                )
+            sel_strength = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="codex:gpt-6-2-sol,codex:gpt-6-1-terra",
+                ui=True,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback="defer",
+                ref="codex-strength",
+            )
+            buf_str = io.StringIO()
+            with contextlib.redirect_stdout(buf_str):
+                rc_str = orch.select(sel_strength)
+            self.assertEqual(rc_str, 0)
+            self.assertIn("implementer: codex / gpt-6-1-terra @ high", buf_str.getvalue())
+            self.assertNotIn("not offered", buf_str.getvalue())
+            self.assertNotIn("[provisional]", buf_str.getvalue())
+
+    def test_exhausted_reset_time_ignores_unoffered_providers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_anthropic_exhausted_assets(assets_path, ui_fallback="proceed")
+            # Offer ONLY antigravity:claude-sonnet-5-5 (resets 2026-11-27), NOT claude (resets 2026-11-23).
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="antigravity:claude-sonnet-5-5,antigravity:gemini-4-neon",
+                ui=True,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref="PR #101",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("2026-11-27T15:59:36+00:00", out)
+            self.assertNotIn("2026-11-23T08:00:00+00:00", out)
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(fus[0]["after"], "2026-11-27T15:59:36+00:00")
+
+            # Recorded follow-up is NOT due in a harness that does not offer Claude even after reset
+            sel_other = mock.Mock(
+                **{
+                    **sel_args.__dict__,
+                    "now": "2026-11-28T00:00:00Z",
+                    "available": "antigravity:gemini-4-neon",
+                    "ui": False,
+                }
+            )
+            buf_other = io.StringIO()
+            with contextlib.redirect_stdout(buf_other):
+                self.assertEqual(orch.select(sel_other), 0)
+            self.assertNotIn("followup due", buf_other.getvalue())
+
+            # It IS due once discovery includes a usable Claude model after reset
+            sel_due = mock.Mock(
+                **{
+                    **sel_args.__dict__,
+                    "now": "2026-11-28T00:00:00Z",
+                    "available": "antigravity:claude-sonnet-5-5,antigravity:gemini-4-neon",
+                    "ui": False,
+                }
+            )
+            buf_due = io.StringIO()
+            with contextlib.redirect_stdout(buf_due):
+                self.assertEqual(orch.select(sel_due), 0)
+            self.assertIn("followup due", buf_due.getvalue())
+            self.assertIn("PR #101", buf_due.getvalue())
 
 
 class TestDecisionLedger(unittest.TestCase):

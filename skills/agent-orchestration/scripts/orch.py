@@ -2,7 +2,7 @@
 """Optional, dependency-free helper for the agent-orchestration skill (Python 3.9+).
 
   orch.py check     [--catalog F] [--assets F] [--now ISO] [--lockfile F]
-  orch.py probe     [--provider P] [--low-threshold N] [--assets F] [--now ISO]
+  orch.py probe     [--provider P] [--low-threshold N] [--available ...] [--assets F] [--now ISO]
   orch.py select    --complexity trivial|standard|hard|frontier --risk low|medium|high
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
                     [--fallback proceed|defer|ask] [--ref TEXT] [--fail-on-low]
@@ -402,6 +402,8 @@ def _model_matches_need(m, need):
 
 
 def _provider_inferred_family(p):
+    if p.get("family"):
+        return str(p["family"]).strip().lower()
     probe_cfg = p.get("probe") if isinstance(p.get("probe"), dict) else {}
     kind = str(probe_cfg.get("kind") or "").lower()
     pid = str(p.get("id") or "").lower()
@@ -414,8 +416,8 @@ def _provider_inferred_family(p):
     return None
 
 
-def find_usable_for_need(catalog, assets, now, need, available=None):
-    if not need:
+def find_usable_in_available(catalog, assets, now, need, available):
+    if not need or not available:
         return []
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
     usable = []
@@ -426,25 +428,39 @@ def find_usable_for_need(catalog, assets, now, need, available=None):
             seen.add(label)
             usable.append(label)
 
-    if available:
-        for pair in available:
-            prov, _, mid = pair.partition(":")
-            m = cat.get(norm(mid))
-            if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
+    for pair in available:
+        prov, _, mid = pair.partition(":")
+        m = cat.get(norm(mid))
+        if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
+            continue
+        if not _model_matches_need(m, need):
+            continue
+        p, prov_st, _ = provider_state(assets, prov, now)
+        if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st == "exhausted":
+            continue
+        g = model_group(p, mid, m)
+        if g is not None:
+            gst, _ = group_state(g, now)
+            if gst == "exhausted":
                 continue
-            if not _model_matches_need(m, need):
-                continue
-            p, prov_st, _ = provider_state(assets, prov, now)
-            if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st == "exhausted":
-                continue
-            g = model_group(p, mid, m)
-            if g is not None:
-                gst, _ = group_state(g, now)
-                if gst == "exhausted":
-                    continue
-                _add(f"{prov} ({g.get('name') or 'group'})")
-            else:
-                _add(prov)
+            _add(f"{prov} ({g.get('name') or 'group'})")
+        else:
+            _add(prov)
+
+    return usable
+
+
+def find_usable_in_assets(catalog, assets, now, need):
+    if not need:
+        return []
+    cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    usable = []
+    seen = set()
+
+    def _add(label):
+        if label not in seen:
+            seen.add(label)
+            usable.append(label)
 
     for p in (assets or {}).get("providers") or []:
         if not isinstance(p, dict) or not p.get("id"):
@@ -485,67 +501,116 @@ def find_usable_for_need(catalog, assets, now, need, available=None):
 
 
 def due_followups(catalog, assets, now, available=None):
+    if not available:
+        return []
     due = []
     for fu in (assets or {}).get("followups") or []:
         if not isinstance(fu, dict):
             continue
-        needs = fu.get("needs")
-        usable = find_usable_for_need(catalog, assets, now, needs, available=available)
+        usable = find_usable_in_available(catalog, assets, now, fu.get("needs"), available)
         if usable:
             due.append((fu, usable))
     return due
 
 
-def earliest_preferred_reset(catalog, assets, available, need, now):
-    if not need:
-        return None
+def pending_ready_followups(catalog, assets, now):
+    ready = []
+    for fu in (assets or {}).get("followups") or []:
+        if not isinstance(fu, dict):
+            continue
+        usable = find_usable_in_assets(catalog, assets, now, fu.get("needs"))
+        if usable:
+            ready.append((fu, usable))
+    return ready
+
+
+def print_followups_status(catalog, assets, now, available=None, due_only=True):
+    all_fus = [x for x in (assets or {}).get("followups") or [] if isinstance(x, dict)]
+    if available:
+        due = due_followups(catalog, assets, now, available=available)
+        due_ids = {id(fu) for fu, _ in due}
+        for fu, usable in due:
+            print(
+                f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+                f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+            )
+        if not due_only:
+            for fu in all_fus:
+                if id(fu) not in due_ids:
+                    after = fu.get("after") or "next reset"
+                    print(
+                        f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
+                        f"{fu.get('ref', '')} (after {after})"
+                    )
+            if not all_fus:
+                print("no followups")
+        return
+
+    ready = pending_ready_followups(catalog, assets, now)
+    ready_map = {id(fu): usable for fu, usable in ready}
+    if due_only:
+        for fu, usable in ready:
+            print(
+                f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
+                f"{fu.get('ref', '')} (usable in assets via {', '.join(usable)}; pass --available to check this harness)"
+            )
+        return
+
+    for fu in all_fus:
+        usable = ready_map.get(id(fu))
+        if usable:
+            print(
+                f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
+                f"{fu.get('ref', '')} (usable in assets via {', '.join(usable)}; pass --available to check this harness)"
+            )
+        else:
+            after = fu.get("after") or "next reset"
+            print(
+                f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
+                f"{fu.get('ref', '')} (after {after})"
+            )
+    if not all_fus:
+        print("no followups")
+
+
+def classify_unmet_preference(catalog, assets, available, need, floor, now, fail_on_low=False):
+    if not need or not available:
+        return "not-offered", None
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    emerg = set((catalog or {}).get("emergency_efforts", ["max", "ultra"]))
+    offered_exhausted = False
     times = []
 
     def _collect(dt):
         if dt and dt > now:
             times.append(dt)
 
-    for pair in available or []:
+    for pair in available:
         prov, _, mid = pair.partition(":")
         m = cat.get(norm(mid))
-        if not m or not _model_matches_need(m, need):
+        if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
+            continue
+        if not _model_matches_need(m, need):
+            continue
+        if best_effort(m, floor, emerg) is None:
             continue
         p, prov_st, _ = provider_state(assets, prov, now)
         if p.get("pay_per_use") or p.get("policy") == "avoid":
             continue
         g = model_group(p, mid, m)
-        if g is not None and group_state(g, now)[0] == "exhausted":
-            _collect(parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now))
-        elif prov_st == "exhausted":
-            _collect(parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now))
-
-    for p in (assets or {}).get("providers") or []:
-        if not isinstance(p, dict) or not p.get("id"):
-            continue
-        if p.get("pay_per_use") or p.get("policy") == "avoid":
-            continue
-        pid = p["id"]
-        _, prov_st, _ = provider_state(assets, pid, now)
-        groups = p.get("groups")
-        if isinstance(groups, list) and groups:
-            for g in groups:
-                if not isinstance(g, dict) or group_state(g, now)[0] != "exhausted":
-                    continue
-                if any(
-                    (m := cat.get(norm(mid))) and _model_matches_need(m, need)
-                    for mid in (g.get("models") or [])
-                ):
-                    _collect(parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now))
-        elif prov_st == "exhausted":
-            fam = _provider_inferred_family(p)
-            if fam and any(
-                str(m.get("family") or "").lower() == fam and _model_matches_need(m, need)
-                for m in (catalog or {}).get("models") or []
-            ):
+        st = group_state(g, now)[0] if g is not None else prov_st
+        if st == "exhausted" or (fail_on_low and st == "low"):
+            offered_exhausted = True
+            if g is not None and group_state(g, now)[0] == "exhausted":
+                _collect(parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now))
+            elif prov_st == "exhausted":
                 _collect(parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now))
+            else:
+                _collect(candidate_next_reset(p, g, now) if g is not None else provider_next_reset(p, now))
 
-    return min(times).isoformat(timespec="seconds") if times else None
+    if offered_exhausted:
+        return "exhausted", (min(times).isoformat(timespec="seconds") if times else None)
+    return "not-offered", None
 
 
 def candidates(
@@ -638,7 +703,7 @@ def candidates(
         nxt = candidate_next_reset(p, g, now)
         reset_ts = nxt.timestamp() if nxt else float("inf")
         ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
-        fam_rank = (0 if str(m.get("family") or "").lower() == pref_fam else 1) if pref_fam else 0
+        fam_rank = (0 if _model_matches_need(m, pref_fam) else 1) if pref_fam else 0
         key = (
             ui_rank,
             fam_rank,
@@ -717,48 +782,56 @@ def select(a):
     if a.ui and "ui-ux-review" not in (impl["model"].get("strengths") or []):
         pref_need = "ui-ux-review"
         pref_kind = "ui-review"
-    elif prefer_family and str(impl["model"].get("family") or "").lower() != prefer_family.strip().lower():
+    elif prefer_family and not _model_matches_need(impl["model"], prefer_family):
         pref_need = prefer_family.strip().lower()
         pref_kind = "preferred-review"
 
     if pref_need:
-        earliest = earliest_preferred_reset(catalog, assets, avail, pref_need, now)
-        reset_txt = earliest or "unknown"
-        if fallback_mode == "defer":
-            print(
-                f"DEFER: preferred {pref_need} unavailable (earliest reset: {reset_txt}). "
-                "Recommend waiting for reset (non-urgent work)."
-            )
-            print(f"  fallback if urgent: {fmt(impl)}")
-            for n in notes:
-                print("  note:", n)
-            return 3
-        if fallback_mode == "ask":
-            print(
-                f"ASK: preferred {pref_need} unavailable (earliest reset: {reset_txt}). "
-                f"Ask the user once: proceed provisionally with {fmt(impl)} (and queue follow-up review) or wait for reset?"
-            )
-            for n in notes:
-                print("  note:", n)
-            return 3
-        # proceed (default)
-        print(
-            f"[provisional] preferred {pref_need} unavailable (earliest reset: {reset_txt}); "
-            "proceeding with fallback model — follow-up review required"
+        pref_state, earliest = classify_unmet_preference(
+            catalog, assets, avail, pref_need, floors[tier], now, fail_on_low=bool(a.fail_on_low)
         )
-        if assets_exists or ref_arg:
-            fu_entry = {
-                "kind": pref_kind,
-                "ref": ref_arg or "current-task",
-                "needs": pref_need,
-            }
-            if earliest:
-                fu_entry["after"] = earliest
-            record_followup(ap, fu_entry, now=now)
-            print(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
-            assets = load_file(ap)
+        if pref_state == "not-offered":
+            print(
+                f"[note] preferred {pref_need} not offered by this harness; "
+                f"using best available model ({fmt(impl)})"
+            )
         else:
-            print("[note] no assets file; skipped recording follow-up")
+            reset_txt = earliest or "unknown"
+            if fallback_mode == "defer":
+                print(
+                    f"DEFER: preferred {pref_need} exhausted (earliest reset: {reset_txt}). "
+                    "Recommend waiting for reset (non-urgent work)."
+                )
+                print(f"  fallback if urgent: {fmt(impl)}")
+                for n in notes:
+                    print("  note:", n)
+                return 3
+            if fallback_mode == "ask":
+                print(
+                    f"ASK: preferred {pref_need} exhausted (earliest reset: {reset_txt}). "
+                    f"Ask the user once: proceed provisionally with {fmt(impl)} (and queue follow-up review) or wait for reset?"
+                )
+                for n in notes:
+                    print("  note:", n)
+                return 3
+            # proceed (default)
+            print(
+                f"[provisional] preferred {pref_need} exhausted (earliest reset: {reset_txt}); "
+                "proceeding with fallback model — follow-up review required"
+            )
+            if assets_exists or ref_arg:
+                fu_entry = {
+                    "kind": pref_kind,
+                    "ref": ref_arg or "current-task",
+                    "needs": pref_need,
+                }
+                if earliest:
+                    fu_entry["after"] = earliest
+                record_followup(ap, fu_entry, now=now)
+                print(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
+                assets = load_file(ap)
+            else:
+                print("[note] no assets file; skipped recording follow-up")
 
     print(f"implementer: {fmt(impl)}")
 
@@ -1605,11 +1678,9 @@ def probe(a):
         print(f"{pid}: {st} ({pct}% of {win}{reset_msg})")
 
     updated_assets = load_file(ap) or {}
-    for fu, usable in due_followups(catalog, updated_assets, now):
-        print(
-            f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-            f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
-        )
+    avail_str = _opt_str(a, "available")
+    avail = [x.strip() for x in avail_str.split(",") if x.strip()] if avail_str else None
+    print_followups_status(catalog, updated_assets, now, available=avail, due_only=True)
 
     return worst
 
@@ -1651,25 +1722,7 @@ def followups_cmd(a):
         return 0
 
     assets = load_file(ap) if os.path.exists(ap) else {}
-    all_fus = [x for x in (assets.get("followups") or []) if isinstance(x, dict)]
-    due = due_followups(catalog, assets, now, available=avail)
-    due_ids = {id(fu) for fu, _ in due}
-
-    for fu, usable in due:
-        print(
-            f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-            f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
-        )
-    if not _opt_bool(a, "due"):
-        for fu in all_fus:
-            if id(fu) not in due_ids:
-                after = fu.get("after") or "next reset"
-                print(
-                    f"followup pending: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-                    f"(needs {fu.get('needs')}; after {after})"
-                )
-        if not all_fus:
-            print("no followups")
+    print_followups_status(catalog, assets, now, available=avail, due_only=_opt_bool(a, "due"))
     return 0
 
 
@@ -1851,6 +1904,7 @@ def main():
         if n == "probe":
             p.add_argument("--provider")
             p.add_argument("--low-threshold", type=float)
+            p.add_argument("--available")
         if n == "select":
             p.add_argument("--complexity", required=True, choices=list(TIER))
             p.add_argument("--risk", required=True, choices=["low", "medium", "high"])
