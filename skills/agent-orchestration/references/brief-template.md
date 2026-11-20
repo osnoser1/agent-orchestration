@@ -5,9 +5,9 @@ One outcome per child. Supply known facts directly so children skip re-discovery
 ```
 GOAL: <one-sentence outcome>
 CONTEXT / KNOWN FACTS: <exact paths, findings, decisions already made>
-CONSTRAINTS: <read target repo AGENTS.md/CLAUDE.md first; scope boundaries; if writing agent-facing docs, follow target repo's writing guide or writing-for-agents when none exists>
+CONSTRAINTS: <read target repo AGENTS.md/CLAUDE.md first; name this phase's repo skill/command from `## Orchestration` explicitly when present (e.g. "use the create-pr skill", "land with bun run land <pr>"); scope boundaries; if writing agent-facing docs, follow target repo's writing guide or writing-for-agents when none exists>
 VERIFICATION: <red→green: failing test/repro before the fix, passing after; exact commands + expected evidence>
-REPORT (short): what changed · exact command + output evidence · commit/PR · closing `## Obstacles / not verified` section
+REPORT (short): what changed · exact command + output evidence · commit/PR (link back to originating conversation if launched as a new top-level conversation) · closing `## Obstacles / not verified` section
 IF BLOCKED: report the blocker and stop before destructive or irreversible actions.
 ```
 

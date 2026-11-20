@@ -412,5 +412,445 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertIn("claude:claude-opus-5-5: provider exhausted", out)
 
 
+class TestUiAndPreferredFallback(unittest.TestCase):
+    def _write_anthropic_exhausted_assets(self, path, ui_fallback=None):
+        pref_line = f"  ui_fallback: {ui_fallback}\n" if ui_fallback else ""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "# user comment preserved\n"
+                "version: 1\n"
+                "updated: 2026-11-20T09:00:00+00:00\n"
+                "preferences:\n"
+                "  pay_per_use: never\n"
+                f"{pref_line}"
+                "providers:\n"
+                "  - id: claude\n"
+                "    policy: preserve\n"
+                "    status: exhausted\n"
+                "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: antigravity\n"
+                "    policy: spend-first\n"
+                "    status: ok\n"
+                "    groups:\n"
+                '      - name: "Gemini Models"\n'
+                "        models: [gemini-4-neon, gemini-4-hydrogen]\n"
+                "        status: ok\n"
+                "        used_percent: 30\n"
+                "        window: 7d\n"
+                "        resets_at: 2026-11-26T15:58:04+00:00\n"
+                '      - name: "Claude and GPT models"\n'
+                "        models: [claude-opus-5-5, claude-sonnet-5-5]\n"
+                "        status: exhausted\n"
+                "        used_percent: 100\n"
+                "        window: 7d\n"
+                "        resets_at: 2026-11-27T15:59:36+00:00\n"
+                "  - id: codex\n"
+                "    policy: normal\n"
+                "    status: ok\n"
+            )
+
+    def test_ui_fallback_proceed_marks_provisional_and_records_followup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_anthropic_exhausted_assets(assets_path)  # default is proceed
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="claude:claude-sonnet-5-5,antigravity:claude-sonnet-5-5,antigravity:gemini-4-neon,codex:gpt-6-2-sol",
+                ui=True,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref="PR #42",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("[provisional]", out)
+            self.assertIn("2026-11-23T08:00:00+00:00", out)
+            self.assertIn("implementer: antigravity / gemini-4-neon @ low", out)
+
+            loaded = orch.load_file(assets_path)
+            followups = loaded.get("followups") or []
+            self.assertEqual(len(followups), 1)
+            self.assertEqual(
+                followups[0],
+                {
+                    "kind": "ui-review",
+                    "ref": "PR #42",
+                    "needs": "ui-ux-review",
+                    "after": "2026-11-23T08:00:00+00:00",
+                },
+            )
+            # Comment preserved
+            with open(assets_path, encoding="utf-8") as fh:
+                self.assertIn("# user comment preserved", fh.read())
+
+            # Re-running with same ref does not duplicate
+            with contextlib.redirect_stdout(io.StringIO()):
+                orch.select(sel_args)
+            self.assertEqual(len(orch.load_file(assets_path).get("followups") or []), 1)
+
+    def test_ui_fallback_defer_reports_earliest_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_anthropic_exhausted_assets(assets_path, ui_fallback="defer")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="claude:claude-sonnet-5-5,antigravity:claude-sonnet-5-5,antigravity:gemini-4-neon",
+                ui=True,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref="PR #43",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 3)
+            out = buf.getvalue()
+            self.assertIn("DEFER", out)
+            self.assertIn("2026-11-23T08:00:00+00:00", out)
+            self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+    def test_ui_fallback_ask_prompts_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_anthropic_exhausted_assets(assets_path, ui_fallback="ask")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="claude:claude-sonnet-5-5,antigravity:gemini-4-neon",
+                ui=True,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref="PR #44",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 3)
+            out = buf.getvalue()
+            self.assertIn("ASK", out)
+            self.assertIn("2026-11-23T08:00:00+00:00", out)
+            self.assertIn("antigravity / gemini-4-neon @ low", out)
+            self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+    def test_generic_prefer_family_applies_same_fallback_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  ui_fallback: defer\n"
+                    "providers:\n"
+                    "  - id: codex\n"
+                    "    policy: normal\n"
+                    "    status: exhausted\n"
+                    "    exhausted_until: 2026-11-22T12:00:00+00:00\n"
+                    "  - id: antigravity\n"
+                    "    policy: normal\n"
+                    "    status: ok\n"
+                )
+            base = dict(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="codex:gpt-6-2-sol,antigravity:gemini-4-neon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family="openai",
+                fallback=None,
+                ref="branch-api",
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(mock.Mock(**base))
+            self.assertEqual(rc, 3)
+            self.assertIn("DEFER", buf.getvalue())
+            self.assertIn("openai", buf.getvalue())
+            self.assertIn("2026-11-22T12:00:00+00:00", buf.getvalue())
+
+            # Override to proceed -> provisional + follow-up with needs: openai
+            buf_p = io.StringIO()
+            with contextlib.redirect_stdout(buf_p):
+                rc_p = orch.select(mock.Mock(**{**base, "fallback": "proceed"}))
+            self.assertEqual(rc_p, 0)
+            self.assertIn("[provisional]", buf_p.getvalue())
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(fus[0]["needs"], "openai")
+            self.assertEqual(fus[0]["ref"], "branch-api")
+
+    def test_followup_reported_due_after_reset_and_cleared_with_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_anthropic_exhausted_assets(assets_path, ui_fallback="proceed")
+
+            # Record follow-up while Anthropic is exhausted
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="standard",
+                risk="low",
+                available="claude:claude-sonnet-5-5,antigravity:gemini-4-neon",
+                ui=True,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                ref="PR #99",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.select(sel_args), 0)
+
+            # Before reset: followups --due reports none due
+            fu_before = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-21T00:00:00Z",
+                available=None,
+                due=True,
+                add=False,
+                done=None,
+            )
+            buf_before = io.StringIO()
+            with contextlib.redirect_stdout(buf_before):
+                rc = orch.followups_cmd(fu_before)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("PR #99", buf_before.getvalue())
+
+            # After claude resets (2026-11-23T08:00:00+00:00): probe reports it due
+            probe_after = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-23T09:00:00Z",
+                provider=None,
+                low_threshold=None,
+            )
+            buf_probe = io.StringIO()
+            with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf_probe):
+                orch.probe(probe_after)
+            out_probe = buf_probe.getvalue()
+            self.assertIn("followup due", out_probe)
+            self.assertIn("PR #99", out_probe)
+            self.assertIn("claude", out_probe)
+
+            # followups --due also reports it
+            fu_after = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-23T09:00:00Z"})
+            buf_after = io.StringIO()
+            with contextlib.redirect_stdout(buf_after):
+                orch.followups_cmd(fu_after)
+            self.assertIn("PR #99", buf_after.getvalue())
+
+            # Mark done -> removed from assets.yaml
+            fu_done = mock.Mock(**{**fu_after.__dict__, "done": "PR #99", "due": False})
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.followups_cmd(fu_done), 0)
+            self.assertFalse(orch.load_file(assets_path).get("followups"))
+
+
+class TestDecisionLedger(unittest.TestCase):
+    def test_log_appends_jsonl_next_to_assets_and_strips_repo_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            ledger_path = os.path.join(tmp, "ledger.jsonl")
+
+            sel_log = mock.Mock(
+                assets=assets_path,
+                ledger=None,
+                now="2026-11-20T21:00:00Z",
+                event="select",
+                complexity="hard",
+                risk="high",
+                ui=True,
+                provider="antigravity",
+                model="gemini-4-neon",
+                effort="high",
+                reviewer="claude/claude-opus-5-5@xhigh",
+                outcome=None,
+                findings=None,
+                repo="/home/someone/private/demo-app/",
+                provisional=True,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.log_cmd(sel_log), 0)
+
+            done_log = mock.Mock(
+                assets=assets_path,
+                ledger=None,
+                now="2026-11-20T21:30:00Z",
+                event=None,
+                complexity="hard",
+                risk="high",
+                ui=True,
+                provider="antigravity",
+                model="gemini-4-neon",
+                effort="high",
+                reviewer="claude/claude-opus-5-5@xhigh",
+                outcome="ok",
+                findings=2,
+                repo="/home/someone/private/demo-app",
+                provisional=False,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.log_cmd(done_log), 0)
+
+            self.assertTrue(os.path.isfile(ledger_path))
+            with open(ledger_path, encoding="utf-8") as fh:
+                raw = fh.read()
+            self.assertNotIn("/home/someone/private", raw)
+            rows = [json.loads(line) for line in raw.strip().splitlines()]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["event"], "select")
+            self.assertEqual(rows[0]["repo"], "demo-app")
+            self.assertEqual(rows[0]["surface"], "subagent")
+            self.assertEqual(rows[0]["ui"], True)
+            self.assertEqual(rows[0]["provisional"], True)
+            self.assertIsNone(rows[0]["outcome"])
+            self.assertEqual(rows[1]["event"], "complete")
+            self.assertEqual(rows[1]["outcome"], "ok")
+            self.assertEqual(rows[1]["findings"], 2)
+            self.assertEqual(rows[1]["reviewer"], "claude/claude-opus-5-5@xhigh")
+
+    def test_log_follows_env_assets_override_and_records_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "custom-assets.yaml")
+            expected_ledger = os.path.join(tmp, "ledger.jsonl")
+            args = mock.Mock(
+                assets=None,
+                ledger=None,
+                now="2026-11-20T21:00:00Z",
+                event=None,
+                complexity="standard",
+                risk="low",
+                ui=False,
+                surface="conversation",
+                provider="codex",
+                model="gpt-6-2-sol",
+                effort="low",
+                reviewer=None,
+                outcome="rework",
+                findings=1,
+                repo="sample-repo",
+                provisional=False,
+            )
+            with mock.patch.dict(os.environ, {"AGENT_ORCHESTRATION_ASSETS": assets_path}):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(orch.log_cmd(args), 0)
+            self.assertTrue(os.path.isfile(expected_ledger))
+            with open(expected_ledger, encoding="utf-8") as fh:
+                row = json.loads(fh.read().strip())
+            self.assertEqual(row["outcome"], "rework")
+            self.assertEqual(row["surface"], "conversation")
+
+
+class TestCheckExtensions(unittest.TestCase):
+    def test_check_validates_ui_fallback_new_conversations_and_followups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.yaml")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  ui_fallback: maybe\n"
+                    "  new_conversations: always\n"
+                    "providers: []\n"
+                )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1)
+            self.assertIn("ui_fallback", buf.getvalue())
+            self.assertIn("new_conversations", buf.getvalue())
+
+            good = os.path.join(tmp, "good.yaml")
+            with open(good, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  ui_fallback: ask\n"
+                    "  new_conversations: allow\n"
+                    "providers: []\n"
+                    "followups:\n"
+                    "  - kind: ui-review\n"
+                    '    ref: "PR #1"\n'
+                    "    needs: ui-ux-review\n"
+                    "    after: 2026-11-23T08:00:00+00:00\n"
+                )
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = orch.check(mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc2, 0)
+
+    def test_check_suggests_update_when_lockfile_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\nproviders: []\n")
+            lock_path = os.path.join(tmp, ".skill-lock.json")
+            with open(lock_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "version": 3,
+                        "skills": {
+                            "agent-orchestration": {
+                                "source": "osnoser1/agent-orchestration",
+                                "updatedAt": "2026-11-01T12:00:00Z",
+                            }
+                        },
+                    },
+                    fh,
+                )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(
+                    mock.Mock(assets=assets_path, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=lock_path)
+                )
+            self.assertEqual(rc, 0)
+            self.assertIn("npx skills update agent-orchestration", buf.getvalue())
+
+            # Fresh lockfile -> no update suggestion
+            with open(lock_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "version": 3,
+                        "skills": {
+                            "agent-orchestration": {
+                                "source": "osnoser1/agent-orchestration",
+                                "updatedAt": "2026-11-19T12:00:00Z",
+                            }
+                        },
+                    },
+                    fh,
+                )
+            buf_fresh = io.StringIO()
+            with contextlib.redirect_stdout(buf_fresh):
+                rc_fresh = orch.check(
+                    mock.Mock(assets=assets_path, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=lock_path)
+                )
+            self.assertEqual(rc_fresh, 0)
+            self.assertNotIn("npx skills update", buf_fresh.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,8 +7,8 @@ Run `python3 scripts/orch.py probe` during discovery to refresh `used_percent`, 
   - **Claude**: `GET https://api.anthropic.com/api/oauth/usage` using local OAuth tokens from `<config_dir>/.credentials.json` (sent only to that endpoint, omitted from stdout, logs, and `assets.yaml`). Missing credentials or HTTP 401 report `unverified` and continue.
   - **Codex**: latest `token_count` event in today + yesterday `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (`payload.rate_limits.{primary,secondary}`), skipping expired windows.
 - **Thresholds**: `used_percent >= 85` marks `status: low` (override via `preferences.low_threshold`); `used_percent >= 100` marks `status: exhausted` with `exhausted_until: <resets_at>` (applied per group when a provider reports `groups`).
-- **Auto-recovery**: any `exhausted` provider or group whose `exhausted_until` or `resets_at` has passed clears to `status: ok`, persists to `assets.yaml`, and prints a recovery line.
-- **Exit codes (`orch.py`)**: `0` ok · `1` validation/usage error · `2` no tier match (`select`) · `3` blocked by pre-flight threshold (`low` ≥85% or gated) · `4` quota hit (`exhausted` / 100%).
+- **Auto-recovery**: any `exhausted` provider or group whose `exhausted_until` or `resets_at` has passed clears to `status: ok`, persists to `assets.yaml`, and prints a recovery line. `probe` also prints any due `followups` once a provider serving their `needs` is usable again (`references/selection.md`).
+- **Exit codes (`orch.py`)**: `0` ok · `1` validation/usage error · `2` no tier match (`select`) · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / 100%).
 
 ## Reactive error parsing (`scripts/orch.py exhaust`)
 Trigger on messages containing `"hit your (weekly|usage) limit"`, `"quota reached"`, `"rate limit"`, `"try again at"`, or `"resets"`:

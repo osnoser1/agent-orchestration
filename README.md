@@ -11,10 +11,10 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/SKILL.md` | Process steps with completion criteria: discover → classify → choose → brief → gates → land | rarely |
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
-| `skills/agent-orchestration/references/` | Selection rules, harness matrix, brief template, quota probe/error rules, unrated-model research | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `exhaust`, `status`, `check`) | rarely |
+| `skills/agent-orchestration/references/` | Selection & fallback rules, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `exhaust`, `status`, `check`) | rarely |
 
-Selection summary (authoritative rules in `skills/agent-orchestration/references/selection.md`): complexity × risk → tier floor → filter out pay-per-use, exhausted, emergency, unrated, and below-floor models → rank by UI/UX strength (when `--ui`, primary worker), quota health, policy (`ending` > `spend-first` > `normal` > `preserve`), sooner reset/renewal, lower cost class, and lower effort (with `<3`-point effort knee) → reviewer from a different model family.
+Selection summary (authoritative rules in `skills/agent-orchestration/references/selection.md`): complexity × risk → tier floor → filter out pay-per-use, exhausted, emergency, unrated, and below-floor models → rank by UI/UX strength (`--ui`) or repo family preference (`--prefer-family`), quota health, policy (`ending` > `spend-first` > `normal` > `preserve`), sooner reset/renewal, lower cost class, and lower effort (with `<3`-point effort knee) → reviewer from a different model family. When a preferred UI/UX or family model is exhausted, `preferences.ui_fallback` (`proceed|defer|ask`, default `proceed`) either marks the work provisional and queues a follow-up review in `assets.yaml`, recommends deferring until reset, or asks once.
 
 Emergency models, `max`/`ultra` efforts, and pay-per-use APIs require one explicit approval. A missing or stale assets file falls back to defaults (all discovered providers `ok`, policy `normal`) and reports that in one line.
 
@@ -65,12 +65,52 @@ When a child hits a quota error mid-run, the skill parses the reset time (`orch.
 python3 skills/agent-orchestration/scripts/orch.py probe
 python3 skills/agent-orchestration/scripts/orch.py select --complexity hard --risk high \
   --available antigravity:gemini-4-neon,claude:claude-opus-5-5,codex:gpt-6-2-sol
+python3 skills/agent-orchestration/scripts/orch.py select --complexity standard --risk low --ui --ref "PR #42" \
+  --available claude:claude-sonnet-5-5,antigravity:gemini-4-neon
+python3 skills/agent-orchestration/scripts/orch.py followups --due
+python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk high \
+  --provider antigravity --model gemini-4-neon --effort high --outcome ok --findings 1 --repo my-app
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py check
 ```
 
-Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold (`low` ≥85% or gated) · `4` quota hit (`exhausted` / 100%).
+Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / 100%).
+
+## Extending per repository
+
+All extension points live at two layers:
+
+1. **Per-repository policy (`AGENTS.md` `## Orchestration`)** — add an optional section to any target repository's `AGENTS.md` (reached by Claude Code via `CLAUDE.md` and directly by other harnesses) to override process defaults, extra high-risk paths, model preferences, and conversation guidance. Every line is optional; absent sections use defaults. See `skills/agent-orchestration/references/repo-policy.md`.
+
+```markdown
+## Orchestration
+Repository policy for the agent-orchestration skill; it overrides the skill's defaults here.
+- Implement: <skill names or guide>
+- Review: <skill names>
+- PR: <skill name>
+- Land: <command or process>
+- High risk: <extra paths/areas that count as high risk>
+- Models: <task-type preferences, e.g. UI/UX work → Anthropic>
+- Conversations: <when new top-level conversations are preferred or restricted>
+```
+
+2. **Per-user configuration (outside git)** — lives in `~/.config/agent-orchestration/` (or beside `$AGENT_ORCHESTRATION_ASSETS`):
+   - `assets.yaml`: your providers, probe config, policies, live quota state, `preferences.ui_fallback` (`proceed|defer|ask`), `preferences.new_conversations` (`ask|allow`), `preferences.tier_floors`, and deferred `followups`.
+   - `catalog.local.yaml`: local model ratings or overrides merged on top of `catalog.yaml`.
+
+**Precedence**: explicit user instruction > `assets.yaml` (quota, pay-per-use, emergency spending, conversation authorization) and harness rules > target repo `## Orchestration` (phase skills/commands, high-risk paths, model preferences) > skill defaults.
+
+## Improving the skill
+
+Consumer repositories feed orchestration findings back upstream rather than patching installed skill copies locally (`skills/agent-orchestration/references/improvement.md`):
+
+- **Decision ledger**: `orch.py log` appends one structured JSON line per delegation (selection + completion) to `ledger.jsonl` next to `assets.yaml` — timestamp, repo basename, delegation surface (`subagent|conversation`), task class, chosen model/effort, reviewer, outcome (`ok|failed|quota|stall|rework`), and review findings count. Prompts, code, secrets, full paths, and personal data are never recorded.
+- **Retrospective findings**: during a repo's retrospective (`retro` / `retro-dispatch`), file an upstream issue on `osnoser1/agent-orchestration` using `.github/ISSUE_TEMPLATE/retro-finding.md` with ledger evidence for wrong model/effort choices, quota surprises, stalled children, brief gaps, or missing harness quirks. Submit new or updated model ratings as a PR editing `skills/agent-orchestration/catalog.yaml` with `orch.py check` passing.
+- **Keeping installs current**: check and update at the start of every retrospective (or weekly):
+  - Global install: `npx skills check -g` then `npx skills update agent-orchestration -g` (add `-y` for non-interactive runs).
+  - Project install: `npx skills check -p` then `npx skills update agent-orchestration -p`.
+  - `orch.py check` also performs an offline staleness check on local skill lockfiles (`~/.agents/.skill-lock.json` and `./skills-lock.json`) and suggests updating when an install is older than 7 days.
 
 ## Contributing
 
