@@ -1,10 +1,13 @@
 # Quota probes, thresholds, and error parsing
 
 ## Automatic probe (`scripts/orch.py probe`)
-Run `python3 scripts/orch.py probe` during discovery to refresh `used_percent`, `window`, and `resets_at` in `assets.yaml`:
-- **Thresholds**: `used_percent >= 85` marks `status: low` (override via `preferences.low_threshold`); `used_percent >= 100` marks `status: exhausted` with `exhausted_until: <resets_at>`.
-- **Auto-recovery**: any `exhausted` entry whose `exhausted_until` or `resets_at` has passed clears to `status: ok`, persists to `assets.yaml`, and prints a recovery line.
-- **Credential handling**: Claude OAuth tokens are read locally from `<config_dir>/.credentials.json`, sent only to `https://api.anthropic.com/api/oauth/usage`, and omitted from stdout, logs, and `assets.yaml`. Missing credentials or HTTP 401 report `unverified` and continue.
+Run `python3 scripts/orch.py probe` during discovery to refresh `used_percent`, `window`, `resets_at`, and per-group `groups` in `assets.yaml`:
+- **Probe sources**:
+  - **Antigravity**: `agy -p "/usage" --output-format json < /dev/null` (zero-token cost; requires one-time sign-in in the interactive `agy` TUI). Parses `command.data.groups[]` (`used_percent = 100 - remaining_fraction * 100`), ignores `disabled` buckets and expired `reset_time` windows, takes each group's most constraining active bucket, maps display names to catalog ids (unmatched kept as-is and reported once), persists `groups`, and sets provider `status` to the best group (`ok` when any group is usable).
+  - **Claude**: `GET https://api.anthropic.com/api/oauth/usage` using local OAuth tokens from `<config_dir>/.credentials.json` (sent only to that endpoint, omitted from stdout, logs, and `assets.yaml`). Missing credentials or HTTP 401 report `unverified` and continue.
+  - **Codex**: latest `token_count` event in today + yesterday `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (`payload.rate_limits.{primary,secondary}`), skipping expired windows.
+- **Thresholds**: `used_percent >= 85` marks `status: low` (override via `preferences.low_threshold`); `used_percent >= 100` marks `status: exhausted` with `exhausted_until: <resets_at>` (applied per group when a provider reports `groups`).
+- **Auto-recovery**: any `exhausted` provider or group whose `exhausted_until` or `resets_at` has passed clears to `status: ok`, persists to `assets.yaml`, and prints a recovery line.
 - **Exit codes (`orch.py`)**: `0` ok · `1` validation/usage error · `2` no tier match (`select`) · `3` blocked by pre-flight threshold (`low` ≥85% or gated) · `4` quota hit (`exhausted` / 100%).
 
 ## Reactive error parsing (`scripts/orch.py exhaust`)

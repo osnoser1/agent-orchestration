@@ -148,8 +148,10 @@ def load_file(path):
 # ---------- model data ----------
 COST = {"cheap": 0, "normal": 1, "expensive": 2, "emergency": 3}
 POLICY = {"ending": 0, "spend-first": 1, "normal": 2, "preserve": 3}
+STATUS_RANK = {"ok": 0, "low": 1, "exhausted": 2}
 FLOORS = {"T1": 20, "T2": 40, "T3": 50, "T4": 57}
 EFFORT_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+_WINDOW_ALIAS = {"weekly": "7d", "seven_day": "7d", "five_hour": "5h", "5h": "5h", "7d": "7d"}
 TIER = {
     "trivial": {"low": "T1", "medium": "T1", "high": "T2"},
     "standard": {"low": "T2", "medium": "T2", "high": "T3"},
@@ -273,6 +275,55 @@ def provider_state(assets, pid, now):
     return p, st, expired
 
 
+def model_group(p, mid, model_obj=None):
+    groups = (p or {}).get("groups")
+    if not isinstance(groups, list) or not groups:
+        return None
+    keys = {norm(mid)}
+    if isinstance(model_obj, dict):
+        if model_obj.get("id"):
+            keys.add(norm(model_obj["id"]))
+        if model_obj.get("name"):
+            keys.add(norm(model_obj["name"]))
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        models = g.get("models")
+        if isinstance(models, list) and models:
+            if any(norm(gm) in keys for gm in models):
+                return g
+        elif g.get("name") and norm(g["name"]) in keys:
+            return g
+    return None
+
+
+def group_state(g, now):
+    st = g.get("status", "ok")
+    expired = False
+    until = parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
+    if st == "exhausted" and until and until <= now:
+        st = "ok"
+        expired = True
+    return st, expired
+
+
+def candidate_next_reset(p, g, now):
+    if not p:
+        return None
+    if p.get("policy") == "ending" and p.get("renews"):
+        dt = parse_cadence_or_time(p.get("renews"), now)
+        if dt and dt > now:
+            return dt
+    if g is None:
+        return provider_next_reset(p, now)
+    times = []
+    for val in (g.get("resets_at"), p.get("resets"), p.get("renews")):
+        dt = parse_cadence_or_time(val, now)
+        if dt and dt > now:
+            times.append(dt)
+    return min(times) if times else None
+
+
 def best_effort(m, floor, emerg):
     scores = m.get("scores") or {}
     rated = [
@@ -314,25 +365,42 @@ def candidates(catalog, assets, available, floor, floors, now, exclude_family=No
 
     for pair in available:
         prov, _, mid = pair.partition(":")
-        p, st, expired = provider_state(assets, prov, now)
-        if expired:
+        p, prov_st, prov_expired = provider_state(assets, prov, now)
+        if prov_expired:
             notes.append(f"{pair}: previous exhaustion expired -> treating provider as ok")
 
-        # Filter provider gates BEFORE catalog/unrated checks.
+        # Filter provider and quota-group gates BEFORE catalog/unrated checks.
         if p.get("pay_per_use") or p.get("policy") == "avoid":
             notes.append(f"{pair}: pay-per-use/avoid, skipped")
             reasons["gated"] += 1
             continue
-        if st == "exhausted":
+        if prov_st == "exhausted":
             notes.append(f"{pair}: provider exhausted")
             reasons["exhausted"] += 1
             continue
-        if fail_on_low and st == "low":
-            notes.append(f"{pair}: provider low (blocked by pre-flight threshold)")
-            reasons["threshold"] += 1
-            continue
 
         m = cat.get(norm(mid))
+        g = model_group(p, mid, m)
+        if g is not None:
+            st, g_expired = group_state(g, now)
+            gname = g.get("name") or "group"
+            if g_expired:
+                notes.append(f"{pair}: previous exhaustion in group {gname} expired -> treating as ok")
+            if st == "exhausted":
+                notes.append(f"{pair}: group {gname} exhausted")
+                reasons["exhausted"] += 1
+                continue
+            if fail_on_low and st == "low":
+                notes.append(f"{pair}: group {gname} low (blocked by pre-flight threshold)")
+                reasons["threshold"] += 1
+                continue
+        else:
+            st = prov_st
+            if fail_on_low and st == "low":
+                notes.append(f"{pair}: provider low (blocked by pre-flight threshold)")
+                reasons["threshold"] += 1
+                continue
+
         if not m:
             notes.append(f"{pair}: not in catalog -> research once (references/research-unrated.md)")
             reasons["tier"] += 1
@@ -363,7 +431,7 @@ def candidates(catalog, assets, available, floor, floors, now, exclude_family=No
         policy = p.get("policy", "normal")
         pol_rank = POLICY.get(policy, 2)
         low_pen = 1 if (st == "low" and floor >= t3_floor) else 0
-        nxt = provider_next_reset(p, now)
+        nxt = candidate_next_reset(p, g, now)
         reset_ts = nxt.timestamp() if nxt else float("inf")
         ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
         key = (
@@ -551,7 +619,8 @@ def ensure_assets(path, now):
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"version: 1\nupdated: {now_iso}\nproviders:\n")
         return
-    text = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
     if not re.search(r"(?m)^providers:\s*(?:#.*)?$", text):
         text = text.rstrip("\n") + ("\n" if text.strip() else "") + "providers:\n"
         with open(path, "w", encoding="utf-8") as f:
@@ -583,10 +652,46 @@ def _providers_span(lines):
     return pstart, pend
 
 
+def _yaml_scalar(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    s = str(v)
+    if s == "" or s in ("true", "false", "null", "~") or not re.fullmatch(r"[A-Za-z0-9._:+/-]+", s):
+        return '"' + s.replace('"', "'") + '"'
+    return s
+
+
+def _format_yaml_field(ind, k, v):
+    pad = " " * ind
+    if isinstance(v, list):
+        if not v:
+            return [f"{pad}{k}: []"]
+        if all(isinstance(item, dict) for item in v):
+            out = [f"{pad}{k}:"]
+            for item in v:
+                first = True
+                for ik, iv in item.items():
+                    if iv is None:
+                        continue
+                    if isinstance(iv, list):
+                        rendered = "[" + ", ".join(_yaml_scalar(x) for x in iv) + "]"
+                    else:
+                        rendered = _yaml_scalar(iv)
+                    prefix = f"{pad}  - " if first else f"{pad}    "
+                    out.append(f"{prefix}{ik}: {rendered}")
+                    first = False
+            return out
+        return [f"{pad}{k}: [" + ", ".join(_yaml_scalar(x) for x in v) + "]"]
+    return [f"{pad}{k}: {v}"]
+
+
 def edit_provider(path, pid, fields, now=None, clear_keys=()):
     now = now or get_now()
     ensure_assets(path, now)
-    lines = open(path, encoding="utf-8").read().split("\n")
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().split("\n")
     if lines and lines[-1] == "":
         lines.pop()
     _update_top_updated(lines, now.isoformat(timespec="seconds"))
@@ -634,7 +739,10 @@ def edit_provider(path, pid, fields, now=None, clear_keys=()):
         keep.append(l)
         i += 1
 
-    new = [" " * ind + f"{k}: {v}" for k, v in fields.items() if v is not None]
+    new = []
+    for k, v in fields.items():
+        if v is not None:
+            new.extend(_format_yaml_field(ind, k, v))
     lines[start + 1 : end] = new + keep
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip("\n") + "\n")
@@ -833,7 +941,155 @@ def probe_claude(cfg, now):
     }, None
 
 
-def probe_antigravity(cfg, now):
+def _catalog_name_map(catalog):
+    by_norm = {}
+    for m in (catalog or {}).get("models") or []:
+        mid = m.get("id")
+        if not mid:
+            continue
+        by_norm[norm(mid)] = mid
+        if m.get("name"):
+            by_norm[norm(m["name"])] = mid
+    return by_norm
+
+
+def _extract_group_models(group, name_map):
+    raw_names = []
+    if isinstance(group.get("models"), list) and group["models"]:
+        raw_names = [str(x).strip() for x in group["models"] if str(x).strip()]
+    else:
+        desc = str(group.get("description") or "")
+        m = re.search(r"Models within this group:\s*([^\n]+)", desc, re.IGNORECASE)
+        if m:
+            tail = m.group(1).strip().rstrip(".")
+            raw_names = [part.strip() for part in tail.split(",") if part.strip()]
+        else:
+            gname = str(group.get("name") or "").strip()
+            if gname:
+                raw_names = [gname]
+
+    mapped, unmatched = [], []
+    seen = set()
+    for raw in raw_names:
+        cid = name_map.get(norm(raw))
+        val = cid if cid else raw
+        if not cid:
+            unmatched.append(raw)
+        if val not in seen:
+            seen.add(val)
+            mapped.append(val)
+    return mapped, unmatched
+
+
+def _quota_status(used_percent, threshold):
+    if used_percent >= 100:
+        return "exhausted"
+    if used_percent >= threshold:
+        return "low"
+    return "ok"
+
+
+def _summarize_groups(groups, now):
+    def _sort_key(g):
+        r_dt = parse_time(g.get("resets_at"), now)
+        r_ts = r_dt.timestamp() if r_dt else float("inf")
+        return (
+            STATUS_RANK.get(g.get("status", "ok"), 0),
+            float(g.get("used_percent") or 0),
+            r_ts,
+        )
+
+    return min(groups, key=_sort_key)
+
+
+def parse_antigravity_usage(data, now, catalog=None, group_filter=""):
+    raw_groups = None
+    if isinstance(data, dict):
+        cmd = data.get("command")
+        if isinstance(cmd, dict) and isinstance(cmd.get("data"), dict):
+            raw_groups = cmd["data"].get("groups")
+        if raw_groups is None:
+            raw_groups = data.get("groups") or data.get("quotas")
+    elif isinstance(data, list):
+        raw_groups = data
+
+    if not isinstance(raw_groups, list):
+        return None, "unverified (agy /usage JSON format unparsed)"
+
+    name_map = _catalog_name_map(catalog)
+    now_ts = now.timestamp()
+    flt = (group_filter or "").lower()
+    groups = []
+    unmatched_all = []
+    seen_unmatched = set()
+
+    for item in raw_groups:
+        if not isinstance(item, dict):
+            continue
+        gname = str(item.get("name") or item.get("group") or "").strip()
+        if flt and flt not in gname.lower():
+            continue
+        buckets = item.get("buckets")
+        if not isinstance(buckets, list):
+            continue
+
+        active = []
+        saw_expired = False
+        for b in buckets:
+            if not isinstance(b, dict) or b.get("disabled"):
+                continue
+            rem = b.get("remaining_fraction")
+            if isinstance(rem, bool) or not isinstance(rem, (int, float)):
+                continue
+            r_dt = parse_time(b.get("reset_time") or b.get("resets_at"), now)
+            if r_dt and r_dt.timestamp() <= now_ts:
+                saw_expired = True
+                continue
+            raw_win = str(b.get("window") or "unknown").strip().lower()
+            win = _WINDOW_ALIAS.get(raw_win, raw_win)
+            used_pct = max(0.0, min(100.0, 100.0 - float(rem) * 100.0))
+            active.append(
+                {
+                    "used_percent": used_pct,
+                    "window": win,
+                    "resets_at": r_dt.astimezone(timezone.utc).isoformat(timespec="seconds") if r_dt else None,
+                    "resets_ts": r_dt.timestamp() if r_dt else 0.0,
+                }
+            )
+
+        if active:
+            chosen = max(active, key=lambda w: (w["used_percent"], w["resets_ts"]))
+            g_used = _fmt_pct(chosen["used_percent"])
+            g_win = chosen["window"]
+            g_reset = chosen["resets_at"]
+        elif saw_expired:
+            g_used = 0
+            g_win = "reset"
+            g_reset = None
+        else:
+            continue
+
+        models, unmatched = _extract_group_models(item, name_map)
+        for u in unmatched:
+            if u not in seen_unmatched:
+                seen_unmatched.add(u)
+                unmatched_all.append(u)
+        groups.append(
+            {
+                "name": gname or "default",
+                "models": models,
+                "used_percent": g_used,
+                "window": g_win,
+                "resets_at": g_reset,
+            }
+        )
+
+    if not groups:
+        return None, "unverified (agy /usage JSON format unparsed)"
+    return {"groups": groups, "unmatched": unmatched_all}, None
+
+
+def probe_antigravity(cfg, now, catalog=None):
     if not shutil.which("agy"):
         return None, "unverified (agy CLI not installed)"
     try:
@@ -844,6 +1100,8 @@ def probe_antigravity(cfg, now):
             text=True,
             timeout=20,
         )
+    except subprocess.TimeoutExpired:
+        return None, "unverified (agy timed out; complete first sign-in in the interactive agy TUI)"
     except Exception:
         return None, "unverified (agy invocation failed)"
     if res.returncode != 0 or not res.stdout.strip():
@@ -853,39 +1111,7 @@ def probe_antigravity(cfg, now):
     except ValueError:
         return None, "unverified (agy output is not JSON)"
 
-    # Parse quota entries if agy returns structured windows or text summary.
-    group_filter = (cfg.get("group") or "").lower()
-    windows = []
-    items = data if isinstance(data, list) else data.get("quotas") or data.get("groups") or []
-    if isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name") or item.get("group") or "").lower()
-            if group_filter and group_filter not in name:
-                continue
-            for wkey, wlabel in (("five_hour", "5h"), ("weekly", "7d"), ("5h", "5h"), ("7d", "7d")):
-                w = item.get(wkey)
-                if isinstance(w, dict) and w.get("used_percent") is not None:
-                    r_dt = parse_time(w.get("resets_at"), now)
-                    if r_dt and r_dt <= now:
-                        continue
-                    windows.append(
-                        {
-                            "used_percent": float(w["used_percent"]),
-                            "window": wlabel,
-                            "resets_at": r_dt.astimezone(timezone.utc).isoformat(timespec="seconds") if r_dt else None,
-                            "resets_ts": r_dt.timestamp() if r_dt else 0.0,
-                        }
-                    )
-    if not windows:
-        return None, "unverified (agy /usage JSON format unparsed)"
-    chosen = max(windows, key=lambda w: (w["used_percent"], w["resets_ts"]))
-    return {
-        "used_percent": _fmt_pct(chosen["used_percent"]),
-        "window": chosen["window"],
-        "resets_at": chosen["resets_at"],
-    }, None
+    return parse_antigravity_usage(data, now, catalog=catalog, group_filter=cfg.get("group") or "")
 
 
 def _infer_probe(p):
@@ -906,6 +1132,8 @@ def _infer_probe(p):
 def probe(a):
     now = get_now(a.now)
     ap = a.assets or def_assets()
+    catalog_path = a.catalog or DEF_CATALOG
+    catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
     existed = os.path.exists(ap)
     ensure_assets(ap, now)
     assets = load_file(ap) or {}
@@ -924,7 +1152,7 @@ def probe(a):
     prefs = (assets.get("preferences") or {})
     threshold = a.low_threshold if a.low_threshold is not None else prefs.get("low_threshold", DEFAULT_LOW_THRESHOLD)
 
-    # 1. Auto-clear expired exhausted entries and persist them.
+    # 1. Auto-clear expired exhausted entries (provider and group level) and persist them.
     for p in providers:
         pid = p.get("id")
         if not pid:
@@ -941,6 +1169,25 @@ def probe(a):
                 )
                 p["status"] = "ok"
                 print(f"{pid}: expired lockout cleared -> ok")
+        groups = p.get("groups")
+        if isinstance(groups, list) and groups:
+            cleared_names = []
+            for g in groups:
+                if not isinstance(g, dict) or g.get("status") != "exhausted":
+                    continue
+                g_until = parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
+                if g_until and g_until <= now:
+                    g["status"] = "ok"
+                    g.pop("exhausted_until", None)
+                    cleared_names.append(g.get("name") or "group")
+            if cleared_names:
+                best = _summarize_groups([g for g in groups if isinstance(g, dict)], now)
+                fields = {"status": best.get("status", "ok"), "groups": groups}
+                clear = ("exhausted_until", "status_note", "unparsed") if fields["status"] != "exhausted" else ()
+                edit_provider(ap, pid, fields, now=now, clear_keys=clear)
+                p["status"] = fields["status"]
+                for gname in cleared_names:
+                    print(f"{pid} ({gname}): expired lockout cleared -> ok")
 
     # 2. Run probes.
     targets = [p for p in providers if (not a.provider or p.get("id") == a.provider)]
@@ -954,26 +1201,76 @@ def probe(a):
         cfg = _infer_probe(p)
         if not cfg:
             continue
-        fn = probers.get(cfg.get("kind"))
+        kind = cfg.get("kind")
+        fn = probers.get(kind)
         if not fn:
-            print(f"{pid}: unverified (unknown probe kind {cfg.get('kind')})")
+            print(f"{pid}: unverified (unknown probe kind {kind})")
             continue
-        result, err = fn(cfg, now)
+        result, err = fn(cfg, now, catalog) if kind == "antigravity" else fn(cfg, now)
         if err:
             print(f"{pid}: {err}")
+            continue
+
+        if "groups" in result:
+            persisted_groups = []
+            for g in result["groups"]:
+                gst = _quota_status(g["used_percent"], threshold)
+                entry = {
+                    "name": g["name"],
+                    "models": g["models"],
+                    "status": gst,
+                    "used_percent": g["used_percent"],
+                    "window": g["window"],
+                }
+                if g.get("resets_at"):
+                    entry["resets_at"] = g["resets_at"]
+                persisted_groups.append(entry)
+
+            best = _summarize_groups(persisted_groups, now)
+            st = best["status"]
+            if st == "exhausted":
+                worst = max(worst, 4)
+            elif st == "low":
+                worst = max(worst, 3)
+
+            r_at = best.get("resets_at")
+            fields = {
+                "status": st,
+                "used_percent": best["used_percent"],
+                "window": best["window"],
+                "groups": persisted_groups,
+            }
+            clear = []
+            if r_at:
+                fields["resets_at"] = r_at
+            else:
+                clear.append("resets_at")
+            if st == "exhausted" and r_at:
+                fields["exhausted_until"] = r_at
+            else:
+                clear.extend(["exhausted_until", "status_note", "unparsed"])
+
+            edit_provider(ap, pid, fields, now=now, clear_keys=clear)
+            usable = sum(1 for g in persisted_groups if g["status"] != "exhausted")
+            reset_msg = f", resets {r_at}" if (st == "exhausted" and r_at) else ""
+            print(f"{pid}: {st} ({usable}/{len(persisted_groups)} groups usable{reset_msg})")
+            for g in persisted_groups:
+                gr = f", resets {g['resets_at']}" if g.get("resets_at") else ""
+                ms = ", ".join(g.get("models") or [])
+                print(f"  group {g['name']}: {g['status']} ({g['used_percent']}% of {g['window']}{gr}) [{ms}]")
+            unmatched = result.get("unmatched") or []
+            if unmatched:
+                print(f"  note: unmatched model names kept as-is: {', '.join(unmatched)}")
             continue
 
         pct = result["used_percent"]
         win = result["window"]
         r_at = result.get("resets_at")
-        if pct >= 100:
-            st = "exhausted"
+        st = _quota_status(pct, threshold)
+        if st == "exhausted":
             worst = max(worst, 4)
-        elif pct >= threshold:
-            st = "low"
+        elif st == "low":
             worst = max(worst, 3)
-        else:
-            st = "ok"
 
         fields = {"status": st, "used_percent": pct, "window": win}
         clear = []
@@ -1019,6 +1316,19 @@ def check(a):
                 errs.append(f"assets {p.get('id')}: bad policy")
             if p.get("status", "ok") not in ("ok", "low", "exhausted"):
                 errs.append(f"assets {p.get('id')}: bad status")
+            groups = p.get("groups")
+            if groups is not None:
+                if not isinstance(groups, list):
+                    errs.append(f"assets {p.get('id')}: groups must be a list")
+                else:
+                    for g in groups:
+                        if not isinstance(g, dict) or not g.get("name"):
+                            errs.append(f"assets {p.get('id')}: group missing name")
+                            continue
+                        if g.get("status", "ok") not in ("ok", "low", "exhausted"):
+                            errs.append(f"assets {p.get('id')} group {g.get('name')}: bad status")
+                        if g.get("models") is not None and not isinstance(g.get("models"), list):
+                            errs.append(f"assets {p.get('id')} group {g.get('name')}: models must be a list")
     print("OK" if not errs else "\n".join(errs))
     return 1 if errs else 0
 

@@ -29,20 +29,20 @@ Evaluate rated non-emergency efforts in order (`none < low < medium < high < xhi
 3. **Missing efforts**: evaluate only rated efforts during selection. When no rated effort meets the floor and higher non-emergency efforts are missing, skip the model and note those efforts for one-time research (`references/research-unrated.md`).
 
 ## Filter and ranking order
-When `assets.yaml` is missing, default every discovered provider to `status: ok` and `policy: normal`. Expired `exhausted_until` / `resets_at` timestamps clear to `ok` automatically.
+When `assets.yaml` is missing, default every discovered provider to `status: ok` and `policy: normal`. Expired `exhausted_until` / `resets_at` timestamps (provider or group) clear to `ok` automatically.
 
 1. **Filter** (in this exact order):
    1. Exclude providers with `pay_per_use: true` or `policy: avoid`.
-   2. Exclude providers with `status: exhausted` (and `status: low` when running with `--fail-on-low`).
+   2. Exclude providers with `status: exhausted`, and models whose quota group has `status: exhausted` (and `status: low` at provider or group level when running with `--fail-on-low`). Providers without `groups` use provider-level status alone.
    3. Exclude models missing from the catalog (note for one-time research).
    4. Exclude models with `cost: emergency`.
    5. Exclude models with `rating: unrated` (note for one-time research).
    6. Exclude models whose rated non-emergency efforts fall below the tier floor.
 2. **Rank** remaining candidates by:
    1. **UI/UX tasks (`--ui`, primary worker only)**: models with `ui-ux-review` in `strengths` (Anthropic) sort first.
-   2. **Quota health**: on T3+ work, `status: ok` providers sort ahead of `status: low` providers (`used_percent >= 85` by default).
+   2. **Quota health**: on T3+ work, `status: ok` sorts ahead of `status: low` (evaluated per model group when `groups` are present, otherwise per provider; `used_percent >= 85` by default).
    3. **Policy**: `ending` > `spend-first` > `normal` > `preserve`.
-   4. **Sooner reset/renewal**: earliest future timestamp from `renews` (when `policy: ending`) or `resets_at` / `resets` / `renews` (ISO time, date-only as end of day, or cadence `5h`/`daily`/`weekly`/`monthly`).
+   4. **Sooner reset/renewal**: earliest future timestamp from `renews` (when `policy: ending`) or the model group's `resets_at` (when present) / provider `resets_at` / `resets` / `renews` (ISO time, date-only as end of day, or cadence `5h`/`daily`/`weekly`/`monthly`).
    5. **Lower cost class**: `cheap` < `normal` < `expensive`.
    6. **Lower effort** (`none` < `low` < `medium` < `high` < `xhigh`), then lower score.
 
