@@ -20,7 +20,7 @@ Emergency models/efforts (e.g. `max`, `ultra`, top-priced tiers) and pay-per-use
 
 ## Install
 
-Requires Node.js 22.20+ for the installer ([`skills`](https://github.com/vercel-labs/skills), covers Claude Code, Codex, Gemini CLI, Antigravity, Cursor and 70+ others).
+Use the current [Node.js LTS](https://nodejs.org/en/about/previous-releases) for the installer, which itself needs Node.js 22.20 or later ([`skills`](https://github.com/vercel-labs/skills), covers Claude Code, Codex, Gemini CLI, Antigravity, Cursor and 70+ others).
 
 ```bash
 # Project-level (current repo)
