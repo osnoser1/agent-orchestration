@@ -1,0 +1,11 @@
+name: validate
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install skills-ref && agentskills validate skills/agent-orchestration
+      - run: python3 -I skills/agent-orchestration/scripts/orch.py check --assets skills/agent-orchestration/assets/assets.example.yaml

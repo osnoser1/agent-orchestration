@@ -1,0 +1,34 @@
+# Copy to ~/.config/agent-orchestration/assets.yaml (or set $AGENT_ORCHESTRATION_ASSETS). Personal; never commit it.
+# Keep it to this YAML subset so the optional scripts can read it.
+version: 1
+updated: 2026-11-20T09:00:00-05:00
+preferences:
+  pay_per_use: never          # never | ask   (never use pay-per-use APIs without explicit approval)
+  tier_floors: {T1: 25, T2: 40, T3: 50, T4: 57}   # optional override
+providers:
+  # id = the provider id your harness uses for delegation. policy: spend-first | normal | preserve | ending | avoid
+  # status: ok | low | exhausted. exhausted_until: ISO time; expired = ok.
+  - id: claude
+    plan: Claude subscription
+    policy: preserve
+    status: ok
+    # When a child hits a limit the skill writes, e.g.:
+    #   status: exhausted
+    #   exhausted_until: 2026-11-23T03:00:00-05:00
+    #   status_note: "You've hit your weekly limit · resets Nov 23, 3am (America/Bogota)"
+    resets: weekly
+  - id: antigravity
+    plan: Antigravity subscription
+    policy: spend-first       # use-it-or-lose-it quota
+    status: ok
+    resets: 2026-12-01
+  - id: codex
+    plan: ChatGPT subscription
+    policy: ending            # being cancelled: spend it first
+    status: ok
+    renews: 2026-11-30
+  - id: openai-api
+    plan: OpenAI API (billed per token)
+    policy: avoid
+    pay_per_use: true
+    status: ok

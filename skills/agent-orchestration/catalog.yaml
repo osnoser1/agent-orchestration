@@ -1,0 +1,109 @@
+# Shared model catalog. Stable facts only: no personal quota or account data.
+# Update via PR. Subset of YAML: block maps, "- " lists of maps, one-line {..} and [..].
+# Scores = Artificial Analysis Intelligence Index (higher = smarter) per reasoning effort.
+# cost: cheap | normal | expensive | emergency   (emergency: only if all else exhausted, or user asks)
+# rating: rated | unrated   (unrated -> research ONCE per references/research-unrated.md, then record here)
+# Tier floors (see references/selection.md): T1 25, T2 40, T3 50, T4 57.
+version: 1
+updated: 2026-11-20
+emergency_efforts: [max, ultra]   # efforts never chosen automatically, for any model
+index_versions:
+  aa-v5: {name: "Artificial Analysis Intelligence Index v5", url: "https://artificialanalysis.ai/", retrieved: 2026-11-20}
+  aa-v4.3: {name: "Artificial Analysis Intelligence Index v4.3", url: "https://artificialanalysis.ai/", retrieved: 2026-11-20}
+models:
+  - id: gemini-4-neon
+    name: Gemini 4 Neon
+    family: google
+    cost: normal
+    rating: rated
+    scores: {low: 44, medium: 55, high: 60, xhigh: 61}
+    source: aa-v5
+    strengths: [long-context, general-coding, cost-efficiency]
+    quirks: ["Antigravity option key is thought_level (not thinking_level).", "Children sometimes end their turn while 'waiting': resend and tell them to block in one command."]
+  - id: gemini-4-hydrogen
+    name: Gemini 4 Hydrogen
+    family: google
+    cost: cheap
+    rating: rated
+    scores: {low: 27, medium: 41, high: 51, xhigh: 54}
+    source: aa-v5
+    strengths: [mechanical-edits, high-volume]
+    quirks: ["Antigravity option key is thought_level.", "Children sometimes end their turn while 'waiting': resend and tell them to block in one command."]
+  - id: gemini-4-argon
+    name: Gemini 4 Argon
+    family: google
+    cost: cheap
+    rating: rated
+    scores: {high: 51}
+    confidence: low
+    source: aa-v5
+    notes: "High effort reported ~50-53 depending on source; 51 is the midpoint. Re-check when a single source is authoritative."
+    quirks: ["Antigravity option key is thought_level."]
+  - id: claude-opus-5-5
+    name: Claude Opus 5.5
+    family: anthropic
+    cost: expensive
+    rating: rated
+    scores: {low: 35, max: 58}
+    source: aa-v5
+    notes: "Other index versions give different numbers. Only low and max rated: medium/high unknown (treat as unrated, interpolate only for planning). max is an emergency effort."
+    strengths: [ui-ux-review, code-review, hard-debugging, agentic-coding]
+  - id: claude-sonnet-5-5
+    name: Claude Sonnet 5.5
+    family: anthropic
+    cost: normal
+    rating: rated
+    scores: {max: 56}
+    confidence: low
+    source: aa-v4.3
+    notes: "Score is max effort on index v4.3, not comparable one-to-one with v5. Lower efforts unrated."
+    strengths: [ui-ux-review, code-review, general-coding]
+  - id: claude-haiku-5-5
+    name: Claude Haiku 5.5
+    family: anthropic
+    cost: cheap
+    rating: unrated
+    strengths: [mechanical-edits, high-volume]
+  - id: claude-fable-5-2
+    name: Claude Fable 5.2
+    family: anthropic
+    cost: emergency
+    rating: unrated
+    notes: "Highest-cost Claude tier. Use only when everything else is exhausted and blocked, or when the user asks."
+  - id: gpt-6-2-sol
+    name: GPT-6.2 Sol
+    family: openai
+    cost: expensive
+    rating: unrated
+    notes: "Cost class is a guess; confirm with the first research."
+  - id: gpt-6-2-astra
+    name: GPT-6.2 Astra
+    family: openai
+    cost: emergency
+    rating: unrated
+    notes: "Highest-cost GPT tier. Emergency only."
+  - id: gpt-6-1-terra
+    name: GPT-6.1 Terra
+    family: openai
+    cost: normal
+    rating: unrated
+    notes: "Cost class is a guess."
+  - id: gpt-6-luna
+    name: GPT-6 Luna
+    family: openai
+    cost: cheap
+    rating: unrated
+    notes: "Cost class is a guess."
+  - id: gpt-oss-120b
+    name: GPT-OSS 120B
+    family: openai
+    cost: cheap
+    rating: unrated
+  - id: gemini-3-8-flash
+    name: Gemini 3.8 Flash
+    family: google
+    cost: cheap
+    rating: unrated
+    quirks: ["Children sometimes end their turn while 'waiting': resend and tell them to block in one command."]
+# Providers that bill per token (e.g. an "OpenAI API" instance) are NOT subscriptions:
+# they are excluded unless the user explicitly approves. Declare them in assets.yaml with pay_per_use: true.

@@ -1,0 +1,13 @@
+{
+  "name": "agent-orchestration",
+  "description": "Quota-aware orchestration skill for coding agents",
+  "owner": { "name": "osnoser1" },
+  "plugins": [
+    {
+      "name": "agent-orchestration",
+      "source": "./",
+      "description": "Route work to subagents and models by task complexity, risk and remaining provider quota, with quality gates.",
+      "skills": ["./skills/agent-orchestration"]
+    }
+  ]
+}
