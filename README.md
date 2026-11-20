@@ -51,9 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/osnoser1/agent-orchestration/main/s
 
 During discovery, `orch.py probe` updates `used_percent`, `window`, and `resets_at` automatically, marks providers `low` at `>=85%` (configurable via `preferences.low_threshold`) and `exhausted` at `100%`, and clears expired lockouts back to `ok`:
 
-- **Codex**: scans today + yesterday `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count` events (`payload.rate_limits.{primary,secondary}`), ignoring expired windows (`resets_at <= now`).
+- **Antigravity**: queries `agy -p "/usage" --output-format json < /dev/null` (zero-token cost; requires one-time sign-in in the interactive `agy` TUI) and persists per-group quotas under `groups:` so an exhausted model group excludes only its models; otherwise reports `unverified`.
 - **Claude**: calls `GET https://api.anthropic.com/api/oauth/usage` per configured directory (`~/.claude` and any `$CLAUDE_CONFIG_DIR` via `probe: {kind: claude, config_dir: ...}`). Credentials stay local and are omitted from logs and `assets.yaml`; missing tokens or HTTP 401 report `unverified`.
-- **Antigravity**: queries `agy -p "/usage" --output-format json` when `agy` is installed; otherwise reports `unverified`.
+- **Codex**: scans today + yesterday `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count` events (`payload.rate_limits.{primary,secondary}`), ignoring expired windows (`resets_at <= now`).
 
 When a child hits a quota error mid-run, the skill parses the reset time (`orch.py exhaust`), switches to the next candidate, and resends the brief with partial results.
 

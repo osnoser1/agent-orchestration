@@ -33,8 +33,27 @@ providers:
   - id: antigravity
     plan: Antigravity subscription
     policy: spend-first       # use-it-or-lose-it quota
-    status: ok
+    status: ok                # best status across groups (ok if any group is usable)
     probe: {kind: antigravity}
+    groups:
+      - name: "Gemini Models"
+        models: [gemini-4-neon, gemini-4-hydrogen, gemini-3-8-flash]
+        status: ok
+        used_percent: 50
+        window: 7d
+        resets_at: 2026-12-01T00:00:00+00:00
+      - name: "Claude and GPT models"
+        models: [claude-opus-5-5, claude-sonnet-5-5, gpt-oss-120b]
+        status: exhausted
+        used_percent: 100
+        window: 7d
+        resets_at: 2026-12-02T00:00:00+00:00
+      - name: "Gemini 4 Argon"
+        models: [gemini-4-argon]
+        status: ok
+        used_percent: 0
+        window: 7d
+        resets_at: 2026-12-02T00:00:00+00:00
     resets: 2026-12-01
   - id: codex
     plan: ChatGPT subscription
