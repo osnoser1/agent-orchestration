@@ -822,11 +822,11 @@ def reviewer_tier(tier, risk):
 
 
 def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low):
-    """Return the first non-excluded reviewer in the fallback order, or None.
+    """Return `(stage, candidate, below_tier)` for the first usable reviewer, or None.
 
-    Order (references/selection.md): different family meeting `rt` -> different family below `rt`
-    (best score) -> same family, different model -> same model. Tier-meeting candidates come first
-    inside each family stage.
+    Capability before independence (references/selection.md): different family meeting `rt` ->
+    same family, different model, meeting `rt` -> different family below `rt` (best score) ->
+    same family, different model, below `rt` (best score) -> same model.
     """
     meet, _, _ = candidates(catalog, assets, avail, floors[rt], floors, now, fail_on_low=fail_on_low)
     anyc, _, _ = candidates(catalog, assets, avail, 0, floors, now, fail_on_low=fail_on_low, pick_top=True)
@@ -836,33 +836,43 @@ def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_l
     diff = lambda c: c["model"]["family"] != fam
     same_fam = lambda c: c["model"]["family"] == fam and c["model"]["id"] != mid
     same_model = lambda c: c["model"]["id"] == mid
-    for stage, pred in ((1, diff), (2, same_fam), (3, same_model)):
-        for pool in (meet, anyc):
-            hit = [c for c in pool if pred(c)]
-            if hit:
-                return stage, hit[0], hit[0]["score"] < floors[rt]
+    for stage, pool, pred in (
+        (1, meet, diff),
+        (2, meet, same_fam),
+        (3, anyc, diff),
+        (4, anyc, same_fam),
+        (5, meet, same_model),
+        (5, anyc, same_model),
+    ):
+        hit = [c for c in pool if pred(c)]
+        if hit:
+            return stage, hit[0], hit[0]["score"] < floors[rt]
     return None
 
 
 def print_reviewer(rt, pick, impl_model, floor):
     stage, c, below = pick
+    fam = impl_model["family"]
     labels = {
         1: "different family",
         2: "same family, different model, fresh context",
-        3: "same model, fresh conversation",
+        3: "different family, below tier",
+        4: "same family, different model, fresh context, below tier",
+        5: "same model, fresh conversation",
     }
-    tags = [labels[stage]] + (["below tier"] if below else [])
-    print(f"reviewer ({rt}, {', '.join(tags)}): {_fmt_cand(c)}")
-    if stage == 1 and not below:
-        return
+    print(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
     if stage == 1:
-        why = f"no different-family candidate meets {rt}; using the best available below tier"
-    elif stage == 2:
-        why = f"no different-family candidate usable; using same family {impl_model['family']}, different model, fresh context"
+        return
+    if stage == 2:
+        why = f"no different-family candidate meets {rt}; using same family {fam}, different model, fresh context"
+    elif stage == 3:
+        why = f"no different-family or same-family candidate meets {rt}; using the best different-family score"
+    elif stage == 4:
+        why = f"no different-family candidate usable; using same family {fam}, different model, fresh context"
     else:
         why = "no other model usable; using the implementer's model in a fresh conversation"
-    if below and stage != 1:
-        why += f" (below {rt}, score {c['score']} < {floor})"
+    if below:
+        why += f" (below {rt}: score {c['score']} < {floor})"
     print(f"[note] reviewer degraded: {why}. State this in the report.")
 
 

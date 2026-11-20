@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Agent orchestration

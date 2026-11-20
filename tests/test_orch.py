@@ -1505,7 +1505,7 @@ class TestReviewerFallbackOrder(unittest.TestCase):
         self.assertIn("reviewer (T2, different family): claude / claude-sonnet-5-5", out)
         self.assertNotIn("reviewer degraded", out)
 
-    def test_stage2_different_family_below_tier_picks_best_score_and_notes(self):
+    def test_stage3_different_family_below_tier_picks_best_score_and_notes(self):
         rc, out = self._select(
             "codex:gpt-6-2-sol,claude:claude-haiku-5-5,claude:claude-sonnet-5-5",
             risk="high",
@@ -1513,17 +1513,32 @@ class TestReviewerFallbackOrder(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("implementer: codex / gpt-6-2-sol", out)
         self.assertIn("reviewer (T4, different family, below tier): claude / claude-sonnet-5-5 @ xhigh", out)
-        self.assertIn("[note] reviewer degraded: no different-family candidate meets T4", out)
+        self.assertIn("[note] reviewer degraded: no different-family or same-family candidate meets T4", out)
 
-    def test_stage3_same_family_different_model_prefers_tier_meeting(self):
+    def test_stage2_same_family_meeting_tier(self):
         rc, out = self._select("claude:claude-opus-5-5,claude:claude-sonnet-5-5")
         self.assertEqual(rc, 0)
         self.assertIn("implementer: claude / claude-sonnet-5-5", out)
         self.assertIn("reviewer (T2, same family, different model, fresh context): claude / claude-opus-5-5", out)
-        self.assertIn("[note] reviewer degraded: no different-family candidate usable", out)
+        self.assertIn("[note] reviewer degraded: no different-family candidate meets T2", out)
         self.assertNotIn("below tier", out)
 
-    def test_stage3_same_family_below_tier_when_nothing_meets(self):
+    def test_same_family_meeting_tier_beats_different_family_below_tier(self):
+        rc, out = self._select("claude:claude-opus-5-5,claude:claude-sonnet-5-5,codex:gpt-6-luna")
+        self.assertEqual(rc, 0)
+        self.assertIn("implementer: claude / claude-sonnet-5-5", out)
+        self.assertIn("reviewer (T2, same family, different model, fresh context): claude / claude-opus-5-5", out)
+        self.assertNotIn("gpt-6-luna @", out.split("reviewer (", 1)[1].splitlines()[0])
+
+    def test_different_family_below_tier_beats_same_family_below_tier(self):
+        rc, out = self._select(
+            "claude:claude-opus-5-5,claude:claude-sonnet-5-5,codex:gpt-6-1-terra", complexity="hard"
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("implementer: claude / claude-opus-5-5 @ high", out)
+        self.assertIn("reviewer (T3, different family, below tier): codex / gpt-6-1-terra @ xhigh", out)
+
+    def test_stage4_same_family_below_tier_when_nothing_meets(self):
         rc, out = self._select("claude:claude-opus-5-5,claude:claude-sonnet-5-5", complexity="hard")
         self.assertEqual(rc, 0)
         self.assertIn("implementer: claude / claude-opus-5-5 @ high", out)
@@ -1533,7 +1548,7 @@ class TestReviewerFallbackOrder(unittest.TestCase):
         )
         self.assertIn("[note] reviewer degraded", out)
 
-    def test_stage4_same_model_fresh_conversation_when_single_model(self):
+    def test_stage5_same_model_fresh_conversation_when_single_model(self):
         rc, out = self._select("codex:gpt-6-2-sol")
         self.assertEqual(rc, 0)
         self.assertIn("reviewer (T2, same model, fresh conversation): codex / gpt-6-2-sol", out)
