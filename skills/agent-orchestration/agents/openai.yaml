@@ -1,0 +1,3 @@
+interface:
+  display_name: "Agent Orchestration"
+  short_description: "Route coding work across subagents and models by complexity, risk, and quota"

@@ -1,13 +1,15 @@
-# Plain-language updates to assets
+# Plain-language fallback updates to assets
 
-| User says | Do |
+Automatic probes (`scripts/orch.py probe`) maintain usage percentages and reset times. Use these manual edits for facts no local tool exposes (plan cancellations, renewal dates, manual resets, or new providers):
+
+| User says | Update in `assets.yaml` |
 |---|---|
-| "Claude reset" | provider `status: ok`, clear note |
-| "I cancelled X" / "X ends on <date>" | `policy: ending`, `renews` = end date; spend it first |
-| "X is almost out" | `status: low`; deprioritize for big work |
+| "Claude reset" | `status: ok`; clear `exhausted_until`, `status_note`, `unparsed` (`orch.py status <provider> ok`) |
+| "I cancelled X" / "X ends on `<date>`" | `policy: ending`, `renews: <date>` |
+| "X is almost out" | `status: low` (`orch.py status <provider> low`) |
 | "X is use-it-or-lose-it" | `policy: spend-first` |
-| "I added provider Y" | add entry (id from discovery) |
-| "stop using Z" | `policy: avoid` or remove |
-| "don't pay for API" (default) | keep `pay_per_use: true` providers excluded |
+| "I added provider Y" | add entry with discovery `id` and optional `probe:` config |
+| "stop using Z" | `policy: avoid` (or remove entry) |
+| "keep pay-per-use off" (default) | mark billed-per-token entries `pay_per_use: true`, `policy: avoid` |
 
-Edit the file in place, keep comments, confirm in one line. If the file doesn't exist, create it from `assets/assets.example.yaml` with only providers the user mentioned. Never write personal data into the repo.
+Edit `assets.yaml` in place, preserve comments, update top-level `updated`, and confirm in one line. When the file is missing, seed it from `assets/assets.example.yaml` with only the providers the user named. Keep personal data outside git repositories.

@@ -1,7 +1,11 @@
-# Harness notes
+# Harnesses
 
-**T3 Code**: `orchestrator_capabilities` once per thread (lists providers, models, option keys), then `delegate_task` with target provider/model/options; continue a child with `t3_thread_send`; stop with `task_cancel`. Don't poll children. Use the option key the catalog `quirks` give (e.g. Antigravity: `thought_level`).
-**Claude Code (single harness)**: `Agent` tool with `model` (`haiku|sonnet|opus` or full ids), `subagent_type`; continue with `SendMessage`. Only Anthropic family is available, so "different family" review is impossible: use a different model + fresh context and say so.
-**Codex**: spawn subagents with model/effort choices the CLI exposes (e.g. `/model`, subagent config); OpenAI family only.
-**Gemini / Antigravity**: models listed by the app; Gemini children may end their turn while "waiting".
-Rule: only choose what discovery shows. If the harness can't set a model per subagent, use its default and say so.
+Choose only models returned by the active harness's discovery step. If a harness cannot pick a model per subagent, run with its default and report that.
+
+| Harness | Discover | Delegate | Continue | Cancel | Quota probe | Quirks |
+|---|---|---|---|---|---|---|
+| Antigravity | Harness model list or `agy` | `invoke_subagent` or `agy -p` | `send_message` | `manage_subagents` (`kill`) | `agy -p "/usage" --output-format json` (reports Gemini and Claude/GPT 5h+weekly groups; unverified when `agy` is absent) | Option key is `thought_level` (not `thinking_level`). Gemini children may end their turn while "waiting" — resend and instruct them to block in one command. `agy` CLI: passing `--effort` with a model id that already has an effort suffix errors; `--mode plan` waits for approval; headless runs auto-deny writes while reporting `SUCCESS` (inspect `denied_actions`); ~14K-token overhead per call, so batch small items. |
+| Claude Code | `Agent` tool `model` values | `Agent` (`model`, `subagent_type`) | `SendMessage` | Stop / interrupt agent | `GET https://api.anthropic.com/api/oauth/usage` with local OAuth token per config dir (`~/.claude`, `$CLAUDE_CONFIG_DIR`) | Anthropic family only: when cross-family review is unavailable, use a different model with fresh context and state it. Each `$CLAUDE_CONFIG_DIR` is a separate account. |
+| Codex | `/model` or subagent config | `spawn_agent` or `codex exec` | `send_input` or `codex resume` | `close_agent` | Latest `token_count` event in `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (`payload.rate_limits.{primary,secondary}`) | OpenAI family only. `codex exec`: close stdin (`< /dev/null`) so it finishes cleanly; `service_tier=fast` consumes ~2.5× quota. |
+| Gemini CLI | `/model` or CLI model list | Subagent tool or CLI invocation | Resume session | Stop process | Quota-error parse (`references/quota-errors.md`) | Google family only. Gemini children may end their turn while "waiting" — instruct them to block in one command. |
+| T3 Code | `orchestrator_capabilities` (once per thread) | `delegate_task` (`target.providerInstanceId`, `model`, `options`) | `t3_thread_send` | `task_cancel` | `python3 scripts/orch.py probe` across configured provider backends | Multi-provider; pass provider option keys from `catalog.yaml` `quirks` (e.g. `thought_level` for Antigravity). Wait for wakeup notifications instead of polling. |
