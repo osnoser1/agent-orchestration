@@ -1,6 +1,6 @@
 # Plain-language fallback updates to assets
 
-Automatic probes (`scripts/orch.py probe`) maintain usage percentages and reset times. Use these manual edits for facts no local tool exposes (plan cancellations, renewal dates, manual resets, or new providers):
+Automatic probes (`scripts/orch.py probe`) maintain usage percentages and reset times. Use these manual edits for facts no local tool exposes (plan cancellations, renewal dates, manual resets, new providers, or user workflow preferences):
 
 | User says | Update in `assets.yaml` |
 |---|---|
@@ -11,5 +11,7 @@ Automatic probes (`scripts/orch.py probe`) maintain usage percentages and reset 
 | "I added provider Y" | add entry with discovery `id` and optional `probe:` config |
 | "stop using Z" | `policy: avoid` (or remove entry) |
 | "keep pay-per-use off" (default) | mark billed-per-token entries `pay_per_use: true`, `policy: avoid` |
+| "delegate design/taste checkpoints" / "ask me on design checkpoints" | `preferences.design_checkpoints: delegate` (or `ask`, default `ask`) |
+| "skip `<evidence>` unless the task is about it" / "always include `<evidence>`" | `preferences.evidence: "<prioritized and deprioritized evidence>"` |
 
 Edit `assets.yaml` in place, preserve comments, update top-level `updated`, and confirm in one line. When the file is missing, seed it from `assets/assets.example.yaml` with only the providers the user named. Keep personal data outside git repositories.

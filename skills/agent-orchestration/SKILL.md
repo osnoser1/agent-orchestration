@@ -4,16 +4,16 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Agent orchestration
 
-Act as the **orchestrator**: select the right worker, write a tight brief, enforce quality gates, and keep orchestrator spend low. Handle cheap checks yourself (read a diff, run one key test) and delegate expensive work (implementation, deep research, review).
+Act as the **orchestrator**: select the right worker, write a tight brief, supervise batches, enforce quality gates, and keep orchestrator spend low. Handle cheap checks yourself (read a small diff, run one key test) and delegate expensive work (implementation, deep research, large-diff summaries, review).
 
 Read models only from discovery and two data files:
 - `catalog.yaml` (next to this file): shared model facts (scores, cost class, strengths, quirks), merged with `catalog.local.yaml` next to the assets file when present.
-- `~/.config/agent-orchestration/assets.yaml` (or `$AGENT_ORCHESTRATION_ASSETS`): per-user providers, quota status, and policy (`assets/assets.example.yaml`). When missing or stale, proceed with defaults (all discovered providers `ok`, policy `normal`), note that in one line, and offer to create it.
+- `~/.config/agent-orchestration/assets.yaml` (or `$AGENT_ORCHESTRATION_ASSETS`): per-user providers, quota status, preferences, and policy (`assets/assets.example.yaml`). When missing or stale, proceed with defaults (all discovered providers `ok`, policy `normal`), note that in one line, and offer to create it.
 
 ## 1. Discover (once per conversation)
 List available `provider:model` pairs using your harness's discovery mechanism (`references/harnesses.md`) and intersect them with `catalog.yaml` (plus `catalog.local.yaml`). Read the target repo's `AGENTS.md` `## Orchestration` section when present (`references/repo-policy.md`). Run `python3 scripts/orch.py probe` when available to refresh `used_percent`, `window`, `resets_at`, clear expired lockouts, and surface `followups` (`references/selection.md`). For any required model missing from the catalog or `rating: unrated`, run the one-time research in `references/research-unrated.md` and record it locally.
@@ -21,46 +21,50 @@ List available `provider:model` pairs using your harness's discovery mechanism (
 *Done when*: every available `provider:model` pair is mapped to the catalog, repo policy (if present) is loaded, quota status and follow-ups are checked (or noted unverified), and any needed unrated model is recorded once.
 
 ## 2. Classify
-Assign complexity (`trivial|standard|hard|frontier`), risk (`low|medium|high`, adding any repo `High risk:` triggers from `references/repo-policy.md`), UI/UX flag (`--ui`) or repo `Models:` preference, tool requirements (browser, device, network), and delegation surface (`subagent` vs `conversation`, `references/harnesses.md`) using `references/selection.md`.
+Assign complexity (`trivial|standard|hard|frontier`), risk (`low|medium|high`, adding any repo `High risk:` triggers from `references/repo-policy.md`), UI/UX flag (`--ui`) or repo `Models:` preference, tool requirements (browser, device, network), delegation surface (`subagent` vs `conversation`, `references/harnesses.md`), and multi-item batching (`references/supervision.md`) using `references/selection.md`.
 
-*Done when*: complexity, risk, required tier, preferred strength/family, tool needs, and delegation surface are stated before model selection.
+*Done when*: complexity, risk, required tier, preferred strength/family, tool needs, delegation surface, and any multi-item batch order are stated before model selection.
 
 ## 3. Choose model + effort
-Apply the filter, tie-break, effort knee, and preferred-model fallback rules (`preferences.ui_fallback`) in `references/selection.md` (or run `python3 scripts/orch.py select`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs or opening a new top-level conversation. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). Models a plan names ahead are provisional: repeat this step for each role when its step starts, after a fresh `probe`.
+Apply the filter, tie-break, effort knee, and preferred-model fallback rules (`preferences.ui_fallback`) in `references/selection.md` (or run `python3 scripts/orch.py select`). When holding a batch until a specific provider renews, record a `resume` follow-up and schedule its wakeup (`references/supervision.md`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs or opening a new top-level conversation. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). Models a plan names ahead are provisional: repeat this step for each role when its step starts, after a fresh `probe`.
 
-*Done when*: a primary `provider / model @ effort`, delegation surface, and (for reviewed work) a reviewer from the fallback order in `references/selection.md` are selected at their step starts with quirks noted and logged.
+*Done when*: a primary `provider / model @ effort`, delegation surface, and (for reviewed work) a reviewer from the fallback order in `references/selection.md` are selected at their step starts (or deferred to a provider renewal) with quirks noted and logged.
 
 ## 4. Brief
-Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md` (`GOAL`, `CONTEXT / KNOWN FACTS`, `CONSTRAINTS`, `VERIFICATION`, `REPORT`, `IF BLOCKED`). Name the active phase's skills or commands from the repo's `## Orchestration` section explicitly in the brief (`references/repo-policy.md`). For workers writing agent-facing docs, instruct them to follow the target repo's writing guide or `writing-for-agents` when none exists. Require every report to close with `## Obstacles / not verified`.
+Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md` (`GOAL`, `CONTEXT / KNOWN FACTS`, `CONSTRAINTS`, `VERIFICATION`, `REPORT`, `IF BLOCKED`). Name the active phase's skills or commands from the repo's `## Orchestration` section explicitly (`references/repo-policy.md`) and include proportional evidence and checkpoint triggers (`references/verification.md`). For multi-item batches or non-notifying children, persist user-local durable state and start supervision (`references/supervision.md`). Require every report to close with `## Obstacles / not verified`.
 
-*Done when*: the brief carries all known facts, explicit repo phase skills/commands, exact verification commands, doc-writing rules when applicable, and the mandatory closing section.
+*Done when*: the brief carries all known facts, explicit repo phase skills/commands, proportional verification and checkpoint rules, doc review-loop instructions when applicable, and the mandatory closing section; multi-item batches have user-local durable state and active supervision where needed.
 
 ## 5. Quality gates
-1. **Red→green evidence**: require failing repro/test output before the fix and passing output after.
-2. **Cross-family review**: review with a different model family given the diff or a shared **evidence pack**; when no such model is usable, take the next step of the reviewer fallback order and note it in the report (`references/selection.md`). Send fixes back to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
-3. **Final cheap check**: read the diff and run one key test yourself; send follow-up fixes to the implementing child.
-4. **Land**: follow the repo's `Land:` policy (`references/repo-policy.md`) or documented process (`AGENTS.md`/`CLAUDE.md`).
-5. **Log outcome**: append completion (`ok|failed|quota|stall|rework` + findings count) to the decision ledger (`scripts/orch.py log`, `references/improvement.md`).
+1. **Red→green evidence**: require failing repro/test output before the fix and passing output after, scaled to the user's and repo's evidence priorities (`references/verification.md`).
+2. **Design checkpoints**: for user-visible taste decisions, apply the checkpoint gate in `references/verification.md` and record approved checkpoints in durable state (`references/supervision.md`).
+3. **Cross-family review**: review with a different model family given the diff or a shared **evidence pack**; when no such model is usable, take the next step of the reviewer fallback order and note it in the report (`references/selection.md`). Send fixes back to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
+4. **Final check before landing**: run the pre-landing verification checklist in `references/verification.md` and send any follow-up fixes to the implementing child.
+5. **Land**: follow the repo's `Land:` policy (`references/repo-policy.md`) or documented process (`AGENTS.md`/`CLAUDE.md`), advance any dependent batch waiting on these paths, and shrink or disable the supervision loop when the batch finishes (`references/supervision.md`).
+6. **Log outcome**: append completion (`ok|failed|quota|stall|rework` + findings count) to the decision ledger (`scripts/orch.py log`, `references/improvement.md`).
 
-*Done when*: red→green output is checked, review findings are resolved by the implementer, your own diff + key-test check passes, the change lands through the repo's process, and the outcome is logged.
+*Done when*: proportional red→green evidence and any taste checkpoints are approved, review findings are resolved, the pre-landing checklist passes, the change lands, dependent batches or supervision wind-down run, and the outcome is logged.
 
 ## 6. Quota and failure handling
 - **Quota error** (any child, implementer or reviewer): parse the reset time (`references/quota-errors.md`), persist `exhausted` to assets (`scripts/orch.py exhaust`, passing `--group` or `--model` when the provider uses quota groups), log `--outcome quota` (`scripts/orch.py log`), and follow the single decision order in `references/harnesses.md` (switch model in place → start a new child with partial results → schedule a resume at `earliest_reset + 2m` when no usable candidate remains). Inform the user in one line.
-- **Harness quirks or stalls**: follow the harness row in `references/harnesses.md` and `quirks` in `catalog.yaml`; log `stall` outcomes to the ledger.
-- **Manual fallback**: when the user reports facts probes cannot see (plan cancelled, renewal date, manual reset), update assets per `references/assets-updates.md`.
+- **Known infrastructure failures**: apply the single-rerun gate in `references/verification.md` before investigating.
+- **Harness quirks or stalls**: follow the harness row in `references/harnesses.md`, `quirks` in `catalog.yaml`, and the supervision loop in `references/supervision.md`; log `stall` outcomes to the ledger.
+- **Manual fallback**: when the user reports facts probes cannot see (plan cancelled, renewal date, manual reset, evidence or checkpoint preferences), update assets per `references/assets-updates.md`.
 
-*Done when*: exhausted providers or quota groups carry reset times in assets, expired lockouts are cleared, interrupted work either resumes on the next candidate (in place when supported, else in a new child with partial results) or is recorded and scheduled to resume after the earliest reset (`kind: resume` in `followups`), and `quota` plus continuation outcomes are logged.
+*Done when*: exhausted providers or quota groups carry reset times in assets, expired lockouts clear, transient infra failures get one rerun before investigation, interrupted or idle work resumes or schedules a post-reset wakeup (`kind: resume` in `followups`), and outcomes are logged.
 
 ## 7. Decide vs ask
-Execute routine orchestration choices (including in-place model switches and same-conversation scheduled resumes) and report them briefly. Ask the user once before destructive actions, publishing, spending emergency models/efforts or pay-per-use APIs, opening a new top-level conversation when `preferences.new_conversations: ask`, proceeding when `preferences.ui_fallback: ask`, or resolving ambiguity that changes the outcome.
+Execute routine orchestration choices (including in-place model switches, same-conversation scheduled resumes, recurring supervision checks over non-notifying children, single reruns of known infrastructure failures, and delegated design checkpoints when `preferences.design_checkpoints: delegate`) and report them briefly. Ask the user once before destructive actions, publishing, spending emergency models/efforts or pay-per-use APIs, opening a new top-level conversation when `preferences.new_conversations: ask`, proceeding when `preferences.ui_fallback: ask`, approving a taste checkpoint when `preferences.design_checkpoints: ask` (default), or resolving ambiguity that changes the outcome.
 
-*Done when*: routine decisions are reported in-flight and every listed high-impact action waits for one explicit approval.
+*Done when*: routine decisions are reported in-flight and every listed high-impact or taste gate waits for one explicit approval.
 
 ## References (load on demand)
 - `references/selection.md` — tier floors, risk triggers, effort knee, tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), follow-up kinds and due rule, reviewer timing and fallback order, review gate.
+- `references/supervision.md` — conflict-aware batching, deferred launch on provider renewal, user-local durable state, recurring supervision loop for non-notifying children, and idempotent child messages.
+- `references/verification.md` — proportional evidence (`evidence`), design checkpoints (`design_checkpoints`), final check before landing, and single rerun for known infrastructure failures.
 - `references/repo-policy.md` — target-repo `## Orchestration` contract, precedence, and explicit brief forwarding.
 - `references/harnesses.md` — delegation surface (`subagent` vs `conversation`), in-place model switching and scheduled resume on quota exhaustion, and alphabetical harness matrix.
-- `references/brief-template.md` — delegation brief layout and mandatory report sections.
+- `references/brief-template.md` — delegation brief layout, doc review-loop rule, and mandatory report sections.
 - `references/quota-errors.md` — automatic probe thresholds, exit codes, and error-message parsing.
 - `references/assets-updates.md` — plain-language fallback updates for `assets.yaml`.
 - `references/research-unrated.md` — one-time scoring workflow for unrated models.

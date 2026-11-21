@@ -58,7 +58,7 @@ When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-fa
 **When no tier-meeting candidate remains (`orch.py select` exits `4`)**: `ui_fallback` does not run. Instead, `select` reports the earliest reset among exhausted tier-meeting non-emergency, non-pay-per-use candidates (`earliest_reset + 2m` for scheduling) and, when `--ref <ref>` is passed (or via `orch.py followups --add --kind resume --ref <ref> --needs <tier> --after <iso>`), records a single `kind: resume` entry per `ref` so later conversations do not schedule duplicates (`references/harnesses.md`).
 
 **Follow-up kinds and due rule**:
-- Three distinct `kind`s share `followups` in `assets.yaml`: `ui-review` (`needs: ui-ux-review`), `preferred-review` (`needs: <family>`), and `resume` (`needs: <tier>`, model id, or `any`).
+- Three distinct `kind`s share `followups` in `assets.yaml`: `ui-review` (`needs: ui-ux-review`), `preferred-review` (`needs: <family>`), and `resume` (`needs: <tier>`, model id, `provider:<id>/<tier|model>`, `provider:<id>/<group>/<tier>`, `<family>`, or `any` — used both for quota-stopped children in `references/harnesses.md` and for deferred batch launches until a specific provider or quota group renews in `references/supervision.md`).
 - `orch.py select`, `orch.py followups --due`, and `orch.py probe` report a recorded follow-up as **due** only when the current run's discovery (`--available`) includes a usable (non-exhausted, non-emergency, non-pay-per-use) model matching `needs`. When `--available` is omitted, `probe` and `followups --due` report ready follow-ups as `pending: needs <need>` rather than `due`. Clear completed or resumed entries with `orch.py followups --done <ref>`.
 
 ## Reviewer and review gate

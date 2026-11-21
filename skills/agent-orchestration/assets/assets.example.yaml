@@ -8,6 +8,8 @@ preferences:
   exhausted_threshold: 98                         # used_percent >= exhausted_threshold -> status: exhausted
   ui_fallback: proceed                            # proceed | defer | ask (when an offered UI/UX or repo Models preference is exhausted)
   new_conversations: ask                          # ask | allow (authorization to open new top-level conversations)
+  design_checkpoints: ask                         # ask | delegate (pause for user approval on taste/design checkpoints)
+  # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
 providers:
   # id = provider id your harness uses for delegation.
@@ -40,7 +42,7 @@ providers:
     probe: {kind: antigravity}
     groups:
       - name: "Gemini Models"
-        models: [gemini-4-neon, gemini-4-hydrogen, gemini-3-8-flash]
+        models: [gemini-4-neon, gemini-4-hydrogen, gemini-pro-orchestrator-neon, gemini-3-8-flash]
         status: ok
         used_percent: 50
         window: 7d
@@ -52,7 +54,7 @@ providers:
         window: 7d
         resets_at: 2026-12-02T00:00:00+00:00
       - name: "Gemini 4 Argon"
-        models: [gemini-4-argon]
+        models: [gemini-4-argon, gemini-pro-orchestrator-g1-pro]
         status: ok
         used_percent: 0
         window: 7d

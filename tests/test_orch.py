@@ -42,7 +42,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
         self.assertEqual(gemini["resets_at"], "2026-11-26T15:58:04+00:00")
         self.assertEqual(
             gemini["models"],
-            ["gemini-4-neon", "gemini-4-hydrogen", "Orchestrator (Neon)", "gemini-3-8-flash"],
+            ["gemini-4-neon", "gemini-4-hydrogen", "gemini-pro-orchestrator-neon", "gemini-3-8-flash"],
         )
 
         # Claude and GPT models: weekly 0% remaining -> 100% used; 5h disabled -> skipped.
@@ -62,8 +62,8 @@ class TestAntigravityGroupQuota(unittest.TestCase):
         self.assertEqual(argon["resets_at"], "2026-11-27T21:23:09+00:00")
         self.assertEqual(argon["models"], ["gemini-4-argon"])
 
-        # Unmatched model names kept as-is and reported once.
-        self.assertEqual(result["unmatched"], ["Orchestrator (Neon)"])
+        # All fixture model names (including "Orchestrator (Neon)") map cleanly to catalog ids.
+        self.assertEqual(result["unmatched"], [])
 
     def test_disabled_5h_bucket_ignored_even_when_higher_usage(self):
         data = copy.deepcopy(self.fixture)
@@ -139,7 +139,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertIn("group Gemini Models: ok (52.6% of 7d", out)
             self.assertIn("group Claude and GPT models: exhausted (100% of 7d", out)
             self.assertIn("group Gemini 4 Argon: ok (0% of 7d", out)
-            self.assertIn("Orchestrator (Neon)", out)
+            self.assertNotIn("unmatched model names", out)
 
             # Verify persisted YAML round-trips cleanly and passes orch.py check.
             loaded = orch.load_file(assets_path)
@@ -151,7 +151,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertEqual(by_name["Claude and GPT models"]["status"], "exhausted")
             self.assertEqual(by_name["Gemini Models"]["status"], "ok")
             self.assertEqual(by_name["Gemini 4 Argon"]["status"], "ok")
-            self.assertIn("Orchestrator (Neon)", by_name["Gemini Models"]["models"])
+            self.assertIn("gemini-pro-orchestrator-neon", by_name["Gemini Models"]["models"])
 
             check_args = mock.Mock(assets=assets_path, catalog=CATALOG_PATH)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1618,6 +1618,228 @@ class TestReviewerFallbackOrder(unittest.TestCase):
         rc, out = self._select("codex:gpt-6-2-sol", implementer="not-a-model")
         self.assertEqual(rc, 1)
         self.assertIn("not in catalog", out)
+
+
+class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
+    def setUp(self):
+        self.catalog = orch.load_file(CATALOG_PATH)
+
+    def test_catalog_includes_antigravity_orchestrator_neon_and_argon_unrated(self):
+        by_id = {m["id"]: m for m in self.catalog.get("models") or []}
+        self.assertIn("gemini-pro-orchestrator-neon", by_id)
+        self.assertIn("gemini-pro-orchestrator-g1-pro", by_id)
+
+        neon = by_id["gemini-pro-orchestrator-neon"]
+        self.assertEqual(neon["name"], "Orchestrator (Neon)")
+        self.assertEqual(neon["family"], "google")
+        self.assertEqual(neon["rating"], "unrated")
+        self.assertIn("subagents", neon.get("notes", ""))
+        self.assertIn("Orchestrator (Neon)", neon.get("aliases") or [])
+
+        argon = by_id["gemini-pro-orchestrator-g1-pro"]
+        self.assertEqual(argon["name"], "Orchestrator (Argon)")
+        self.assertEqual(argon["family"], "google")
+        self.assertEqual(argon["rating"], "unrated")
+        self.assertIn("subagents", argon.get("notes", ""))
+        self.assertIn("Orchestrator (Argon)", argon.get("aliases") or [])
+
+        name_map = orch._catalog_name_map(self.catalog)
+        self.assertEqual(name_map.get(orch.norm("Orchestrator (Neon)")), "gemini-pro-orchestrator-neon")
+        self.assertEqual(name_map.get(orch.norm("Orchestrator (Argon)")), "gemini-pro-orchestrator-g1-pro")
+        self.assertEqual(name_map.get(orch.norm("gemini-pro-orchestrator-argon")), "gemini-pro-orchestrator-g1-pro")
+
+    def test_check_validates_catalog_aliases_and_rejects_bare_provider_followup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_cat = os.path.join(tmp, "bad_catalog.yaml")
+            with open(bad_cat, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "models:\n"
+                    "  - id: test-model\n"
+                    "    name: Test Model\n"
+                    "    family: google\n"
+                    "    cost: normal\n"
+                    "    rating: unrated\n"
+                    "    aliases: not-a-list\n"
+                )
+            bad_assets = os.path.join(tmp, "bad_assets.yaml")
+            with open(bad_assets, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers: []\n"
+                    "followups:\n"
+                    "  - kind: resume\n"
+                    '    ref: "b1"\n'
+                    "    needs: provider:claude-extra\n"
+                )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(mock.Mock(assets=bad_assets, catalog=bad_cat, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1)
+            self.assertIn("aliases", buf.getvalue())
+            self.assertIn("provider:claude-extra", buf.getvalue())
+
+    def test_check_validates_design_checkpoints_and_evidence_preferences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.yaml")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  design_checkpoints: auto\n"
+                    "  evidence: true\n"
+                    "providers: []\n"
+                )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1)
+            self.assertIn("design_checkpoints", buf.getvalue())
+            self.assertIn("evidence", buf.getvalue())
+
+            good = os.path.join(tmp, "good.yaml")
+            with open(good, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  design_checkpoints: delegate\n"
+                    '  evidence: "red-green tests; skip recordings unless UI task"\n'
+                    "providers: []\n"
+                )
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = orch.check(mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc2, 0)
+
+    def test_deferred_launch_until_specific_provider_and_group_renews_enforces_tier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: claude\n"
+                    "    policy: preserve\n"
+                    "    status: ok\n"
+                    "  - id: claude-extra\n"
+                    "    policy: normal\n"
+                    "    status: exhausted\n"
+                    "    exhausted_until: 2026-11-25T00:00:00+00:00\n"
+                    "  - id: antigravity\n"
+                    "    policy: spend-first\n"
+                    "    status: ok\n"
+                    "    groups:\n"
+                    '      - name: "Gemini Models"\n'
+                    "        models: [gemini-4-neon, gemini-4-hydrogen]\n"
+                    "        status: exhausted\n"
+                    "        used_percent: 100\n"
+                    "        window: 7d\n"
+                    "        resets_at: 2026-11-26T00:00:00+00:00\n"
+                    '      - name: "Claude and GPT models"\n'
+                    "        models: [claude-opus-5-5, claude-sonnet-5-5]\n"
+                    "        status: ok\n"
+                    "        used_percent: 20\n"
+                    "        window: 7d\n"
+                    "        resets_at: 2026-11-27T00:00:00+00:00\n"
+                )
+
+            # Bare provider:<id> is not accepted as a valid match
+            self.assertEqual(
+                orch.find_usable_in_available(
+                    self.catalog,
+                    orch.load_file(assets_path),
+                    orch.get_now("2026-11-25T00:05:00Z"),
+                    "provider:claude-extra",
+                    ["claude-extra:claude-opus-5-5"],
+                ),
+                [],
+            )
+            self.assertEqual(
+                orch.find_usable_in_available(
+                    self.catalog,
+                    orch.load_file(assets_path),
+                    orch.get_now("2026-11-25T00:05:00Z"),
+                    "claude-extra",
+                    ["claude-extra:claude-opus-5-5"],
+                ),
+                [],
+            )
+
+            # Record provider+tier followup and grouped provider+group+tier followup
+            for ref, needs, after in (
+                ("batch-deferred-1", "provider:claude-extra/T3", "2026-11-25T00:02:00+00:00"),
+                ("batch-gemini-group", "provider:antigravity/Gemini Models/T3", "2026-11-26T00:02:00+00:00"),
+            ):
+                add_args = mock.Mock(
+                    assets=assets_path,
+                    catalog=CATALOG_PATH,
+                    now="2026-11-20T21:00:00Z",
+                    due=False,
+                    add=True,
+                    kind="resume",
+                    ref=ref,
+                    needs=needs,
+                    after=after,
+                    done=None,
+                    available=None,
+                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(orch.followups_cmd(add_args), 0)
+
+            # At 2026-11-21: claude-extra is exhausted, and antigravity's Gemini Models group is exhausted
+            # (even though primary claude AND antigravity's Claude and GPT models group are both ok!) -> neither due
+            due_before = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-21T12:00:00Z",
+                due=True,
+                add=False,
+                done=None,
+                available="claude:claude-opus-5-5,claude-extra:claude-opus-5-5,antigravity:claude-opus-5-5,antigravity:gemini-4-neon",
+            )
+            buf_before = io.StringIO()
+            with contextlib.redirect_stdout(buf_before):
+                self.assertEqual(orch.followups_cmd(due_before), 0)
+            self.assertEqual(buf_before.getvalue().strip(), "")
+
+            # At 2026-11-25T00:05:00Z: claude-extra has renewed, but if only below-T3 Haiku is available on claude-extra, still not due
+            due_below_tier = mock.Mock(
+                **{
+                    **due_before.__dict__,
+                    "now": "2026-11-25T00:05:00Z",
+                    "available": "claude-extra:claude-haiku-5-5,antigravity:claude-opus-5-5,antigravity:gemini-4-neon",
+                }
+            )
+            buf_below = io.StringIO()
+            with contextlib.redirect_stdout(buf_below):
+                self.assertEqual(orch.followups_cmd(due_below_tier), 0)
+            self.assertEqual(buf_below.getvalue().strip(), "")
+
+            # With T3-meeting model on claude-extra at 2026-11-25T00:05:00Z: batch-deferred-1 is due, while batch-gemini-group is still not due
+            due_mid = mock.Mock(
+                **{
+                    **due_before.__dict__,
+                    "now": "2026-11-25T00:05:00Z",
+                }
+            )
+            buf_mid = io.StringIO()
+            with contextlib.redirect_stdout(buf_mid):
+                self.assertEqual(orch.followups_cmd(due_mid), 0)
+            self.assertIn(
+                "followup due: [resume] batch-deferred-1 (needs provider:claude-extra/T3; usable via claude-extra)",
+                buf_mid.getvalue(),
+            )
+            self.assertNotIn("batch-gemini-group", buf_mid.getvalue())
+
+            # At 2026-11-26T00:05:00Z: antigravity's Gemini Models group resets -> batch-gemini-group is now due too
+            due_after = mock.Mock(**{**due_before.__dict__, "now": "2026-11-26T00:05:00Z"})
+            buf_after = io.StringIO()
+            with contextlib.redirect_stdout(buf_after):
+                self.assertEqual(orch.followups_cmd(due_after), 0)
+            self.assertIn(
+                "followup due: [resume] batch-gemini-group (needs provider:antigravity/Gemini Models/T3; usable via antigravity (Gemini Models))",
+                buf_after.getvalue(),
+            )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 # Scores = Artificial Analysis Intelligence Index (higher = smarter) per reasoning effort.
 # cost: cheap | normal | expensive | emergency (ask once before emergency models or efforts).
 # rating: rated | unrated (research unrated models once per references/research-unrated.md).
+# Antigravity note: `agy models` lists base ids alongside effort-suffixed ids (e.g. gemini-4-neon-high); pass --effort only with base ids.
 version: 1
 updated: 2026-11-20
 emergency_efforts: [max, ultra]
@@ -38,6 +39,22 @@ models:
     source: aa-v5
     notes: "High effort reported ~50-53 depending on source; 51 is the midpoint. Re-check when a single source is authoritative."
     quirks: ["Antigravity option key is thought_level."]
+  - id: gemini-pro-orchestrator-neon
+    name: Orchestrator (Neon)
+    aliases: [Orchestrator (Neon), gemini-4-orchestrator-neon]
+    family: google
+    cost: normal
+    rating: unrated
+    notes: "Composite Antigravity mode from agy models that coordinates its own subagents (Gemini 4 Neon with Hydrogen); no standalone Artificial Analysis score."
+    quirks: ["Coordinates its own subagents; run directly as a top-level mode rather than as a leaf worker.", "Antigravity option key is thought_level."]
+  - id: gemini-pro-orchestrator-g1-pro
+    name: Orchestrator (Argon)
+    aliases: [Orchestrator (Argon), gemini-pro-orchestrator-argon]
+    family: google
+    cost: normal
+    rating: unrated
+    notes: "Composite Antigravity mode from agy models that coordinates its own subagents (Gemini 4 Argon with Hydrogen); no standalone Artificial Analysis score."
+    quirks: ["Coordinates its own subagents; run directly as a top-level mode rather than as a leaf worker.", "Antigravity option key is thought_level."]
   - id: claude-opus-5-5
     name: Claude Opus 5.5
     family: anthropic
