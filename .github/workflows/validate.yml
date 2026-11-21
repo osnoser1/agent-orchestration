@@ -1,12 +1,43 @@
 name: validate
 on: [push, pull_request]
+
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # tools/repo.py check --base needs the merge-base
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with: { python-version: "3.12" }
-      - run: pip install skills-ref && agentskills validate skills/agent-orchestration
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "22" } # skills needs Node.js 22.20+
+      - run: pip install skills-ref==0.1.1 && agentskills validate skills/agent-orchestration
       - run: python3 -I skills/agent-orchestration/scripts/orch.py check --assets skills/agent-orchestration/assets/assets.example.yaml
+      - run: python3 -I tools/repo.py check --self-test
+      - name: Check repo rules (PRs also require a version bump for shipped changes)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # push runs skip the bump rule: main only changes through PRs, which are checked here
+          if [ -n "$BASE_REF" ]; then
+            python3 -I tools/repo.py check --base "origin/$BASE_REF"
+          else
+            python3 -I tools/repo.py check
+          fi
       - run: python3 -I -m unittest discover -s tests -v
+      - name: Only agent-orchestration is installable
+        run: |
+          rc=0
+          out=$(npx --yes skills@1.9.0 add . --list 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          clean=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')
+          if [ "$rc" -ne 0 ] || ! grep -q 'Found 1 skill' <<<"$clean" || ! grep -Eq '^[^[:alnum:]]*agent-orchestration[[:space:]]*$' <<<"$clean"; then
+            echo "::error::npx skills did not list exactly agent-orchestration (exit $rc)"
+            exit 1
+          fi

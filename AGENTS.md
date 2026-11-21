@@ -1,6 +1,9 @@
 # AGENTS.md
 
 - Editing or reviewing agent-facing text (`skills/*/SKILL.md`, `references/`, `catalog.yaml`, `.agents/skills/`, this file): run [agent-doc-review-loop](.agents/skills/agent-doc-review-loop/SKILL.md).
-- Harness parity: give every supported harness equal weight in alphabetical order inside one shared table or list.
-- Validate before pushing: `agentskills validate skills/agent-orchestration` (from `pip install skills-ref`), `python3 skills/agent-orchestration/scripts/orch.py check`, and `npx skills add . --list` (lists only `agent-orchestration`).
+- Harness parity: give every supported harness equal weight in alphabetical order inside one shared table or list; `tools/harnesses.json` is the single source, and `tools/repo.py check` enforces it on the README install table and the `references/harnesses.md` matrix.
+- Validate before pushing (each exits 0): `agentskills validate skills/agent-orchestration` (from `pip install skills-ref`), `python3 skills/agent-orchestration/scripts/orch.py check`, `python3 tools/repo.py check` (add `--base origin/main` for the version-bump rule), `python3 tools/repo.py check --self-test`, `python3 -m unittest discover -s tests`, and `npx skills add . --list` (lists only `agent-orchestration`).
 - Update vendored skills under `.agents/skills/` only with `npx skills update` (tracked in `skills-lock.json`); mark repo-local maintainer skills under `.agents/skills/` with `metadata.internal: "true"` so `npx skills add . --list` exposes only `agent-orchestration`.
+- Version: the PR author runs `python3 tools/repo.py bump <X.Y.Z>` once per PR that changes `skills/agent-orchestration/` or `.claude-plugin/`. Patch = fix or doc wording, minor = new rule or feature, major = breaking `assets.yaml` or catalog schema.
+- Release only when the user asks: show the dry run (`python3 tools/repo.py release`) and get approval before `--publish`, which tags and creates the GitHub release.
+- Rules that must survive edits live in `tools/pinned-rules.json`; change a pinned rule and its entry together.

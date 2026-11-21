@@ -1,0 +1,50 @@
+name: maintenance
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
+      - "skills-lock.json"
+      - ".agents/skills/**"
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - name: Audit workflows with zizmor
+        env:
+          GH_TOKEN: ${{ github.token }} # read-only token for zizmor's online audits
+        run: pipx run zizmor==1.32.0 .
+
+  skills-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "22" } # skills needs Node.js 22.20+
+      - name: Vendored skills match their upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # read-only token; avoids anonymous API rate limits
+        run: |
+          rc=0
+          out=$(npx --yes skills@1.9.0 check 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ] || ! grep -q 'All project skills are up to date' <<<"$out"; then
+            echo "::error::vendored skills drifted or the check failed (exit $rc): run npx skills update, review the diff, and commit skills-lock.json"
+            exit 1
+          fi

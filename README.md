@@ -118,7 +118,7 @@ Consumer repositories feed orchestration findings back upstream rather than patc
 
 ## Contributing
 
-To add or re-rate models, edit `skills/agent-orchestration/catalog.yaml` (scores per effort, `source`, retrieval date, `confidence`; `rating: unrated` when data is unavailable), run `python3 skills/agent-orchestration/scripts/orch.py check`, and open a PR. Keep personal quota data, emails, and private project names out of commits.
+To add or re-rate models, edit `skills/agent-orchestration/catalog.yaml` (scores per effort, `source`, retrieval date, `confidence`; `rating: unrated` when data is unavailable), run `python3 skills/agent-orchestration/scripts/orch.py check`, and open a PR. Keep personal quota data, emails, and private project names out of commits. Maintainers validate with `python3 tools/repo.py check` and release with `tools/repo.py bump` / `release` (see `AGENTS.md`).
 
 ## Standards followed
 
