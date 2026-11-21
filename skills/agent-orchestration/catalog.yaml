@@ -46,7 +46,7 @@ models:
     cost: normal
     rating: unrated
     notes: "Composite Antigravity mode from agy models that coordinates its own subagents (Gemini 4 Neon with Hydrogen); no standalone Artificial Analysis score."
-    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate use the base model (gemini-4-neon) as the worker.", "Its subagents draw from the same Gemini Models quota pool as Neon and Hydrogen and drain it faster than one model.", "Observed to overbuild when a task invites tooling; if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level."]
+    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate, use the base model (gemini-4-neon) as the worker.", "Its subagents draw from the same quota pool as the base model (Gemini Models, shared with Hydrogen) and drain it faster than the base model.", "Overbuilt when a task invited tooling (one observed case); if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level."]
   - id: gemini-pro-orchestrator-g1-pro
     name: Orchestrator (Argon)
     aliases: [Orchestrator (Argon), gemini-pro-orchestrator-argon]
@@ -54,7 +54,7 @@ models:
     cost: normal
     rating: unrated
     notes: "Composite Antigravity mode from agy models that coordinates its own subagents (Gemini 4 Argon with Hydrogen); no standalone Artificial Analysis score."
-    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate use the base model (gemini-4-argon) as the worker.", "Its subagents draw from the Gemini 4 Argon quota pool and drain it faster than one model.", "Observed to overbuild when a task invites tooling; if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level."]
+    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate, use the base model (gemini-4-argon) as the worker.", "Its subagents draw from the same quota pool as the base model (Gemini 4 Argon) and drain it faster than the base model.", "Overbuild was observed with Orchestrator (Neon), not with this mode; if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level."]
   - id: claude-opus-5-5
     name: Claude Opus 5.5
     family: anthropic
