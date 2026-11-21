@@ -2,7 +2,7 @@
 """Optional, dependency-free helper for the agent-orchestration skill (Python 3.9+).
 
   orch.py check     [--catalog F] [--assets F] [--now ISO] [--lockfile F]
-  orch.py probe     [--provider P] [--low-threshold N] [--exhausted-threshold N] [--available ...] [--assets F] [--now ISO]
+  orch.py probe     [--fresh] [--provider P] [--low-threshold N] [--exhausted-threshold N] [--available ...] [--assets F] [--now ISO]
   orch.py select    --complexity trivial|standard|hard|frontier --risk low|medium|high
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
                     [--fallback proceed|defer|ask] [--below-tier stage|wait|proceed]
@@ -27,8 +27,9 @@ Exit codes:
 
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
 """
-import argparse, glob, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
+import argparse, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone, date
+from email.utils import parsedate_to_datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEF_CATALOG = os.path.join(HERE, "..", "catalog.yaml")
@@ -1888,13 +1889,86 @@ def _read_claude_token(config_dir):
     return None
 
 
+USAGE_CACHE_TTL = 300
+USAGE_BACKOFF = 600
+
+
+def _usage_cache_path(ap):
+    return os.path.join(os.path.dirname(os.path.abspath(ap)), "usage-cache.json")
+
+
+def _usage_cache_read(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _usage_cache_write(path, key, entry):
+    """Merge one entry into the shared cache atomically; holds only parsed results and timestamps."""
+    data = _usage_cache_read(path)
+    data[key] = entry
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".usage-cache-")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _retry_after_seconds(value, now):
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    try:
+        return max(0, int(parsedate_to_datetime(text).timestamp() - now.timestamp()))
+    except Exception:
+        return USAGE_BACKOFF
+
+
+def _hhmmz(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%H:%MZ")
+
+
 def probe_claude(cfg, now):
+    """Return (result, note). Reuses a shared cache so concurrent sessions do not hammer the usage endpoint.
+
+    Stale data never becomes a result: it only appears in the note, so callers treat the provider as unverified.
+    """
     config_dir = os.path.expanduser(
         cfg.get("config_dir") or os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
     )
     token = _read_claude_token(config_dir)
     if not token:
         return None, f"unverified (no OAuth credentials in {config_dir})"
+
+    cpath = cfg.get("_cache_path")
+    key = hashlib.sha256(config_dir.encode("utf-8")).hexdigest()[:16]
+    entry = (_usage_cache_read(cpath).get(key) if cpath else None) or {}
+    ts = now.timestamp()
+    res, fetched = entry.get("result"), entry.get("fetched_at")
+    if not (isinstance(res, dict) and isinstance(fetched, (int, float))):
+        res = fetched = None
+    backoff = entry.get("backoff_until")
+    backoff = backoff if isinstance(backoff, (int, float)) else 0
+
+    def stale(reason):
+        if res is None:
+            return None, f"unverified ({reason})"
+        return None, (
+            f"unverified ({reason}); last known {res.get('used_percent')}% of {res.get('window')} "
+            f"at {_hhmmz(fetched)}"
+        )
+
+    ttl = cfg.get("_cache_ttl", USAGE_CACHE_TTL)
+    if res is not None and not cfg.get("_fresh") and 0 <= ts - fetched < ttl:
+        return dict(res), None
+    if ts < backoff:
+        return stale(f"HTTP 429, backing off until {_hhmmz(backoff)}")
 
     req = urllib.request.Request(
         ANTHROPIC_USAGE_URL,
@@ -1908,14 +1982,19 @@ def probe_claude(cfg, now):
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return None, f"unverified (HTTP {e.code})"
+        if e.code == 429:
+            until = ts + _retry_after_seconds((e.headers or {}).get("Retry-After"), now)
+            if cpath:
+                _usage_cache_write(cpath, key, {**entry, "backoff_until": until})
+            return stale(f"HTTP 429, backing off until {_hhmmz(until)}")
+        return stale(f"HTTP {e.code}")
     except Exception:
-        return None, "unverified (usage request failed)"
+        return stale("usage request failed")
 
     now_ts = now.timestamp()
     active = []
-    for win_name, key in (("5h", "five_hour"), ("7d", "seven_day")):
-        w = body.get(key)
+    for win_name, wkey in (("5h", "five_hour"), ("7d", "seven_day")):
+        w = body.get(wkey)
         if not isinstance(w, dict) or w.get("utilization") is None:
             continue
         r_dt = parse_time(w.get("resets_at"), now)
@@ -1934,11 +2013,14 @@ def probe_claude(cfg, now):
         return None, "unverified (no active usage windows returned)"
 
     chosen = max(active, key=lambda w: (w["used_percent"], w["resets_ts"]))
-    return {
+    result = {
         "used_percent": _fmt_pct(chosen["used_percent"]),
         "window": chosen["window"],
         "resets_at": chosen["resets_at"],
-    }, None
+    }
+    if cpath:
+        _usage_cache_write(cpath, key, {"result": result, "fetched_at": ts, "backoff_until": 0})
+    return result, None
 
 
 def _catalog_name_map(catalog):
@@ -2301,6 +2383,10 @@ def _probe(a, ap):
         if not fn:
             print(f"{pid}: unverified (unknown probe kind {kind})")
             continue
+        if kind == "claude":
+            ttl = prefs.get("usage_cache_ttl_seconds")
+            ttl = ttl if isinstance(ttl, (int, float)) and not isinstance(ttl, bool) and ttl >= 0 else USAGE_CACHE_TTL
+            cfg = {**cfg, "_cache_path": _usage_cache_path(ap), "_fresh": _opt_bool(a, "fresh"), "_cache_ttl": ttl}
         result, err = fn(cfg, now, catalog) if kind == "antigravity" else fn(cfg, now)
         if err:
             print(f"{pid}: {err}")
@@ -2762,6 +2848,7 @@ def main():
             p.add_argument("--low-threshold", type=float)
             p.add_argument("--exhausted-threshold", type=float)
             p.add_argument("--available")
+            p.add_argument("--fresh", action="store_true", help="bypass the usage cache TTL (429 backoff still applies)")
         if n == "select":
             p.add_argument("--complexity", required=True, choices=list(TIER))
             p.add_argument("--risk", required=True, choices=["low", "medium", "high"])

@@ -36,9 +36,13 @@ Carry everything required to resume cold after context compaction or a new sessi
 
 Refresh durable state whenever a batch launches, a child switches models or lands, quota state changes, or a checkpoint is approved.
 
+## Completion notices
+
+When a background task or delegated child reports completion (a task notification or a child's final message), read its result and act on it in the same turn: verify (`references/verification.md`), land, start the next batch item, or report to the user. Never end the turn on an acknowledgement alone.
+
 ## Supervision loop
 
-Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`; harness rules keep authority under Precedence 2 in `references/repo-policy.md`).
+Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Such children message the orchestrator at each milestone (`references/brief-template.md`), so the loop is a fallback for silence, not the main signal. Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`; harness rules keep authority under Precedence 2 in `references/repo-policy.md`).
 
 When several non-notifying children run for long, schedule a recurring supervision check using the harness's scheduler (`Scheduled resume` in `references/harnesses.md`); in harnesses without a background scheduler, run the check on each user turn.
 

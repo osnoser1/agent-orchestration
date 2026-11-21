@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2687,6 +2689,97 @@ class TestAuditRecheck(unittest.TestCase):
                 _fu(ap, now="2026-11-21T01:00:00Z", add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T04:32:00+00:00"),
             )
             self.assertIn("followup already scheduled", same)
+
+class TestClaudeUsageCache(unittest.TestCase):
+    T0 = datetime(2026, 11, 21, 4, 55, tzinfo=timezone.utc)
+    BODY = {"five_hour": {"utilization": 31, "resets_at": "2026-11-21T09:00:00Z"}}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cdir = os.path.join(tmp.name, "claude")
+        os.makedirs(self.cdir)
+        with open(os.path.join(self.cdir, ".credentials.json"), "w") as fh:
+            json.dump({"claudeAiOauth": {"accessToken": "sk-secret-token"}}, fh)
+        self.cache = os.path.join(tmp.name, "usage-cache.json")
+
+    def cfg(self, **kw):
+        return {"config_dir": self.cdir, "_cache_path": self.cache, **kw}
+
+    def at(self, seconds):
+        return self.T0 + timedelta(seconds=seconds)
+
+    def ok(self):
+        resp = mock.MagicMock()
+        resp.__enter__.return_value.read.return_value = json.dumps(self.BODY).encode()
+        return resp
+
+    def err429(self, retry_after=None):
+        hdrs = {"Retry-After": retry_after} if retry_after else {}
+        return urllib.error.HTTPError("u", 429, "Too Many", hdrs, None)
+
+    def probe(self, seconds, effects, **kw):
+        with mock.patch("orch.urllib.request.urlopen", side_effect=effects) as m:
+            out = orch.probe_claude(self.cfg(**kw), self.at(seconds))
+        return out, m.call_count
+
+    def test_cache_hit_makes_no_request(self):
+        (res, _), n = self.probe(0, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+        (res2, note), n2 = self.probe(299, [])
+        self.assertEqual((res2, note, n2), (res, None, 0))
+
+    def test_ttl_expiry_requests_again(self):
+        self.probe(0, [self.ok()])
+        (res, _), n = self.probe(301, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_429_retry_after_backs_off_and_reports_last_known(self):
+        self.probe(0, [self.ok()])
+        (res, note), n = self.probe(400, [self.err429("900")])
+        self.assertIsNone(res)
+        self.assertEqual(n, 1)
+        self.assertEqual(
+            note, "unverified (HTTP 429, backing off until 05:16Z); last known 31% of 5h at 04:55Z"
+        )
+        (res, note2), n2 = self.probe(800, [], _fresh=True)
+        self.assertEqual((res, n2), (None, 0))
+        self.assertIn("backing off until 05:16Z", note2)
+        (res, _), n3 = self.probe(1400, [self.ok()])
+        self.assertEqual((res["used_percent"], n3), (31, 1))
+
+    def test_429_http_date_and_default_backoff(self):
+        (_, note), _ = self.probe(0, [self.err429("Sat, 21 Nov 2026 05:00:00 GMT")])
+        self.assertEqual(note, "unverified (HTTP 429, backing off until 05:00Z)")
+        os.remove(self.cache)
+        (_, note), _ = self.probe(0, [self.err429()])
+        self.assertEqual(note, "unverified (HTTP 429, backing off until 05:05Z)")
+
+    def test_429_without_prior_data(self):
+        (res, note), n = self.probe(0, [self.err429()])
+        self.assertEqual((res, n), (None, 1))
+        self.assertNotIn("last known", note)
+        (res, note), n = self.probe(60, [])
+        self.assertEqual((res, n), (None, 0))
+        self.assertIn("backing off", note)
+
+    def test_corrupt_cache_is_ignored(self):
+        with open(self.cache, "w") as fh:
+            fh.write("{not json")
+        (res, _), n = self.probe(0, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_fresh_bypasses_ttl_only(self):
+        self.probe(0, [self.ok()])
+        (res, _), n = self.probe(10, [self.ok()], _fresh=True)
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_token_never_written_to_cache(self):
+        self.probe(0, [self.ok()])
+        self.probe(400, [self.err429()])
+        with open(self.cache) as fh:
+            self.assertNotIn("sk-secret-token", fh.read())
+
 
 if __name__ == "__main__":
     unittest.main()
