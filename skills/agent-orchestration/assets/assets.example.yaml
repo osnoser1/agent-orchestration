@@ -7,6 +7,7 @@ preferences:
   low_threshold: 85                               # used_percent >= low_threshold -> status: low
   exhausted_threshold: 98                         # used_percent >= exhausted_threshold -> status: exhausted
   ui_fallback: proceed                            # proceed | defer | ask (when an offered UI/UX or repo Models preference is exhausted)
+  below_tier: stage                               # stage | wait | proceed (when every tier-meeting model is out of quota)
   new_conversations: ask                          # ask | allow (authorization to open new top-level conversations)
   design_checkpoints: ask                         # ask | delegate (pause for user approval on taste/design checkpoints)
   # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks

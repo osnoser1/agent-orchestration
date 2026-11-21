@@ -5,7 +5,8 @@
   orch.py probe     [--provider P] [--low-threshold N] [--exhausted-threshold N] [--available ...] [--assets F] [--now ISO]
   orch.py select    --complexity trivial|standard|hard|frontier --risk low|medium|high
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
-                    [--fallback proceed|defer|ask] [--ref TEXT] [--fail-on-low]
+                    [--fallback proceed|defer|ask] [--below-tier stage|wait|proceed]
+                    [--ref TEXT] [--fail-on-low] [--implementer M]
                     [--catalog F] [--assets F] [--now ISO]
   orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
                     [--available ...] [--catalog F] [--assets F] [--now ISO]
@@ -35,6 +36,7 @@ ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_LOW_THRESHOLD = 85
 DEFAULT_EXHAUSTED_THRESHOLD = 98
 VALID_UI_FALLBACK = ("proceed", "defer", "ask")
+VALID_BELOW_TIER = ("stage", "wait", "proceed")
 VALID_NEW_CONVERSATIONS = ("ask", "allow")
 VALID_DESIGN_CHECKPOINTS = ("ask", "delegate")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
@@ -668,44 +670,94 @@ def classify_unmet_preference(catalog, assets, available, need, floor, now, fail
     return "not-offered", None
 
 
-def earliest_exhausted_tier_reset(catalog, assets, available, floor, now):
+def exhausted_tier_candidates(
+    catalog,
+    assets,
+    available,
+    tier,
+    floor,
+    now,
+    ui_primary=False,
+    prefer_family=None,
+):
     if not available:
-        return False, None
+        return False, None, tier, []
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
     emerg = set((catalog or {}).get("emergency_efforts", ["max", "ultra"]))
-    saw_exhausted_tier_cand = False
-    times = []
-
-    def _collect(dt):
-        if dt and dt > now:
-            times.append(dt)
+    pref_fam = prefer_family.strip().lower() if prefer_family else None
+    ex_cands = []
 
     for pair in available:
         prov, _, mid = pair.partition(":")
         m = cat.get(norm(mid))
         if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
             continue
-        if best_effort(m, floor, emerg) is None:
+        be = best_effort(m, floor, emerg)
+        if be is None:
             continue
         p, prov_st, _ = provider_state(assets, prov, now)
         if p.get("pay_per_use") or p.get("policy") == "avoid":
             continue
         g = model_group(p, mid, m)
-        st = group_state(g, now)[0] if g is not None else prov_st
-        if st == "exhausted":
-            saw_exhausted_tier_cand = True
-            if g is not None and group_state(g, now)[0] == "exhausted":
-                _collect(
-                    parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
-                    or candidate_next_reset(p, g, now)
-                )
-            elif prov_st == "exhausted":
-                _collect(
-                    parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
-                    or provider_next_reset(p, now)
-                )
+        gst = group_state(g, now)[0] if g is not None else "ok"
+        if prov_st != "exhausted" and gst != "exhausted":
+            continue
 
-    return saw_exhausted_tier_cand, (min(times) if times else None)
+        dts = []
+        if g is not None and gst == "exhausted":
+            dt = parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now)
+            if dt and dt > now:
+                dts.append(dt)
+        if prov_st == "exhausted":
+            dt = parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now)
+            if dt and dt > now:
+                dts.append(dt)
+        reset_dt = max(dts) if dts else None
+        reset_ts = reset_dt.timestamp() if reset_dt else float("inf")
+
+        policy = p.get("policy", "normal")
+        pol_rank = POLICY.get(policy, 2)
+        ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
+        fam_rank = (0 if _model_matches_need(m, pref_fam) else 1) if pref_fam else 0
+        key = (
+            reset_ts,
+            ui_rank,
+            fam_rank,
+            pol_rank,
+            COST[m["cost"]],
+            EFFORT_ORDER.get(be[0], 99),
+            be[1],
+        )
+        ex_cands.append(
+            {
+                "pair": pair,
+                "provider": prov,
+                "group": g.get("name") if isinstance(g, dict) else None,
+                "model": m,
+                "effort": be[0],
+                "score": be[1],
+                "policy": policy,
+                "status": "exhausted",
+                "reset_dt": reset_dt,
+                "resets": reset_dt.isoformat(timespec="seconds") if reset_dt else None,
+                "key": key,
+            }
+        )
+
+    ex_cands.sort(key=lambda c: c["key"])
+    dts_all = [c["reset_dt"] for c in ex_cands if c["reset_dt"] is not None]
+    earliest_dt = min(dts_all) if dts_all else None
+    ex_provs = {c["provider"] for c in ex_cands}
+    if ex_cands and len(ex_provs) == 1 and ex_cands[0]["group"]:
+        resume_needs = f"provider:{ex_cands[0]['provider']}/{ex_cands[0]['group']}/{tier}"
+    else:
+        resume_needs = tier
+    return len(ex_cands) > 0, earliest_dt, resume_needs, ex_cands
+
+
+def earliest_exhausted_tier_reset(catalog, assets, available, floor, now):
+    saw, dt, _, _ = exhausted_tier_candidates(catalog, assets, available, "T1", floor, now)
+    return saw, dt
 
 
 def candidates(
@@ -720,12 +772,14 @@ def candidates(
     prefer_family=None,
     fail_on_low=False,
     pick_top=False,
+    task_floor=None,
 ):
     cat = {norm(m["id"]): m for m in catalog["models"]}
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     out, notes = [], []
     reasons = {"exhausted": 0, "threshold": 0, "gated": 0, "tier": 0}
     t3_floor = floors.get("T3", FLOORS["T3"])
+    eff_floor = task_floor if task_floor is not None else floor
     pref_fam = prefer_family.strip().lower() if prefer_family else None
 
     for pair in available:
@@ -795,7 +849,7 @@ def candidates(
 
         policy = p.get("policy", "normal")
         pol_rank = POLICY.get(policy, 2)
-        low_pen = 1 if (st == "low" and floor >= t3_floor) else 0
+        low_pen = 1 if (st == "low" and eff_floor >= t3_floor) else 0
         nxt = candidate_next_reset(p, g, now)
         reset_ts = nxt.timestamp() if nxt else float("inf")
         ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
@@ -814,6 +868,7 @@ def candidates(
             {
                 "pair": pair,
                 "provider": prov,
+                "group": g.get("name") if isinstance(g, dict) else None,
                 "model": m,
                 "effort": be[0],
                 "score": be[1],
@@ -847,7 +902,17 @@ def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_l
     same family, different model, below `rt` (best score) -> same model.
     """
     meet, _, _ = candidates(catalog, assets, avail, floors[rt], floors, now, fail_on_low=fail_on_low)
-    anyc, _, _ = candidates(catalog, assets, avail, 0, floors, now, fail_on_low=fail_on_low, pick_top=True)
+    anyc, _, _ = candidates(
+        catalog,
+        assets,
+        avail,
+        0,
+        floors,
+        now,
+        fail_on_low=fail_on_low,
+        pick_top=True,
+        task_floor=floors[rt],
+    )
     meet.sort(key=lambda c: c["key"])
     anyc.sort(key=lambda c: (-c["score"], c["key"]))
     fam, mid = impl_model["family"], impl_model["id"]
@@ -894,7 +959,7 @@ def print_reviewer(rt, pick, impl_model, floor):
     print(f"[note] reviewer degraded: {why}. State this in the report.")
 
 
-def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now):
+def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage"):
     """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
     m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
     if not m:
@@ -902,13 +967,57 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now):
         return 1
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
+    ref_arg = _opt_str(a, "ref")
     print(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
     print(f"implementer (given): {m['family']} / {m['id']}")
     pick = pick_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low)
     if pick:
+        _, _, below = pick
+        saw_ex_rt, earliest_dt, rt_needs = False, None, rt
+        if below and a.risk == "high" and below_tier_mode == "stage":
+            saw_ex_rt, earliest_dt, rt_needs, _ = exhausted_tier_candidates(
+                catalog, assets, avail, rt, floors[rt], now
+            )
+        # Under stage, a high-risk review waits for an exhausted reviewer-tier model instead of degrading
+        # below tier; with nothing to wait for, the never-blocking fallback order still applies.
+        if saw_ex_rt:
+            print(
+                f"NO REVIEWER: below-tier reviewer not allowed for high-risk work under below_tier=stage; "
+                f"wait for {rt} (>= {floors[rt]})"
+            )
+            if not earliest_dt:
+                print(f"SCHEDULE_RESUME: all usable {rt} reviewers exhausted (reset time unknown).")
+                return 4
+            earliest_iso = earliest_dt.isoformat(timespec="seconds")
+            resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
+            print(
+                f"SCHEDULE_RESUME: all usable {rt} reviewers exhausted "
+                f"(earliest reset: {earliest_iso}; schedule resume at {resume_iso})."
+            )
+            if ref_arg:
+                existing_resume = find_existing_followup(ap, "resume", ref_arg) if os.path.exists(ap) else None
+                if existing_resume:
+                    print(
+                        f"followup already scheduled: [resume] {ref_arg} "
+                        f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso})"
+                    )
+                else:
+                    record_followup(ap, {"kind": "resume", "ref": ref_arg, "needs": rt_needs, "after": resume_iso}, now=now)
+                    print(f"followup recorded: [resume] {ref_arg} (needs {rt_needs}, after {resume_iso})")
+            return 4
         print_reviewer(rt, pick, m, floors[rt])
         return 0
-    _, notes, reasons = candidates(catalog, assets, avail, 0, floors, now, fail_on_low=fail_on_low, pick_top=True)
+    _, notes, reasons = candidates(
+        catalog,
+        assets,
+        avail,
+        0,
+        floors,
+        now,
+        fail_on_low=fail_on_low,
+        pick_top=True,
+        task_floor=floors[rt],
+    )
     print("NO REVIEWER: no non-excluded model remains (quota recovery order in references/harnesses.md)")
     for n in notes:
         print("  note:", n)
@@ -931,11 +1040,23 @@ def select(a):
     avail = [x.strip() for x in a.available.split(",") if x.strip()]
     prefer_family = _opt_str(a, "prefer_family")
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
+    below_tier_mode = _opt_str(a, "below_tier") or prefs.get("below_tier") or "stage"
     ref_arg = _opt_str(a, "ref")
 
     impl_id = _opt_str(a, "implementer")
     if impl_id:
-        return select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now)
+        return select_reviewer_only(
+            a,
+            catalog,
+            assets,
+            avail,
+            floors,
+            tier,
+            impl_id,
+            now,
+            ap=ap,
+            below_tier_mode=below_tier_mode,
+        )
 
     cands, notes, reasons = candidates(
         catalog,
@@ -951,10 +1072,155 @@ def select(a):
     cands.sort(key=lambda c: c["key"])
     print(f"tier {tier} (>= {floors[tier]})")
     if not cands:
-        print("NO CANDIDATE:", *notes, sep="\n  ")
-        saw_ex_tier, earliest_dt = earliest_exhausted_tier_reset(
-            catalog, assets, avail, floors[tier], now
+        below_cands, _, _ = candidates(
+            catalog,
+            assets,
+            avail,
+            0,
+            floors,
+            now,
+            ui_primary=bool(a.ui),
+            prefer_family=prefer_family,
+            fail_on_low=bool(a.fail_on_low),
+            pick_top=True,
+            task_floor=floors[tier],
         )
+        below_cands.sort(key=lambda c: (-c["score"], c["key"]))
+        saw_ex_tier, earliest_dt, resume_needs, ex_cands = exhausted_tier_candidates(
+            catalog,
+            assets,
+            avail,
+            tier,
+            floors[tier],
+            now,
+            ui_primary=bool(a.ui),
+            prefer_family=prefer_family,
+        )
+        fmt = _fmt_cand
+        rt = reviewer_tier(tier, a.risk)
+
+        # Staging/proceeding below tier only makes sense while a tier-meeting model waits on quota renewal.
+        can_stage = bool(below_cands) and saw_ex_tier
+        if can_stage and below_tier_mode == "stage":
+            impl = below_cands[0]
+            target = ex_cands[0] if ex_cands else None
+            earliest_iso = earliest_dt.isoformat(timespec="seconds") if earliest_dt else None
+            resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds") if earliest_dt else None
+            ref_val = ref_arg or "current-task"
+            reset_txt = earliest_iso or "unknown"
+            resume_sched_txt = f"; schedule phase 2 resume at {resume_iso}" if resume_iso else ""
+            target_txt = (
+                f"{target['provider']} / {target['model']['id']} @ {target['effort']} "
+                f"(score {target['score']}, policy {target['policy']})"
+                if target
+                else f"first usable {tier} (>= {floors[tier]}) model"
+            )
+            print(
+                f"STAGE (below_tier=stage): no usable candidate meets {tier} (>= {floors[tier]}); "
+                f"starting phase 1 below tier (earliest {tier} reset: {reset_txt}{resume_sched_txt})."
+            )
+            print(
+                f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}"
+            )
+            print(
+                f"phase 2 (risky change, destructive steps, review; requires {tier} >= {floors[tier]}): "
+                f"at the phase 1 boundary switch same child in place to {target_txt} immediately; "
+                "send one continue message only if the harness auto-resumes own-provider quota stops "
+                "(references/harnesses.md), and keep the scheduled resume at "
+                f"{resume_iso or 'reset + 2m'} as an idempotent double check that acts only if the child is idle"
+            )
+            if assets_exists or ref_arg:
+                existing_resume = find_existing_followup(ap, "resume", ref_val) if os.path.exists(ap) else None
+                if existing_resume:
+                    print(
+                        f"followup already scheduled: [resume] {ref_val} "
+                        f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso or 'next reset'})"
+                    )
+                else:
+                    fu_entry = {
+                        "kind": "resume",
+                        "ref": ref_val,
+                        "needs": resume_needs,
+                    }
+                    if resume_iso:
+                        fu_entry["after"] = resume_iso
+                    record_followup(ap, fu_entry, now=now)
+                    after_txt = f", after {resume_iso}" if resume_iso else ""
+                    print(f"followup recorded: [resume] {ref_val} (needs {resume_needs}{after_txt})")
+                    assets = load_file(ap)
+            else:
+                print("[note] no assets file; skipped recording follow-up")
+            if a.risk == "high":
+                print(
+                    f"reviewer ({rt}): wait for {rt} (>= {floors[rt]}); "
+                    "below-tier reviewer not allowed for high-risk work under stage"
+                )
+            else:
+                print(f"reviewer ({rt}): select when the review step starts in phase 2 (fallback order)")
+            for n in notes:
+                print("  note:", n)
+            for fu, usable in due_followups(catalog, assets, now, available=avail):
+                print(
+                    f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+                    f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+                )
+            return 0
+
+        if can_stage and below_tier_mode == "proceed":
+            impl = below_cands[0]
+            earliest_iso = earliest_dt.isoformat(timespec="seconds") if earliest_dt else None
+            resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds") if earliest_dt else None
+            reset_txt = earliest_iso or "unknown"
+            print(
+                f"[provisional] (below_tier=proceed): no usable candidate meets {tier} (>= {floors[tier]}, "
+                f"earliest reset: {reset_txt}); proceeding with best available below-tier model for all phases "
+                f"— tier-meeting ({tier}) re-review follow-up required"
+            )
+            if assets_exists or ref_arg:
+                ref_val = ref_arg or "current-task"
+                existing_resume = find_existing_followup(ap, "resume", ref_val) if os.path.exists(ap) else None
+                if existing_resume:
+                    print(
+                        f"followup already scheduled: [resume] {ref_val} "
+                        f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso or 'next reset'})"
+                    )
+                else:
+                    fu_entry = {
+                        "kind": "resume",
+                        "ref": ref_val,
+                        "needs": resume_needs,
+                    }
+                    if resume_iso:
+                        fu_entry["after"] = resume_iso
+                    record_followup(ap, fu_entry, now=now)
+                    after_txt = f", after {resume_iso}" if resume_iso else ""
+                    print(f"followup recorded: [resume] {ref_val} (tier-meeting re-review; needs {resume_needs}{after_txt})")
+                    assets = load_file(ap)
+            else:
+                print("[note] no assets file; skipped recording follow-up")
+            print(f"implementer: {fmt(impl)}")
+            pick = pick_reviewer(
+                catalog,
+                assets,
+                avail,
+                floors,
+                rt,
+                now,
+                impl["model"],
+                bool(a.fail_on_low),
+            )
+            if pick:
+                print_reviewer(rt, pick, impl["model"], floors[rt])
+            for n in notes:
+                print("  note:", n)
+            for fu, usable in due_followups(catalog, assets, now, available=avail):
+                print(
+                    f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+                    f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+                )
+            return 0
+
+        print("NO CANDIDATE:", *notes, sep="\n  ")
         if (saw_ex_tier and reasons["threshold"] == 0) or (
             reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0
         ):
@@ -976,11 +1242,11 @@ def select(a):
                         fu_entry = {
                             "kind": "resume",
                             "ref": ref_arg,
-                            "needs": tier,
+                            "needs": resume_needs,
                             "after": resume_iso,
                         }
                         record_followup(ap, fu_entry, now=now)
-                        print(f"followup recorded: [resume] {ref_arg} (needs {tier}, after {resume_iso})")
+                        print(f"followup recorded: [resume] {ref_arg} (needs {resume_needs}, after {resume_iso})")
             else:
                 print(f"SCHEDULE_RESUME: all usable {tier} candidates exhausted (reset time unknown).")
             return 4
@@ -1054,7 +1320,20 @@ def select(a):
     rt = reviewer_tier(tier, a.risk)
     pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
     if pick:
-        print_reviewer(rt, pick, impl["model"], floors[rt])
+        _, _, below = pick
+        if below and a.risk == "high" and below_tier_mode == "stage":
+            saw_ex_rt, _, rt_needs, _ = exhausted_tier_candidates(
+                catalog, assets, avail, rt, floors[rt], now
+            )
+            if saw_ex_rt:
+                print(
+                    f"reviewer ({rt}): wait for {rt} (>= {floors[rt]}) renewal (needs {rt_needs}) "
+                    "— below-tier reviewer not allowed for high-risk work under stage"
+                )
+            else:
+                print_reviewer(rt, pick, impl["model"], floors[rt])
+        else:
+            print_reviewer(rt, pick, impl["model"], floors[rt])
     for n in notes:
         print("  note:", n)
     for fu, usable in due_followups(catalog, assets, now, available=avail):
@@ -2309,6 +2588,9 @@ def check(a):
             uif = prefs.get("ui_fallback")
             if uif is not None and uif not in VALID_UI_FALLBACK:
                 errs.append(f"assets preferences.ui_fallback: bad value {uif} (expected {'|'.join(VALID_UI_FALLBACK)})")
+            bt = prefs.get("below_tier")
+            if bt is not None and bt not in VALID_BELOW_TIER:
+                errs.append(f"assets preferences.below_tier: bad value {bt} (expected {'|'.join(VALID_BELOW_TIER)})")
             nc = prefs.get("new_conversations")
             if nc is not None and nc not in VALID_NEW_CONVERSATIONS:
                 errs.append(
@@ -2430,6 +2712,7 @@ def main():
             p.add_argument("--ui", action="store_true")
             p.add_argument("--prefer-family")
             p.add_argument("--fallback", choices=list(VALID_UI_FALLBACK))
+            p.add_argument("--below-tier", choices=list(VALID_BELOW_TIER))
             p.add_argument("--ref")
             p.add_argument("--fail-on-low", action="store_true")
             p.add_argument("--implementer")

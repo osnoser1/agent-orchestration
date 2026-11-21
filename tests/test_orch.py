@@ -1842,5 +1842,381 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
             )
 
 
+class TestBelowTierStaging(unittest.TestCase):
+    def _write_grouped_below_tier_assets(self, path, below_tier=None):
+        pref_block = f"preferences:\n  below_tier: {below_tier}\n" if below_tier else ""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\n"
+                f"{pref_block}"
+                "providers:\n"
+                "  - id: antigravity\n"
+                "    policy: spend-first\n"
+                "    status: ok\n"
+                "    groups:\n"
+                '      - name: "Gemini Models"\n'
+                "        models: [gemini-4-neon, gemini-4-hydrogen]\n"
+                "        status: exhausted\n"
+                "        used_percent: 100\n"
+                "        window: 5h\n"
+                "        resets_at: 2026-11-21T00:13:07+00:00\n"
+                "        exhausted_until: 2026-11-21T00:13:07+00:00\n"
+                '      - name: "Claude and GPT models"\n'
+                "        models: [claude-opus-5-5, claude-sonnet-5-5]\n"
+                "        status: exhausted\n"
+                "        used_percent: 100\n"
+                "        window: 7d\n"
+                "        resets_at: 2026-11-27T15:59:36+00:00\n"
+                "        exhausted_until: 2026-11-27T15:59:36+00:00\n"
+                '      - name: "Gemini 4 Argon"\n'
+                "        models: [gemini-4-argon]\n"
+                "        status: ok\n"
+                "        used_percent: 0\n"
+                "        window: 7d\n"
+                "        resets_at: 2026-11-27T21:23:09+00:00\n"
+            )
+
+    def _write_multi_provider_below_tier_assets(self, path, below_tier=None):
+        pref_block = f"preferences:\n  below_tier: {below_tier}\n" if below_tier else ""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\n"
+                f"{pref_block}"
+                "providers:\n"
+                "  - id: claude\n"
+                "    policy: normal\n"
+                "    status: exhausted\n"
+                "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: codex\n"
+                "    policy: normal\n"
+                "    status: ok\n"
+            )
+
+    def test_check_validates_below_tier_preference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.yaml")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\npreferences:\n  below_tier: skip\nproviders: []\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1)
+            self.assertIn("preferences.below_tier", buf.getvalue())
+
+            for valid in ("stage", "wait", "proceed"):
+                good = os.path.join(tmp, f"good-{valid}.yaml")
+                with open(good, "w", encoding="utf-8") as fh:
+                    fh.write(f"version: 1\npreferences:\n  below_tier: {valid}\nproviders: []\n")
+                buf_ok = io.StringIO()
+                with contextlib.redirect_stdout(buf_ok):
+                    rc_ok = orch.check(
+                        mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="")
+                    )
+                self.assertEqual(rc_ok, 0)
+
+    def test_stage_default_grouped_provider_reports_staged_plan_and_group_scoped_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path)  # default is stage
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="antigravity:claude-opus-5-5,antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-staged-group",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertNotIn("NO CANDIDATE", out)
+            self.assertIn("STAGE (below_tier=stage)", out)
+            self.assertIn("phase 1", out)
+            self.assertIn("antigravity / gemini-4-argon @ high (score 51", out)
+            self.assertIn("phase 2", out)
+            self.assertIn("switch same child in place to antigravity / gemini-4-neon @ high", out)
+            self.assertIn("2026-11-21T00:15:07+00:00", out)
+            self.assertIn("below-tier reviewer not allowed for high-risk work under stage", out)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-staged-group",
+                    "needs": "provider:antigravity/Gemini Models/T4",
+                    "after": "2026-11-21T00:15:07+00:00",
+                },
+            )
+
+            # Before Gemini Models resets: not due even though Gemini 4 Argon is ok
+            fu_before = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T22:00:00Z",
+                available="antigravity:claude-opus-5-5,antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                due=True,
+                add=False,
+                done=None,
+            )
+            buf_before = io.StringIO()
+            with contextlib.redirect_stdout(buf_before):
+                self.assertEqual(orch.followups_cmd(fu_before), 0)
+            self.assertEqual(buf_before.getvalue().strip(), "")
+
+            # After Gemini Models resets at 2026-11-21T00:13:07+00:00: follow-up is due via antigravity (Gemini Models)
+            fu_after = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-21T00:16:00Z"})
+            buf_after = io.StringIO()
+            with contextlib.redirect_stdout(buf_after):
+                self.assertEqual(orch.followups_cmd(fu_after), 0)
+            self.assertIn(
+                "followup due: [resume] task-staged-group (needs provider:antigravity/Gemini Models/T4; usable via antigravity (Gemini Models))",
+                buf_after.getvalue(),
+            )
+
+    def test_stage_non_grouped_provider_records_tier_need_and_blocks_high_risk_below_tier_reviewer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="claude:claude-opus-5-5,codex:gpt-6-2-sol",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-staged-multi",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertNotIn("NO CANDIDATE", out)
+            self.assertIn("STAGE (below_tier=stage)", out)
+            self.assertIn("codex / gpt-6-2-sol @ xhigh (score 55.74", out)
+            self.assertIn("switch same child in place to claude / claude-opus-5-5 @ xhigh", out)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-staged-multi",
+                    "needs": "T4",
+                    "after": "2026-11-23T08:02:00+00:00",
+                },
+            )
+
+            # At reviewer step (--implementer), below-tier reviewer is disallowed for high-risk work under stage
+            rev_args = mock.Mock(**{**sel_args.__dict__, "implementer": "gpt-6-2-sol", "ref": "rev-staged"})
+            buf_rev = io.StringIO()
+            with contextlib.redirect_stdout(buf_rev):
+                rc_rev = orch.select(rev_args)
+            self.assertEqual(rc_rev, 4)
+            self.assertIn("NO REVIEWER", buf_rev.getvalue())
+            self.assertIn("below-tier reviewer not allowed for high-risk work", buf_rev.getvalue())
+
+    def test_wait_mode_preserves_no_candidate_and_schedule_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path, below_tier="wait")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-wait-group",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 4)
+            out = buf.getvalue()
+            self.assertIn("NO CANDIDATE", out)
+            self.assertIn("SCHEDULE_RESUME", out)
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-wait-group",
+                    "needs": "provider:antigravity/Gemini Models/T4",
+                    "after": "2026-11-21T00:15:07+00:00",
+                },
+            )
+
+    def test_proceed_mode_runs_all_phases_provisionally_and_records_tier_followup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path, below_tier="proceed")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-proceed-group",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertNotIn("NO CANDIDATE", out)
+            self.assertIn("[provisional] (below_tier=proceed)", out)
+            self.assertIn("implementer: antigravity / gemini-4-argon @ high (score 51", out)
+            self.assertIn("reviewer (T4, same model, fresh conversation, below tier): antigravity / gemini-4-argon @ high", out)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-proceed-group",
+                    "needs": "provider:antigravity/Gemini Models/T4",
+                    "after": "2026-11-21T00:15:07+00:00",
+                },
+            )
+
+
+    def _sel_args(self, assets_path, available, **kw):
+        base = dict(
+            assets=assets_path,
+            catalog=CATALOG_PATH,
+            now="2026-11-20T21:00:00Z",
+            complexity="hard",
+            risk="high",
+            available=available,
+            ui=False,
+            fail_on_low=False,
+            prefer_family=None,
+            fallback=None,
+            below_tier=None,
+            ref=None,
+            implementer=None,
+        )
+        base.update(kw)
+        return mock.Mock(**base)
+
+    def test_stage_without_any_tier_meeting_model_offered_keeps_no_tier_match(self):
+        # Staging needs a tier-meeting target waiting on quota; with none offered, select stays exit 2.
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(self._sel_args(assets_path, "codex:gpt-6-2-sol", ref="task-no-target"))
+            self.assertEqual(rc, 2)
+            self.assertIn("NO CANDIDATE", buf.getvalue())
+            self.assertNotIn("STAGE", buf.getvalue())
+            self.assertEqual(orch.load_file(assets_path).get("followups") or [], [])
+
+    def test_stage_high_risk_reviewer_degrades_when_no_reviewer_tier_model_is_waiting(self):
+        # Nothing at the reviewer tier is exhausted, so there is nothing to wait for: fallback order applies.
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(
+                    self._sel_args(assets_path, "codex:gpt-6-2-sol", implementer="gpt-6-2-sol", ref="rev-none")
+                )
+            self.assertEqual(rc, 0)
+            self.assertNotIn("NO REVIEWER", buf.getvalue())
+            self.assertIn("reviewer degraded", buf.getvalue())
+
+    def test_proceed_followup_is_deduplicated_per_ref(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path, below_tier="proceed")
+            args = self._sel_args(
+                assets_path, "antigravity:gemini-4-neon,antigravity:gemini-4-argon", ref="task-proceed-dup"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.select(args), 0)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(orch.select(args), 0)
+            self.assertIn("followup already scheduled: [resume] task-proceed-dup", buf.getvalue())
+            self.assertEqual(len(orch.load_file(assets_path).get("followups") or []), 1)
+
+    def test_model_specific_limit_keeps_same_pool_models_usable(self):
+        # A per-model cap (exhaust --model on an ungrouped provider) locks only that model; the rest of
+        # the account's pool stays a valid fallback, and stage upgrades within the same pool at the boundary.
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\nproviders:\n  - id: claude\n    policy: normal\n    status: ok\n")
+            ex = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                provider="claude",
+                message="You've hit your weekly limit for Opus · resets Nov 23, 8am (UTC)",
+                group=None,
+                model="claude-opus-5-5",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.exhaust(ex), 0)
+            avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5"
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(self._sel_args(assets_path, avail, complexity="standard", risk="low"))
+            self.assertEqual(rc, 0)
+            self.assertIn("implementer: claude / claude-sonnet-5-5", buf.getvalue())
+
+            buf_stage = io.StringIO()
+            with contextlib.redirect_stdout(buf_stage):
+                rc_stage = orch.select(self._sel_args(assets_path, avail, risk="medium", ref="task-same-pool"))
+            self.assertEqual(rc_stage, 0)
+            out = buf_stage.getvalue()
+            self.assertIn("(phase 1, low-risk only", out)
+            self.assertIn("claude / claude-sonnet-5-5", out)
+            self.assertIn("switch same child in place to claude / claude-opus-5-5", out)
+            self.assertIn("select when the review step starts in phase 2", out)
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(fus[0]["needs"], "provider:claude/claude-opus-5-5/T3")
+            self.assertEqual(fus[0]["after"], "2026-11-23T08:02:00+00:00")
+
 if __name__ == "__main__":
     unittest.main()

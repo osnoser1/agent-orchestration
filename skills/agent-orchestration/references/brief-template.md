@@ -4,6 +4,7 @@ One outcome per child. Supply known facts directly so children skip re-discovery
 
 ```
 GOAL: <one-sentence outcome>
+PHASE: <only for work staged under preferences.below_tier: stage (references/selection.md): "Phase 1: read the code, plan the approach, write the failing tests (red); stop and report before the change itself" or "Phase 2: the change, destructive steps, and review">
 CONTEXT / KNOWN FACTS: <exact paths, findings, decisions already made>
 CONSTRAINTS: <read target repo AGENTS.md/CLAUDE.md first; name this phase's repo skill/command from `## Orchestration` explicitly when present (e.g. "use the create-pr skill", "land with bun run land <pr>"); scope boundaries; design checkpoint trigger if user-visible taste decision (`references/verification.md`); doc review-loop (max 3 passes) if editing agent-facing docs>
 VERIFICATION: <red→green: failing test/repro before the fix, passing after; exact commands + expected evidence scaled to user `preferences.evidence` and repo `Evidence:` (`references/verification.md`)>

@@ -28,8 +28,8 @@ Store multi-item batch state in the recurring supervision prompt itself or in a 
 Carry everything required to resume cold after context compaction or a new session:
 
 1. **Provider quota snapshot**: current status, `used_percent`, and `resets_at` from `scripts/orch.py probe`.
-2. **Batch-relevant preferences**: active `assets.yaml` settings (`ui_fallback`, `new_conversations`, `design_checkpoints`, `evidence`), repo `## Orchestration` lines, and user instructions for the batch.
-3. **Open children**: each active child's ID/link, role, `provider / model @ effort`, target paths/branch, and latest status.
+2. **Batch-relevant preferences**: active `assets.yaml` settings (`ui_fallback`, `below_tier`, `new_conversations`, `design_checkpoints`, `evidence`), repo `## Orchestration` lines, and user instructions for the batch.
+3. **Open children**: each active child's ID/link, role, `provider / model @ effort`, target paths/branch, latest status, and for children staged under `below_tier: stage` the current phase, the Phase 2 target model, and the scheduled double-check time (`references/selection.md`).
 4. **Approved checkpoints**: concrete design or scope decisions the user already approved (`references/verification.md`), so resumed sessions reuse the recorded approval directly.
 5. **Remaining batches**: ordered pending batches with their conflict dependencies and briefs, or the user-local plan file path holding them.
 6. **Self-healing rule**: embed the literal instruction: *"If the plan file is missing, rebuild it from this summary before continuing."*
@@ -47,6 +47,7 @@ On each check:
 1. **Read cheaply**: inspect each open non-notifying child with a small read limit (recent messages/run state only).
 2. **Classify and act**:
    - **Healthy**: active run in progress, or waiting on an awaited task/subagent → leave running.
+   - **Staged Phase 1 done**: apply the phase-boundary switch in `references/selection.md`.
    - **Stopped by quota**: run the quota-recovery decision order in `references/harnesses.md`.
    - **Idle with pending work**: diagnose why it stopped and send one continuation message. When a Gemini child exhibits the `"ended turn while waiting"` quirk (`catalog.yaml`, `references/harnesses.md`), resend and instruct it to block in one foreground command.
    - **Completed**: run the Step 5 quality gates (`references/verification.md`), launch any dependent batch unblocked by its landing, and update durable state.
