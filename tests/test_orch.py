@@ -1388,6 +1388,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
                     "ref": "thread-child-1",
                     "needs": "T3",
                     "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
                 },
             )
 
@@ -1957,6 +1958,7 @@ class TestBelowTierStaging(unittest.TestCase):
                     "ref": "task-staged-group",
                     "needs": "provider:antigravity/Gemini Models/T4",
                     "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
                 },
             )
 
@@ -2024,6 +2026,7 @@ class TestBelowTierStaging(unittest.TestCase):
                     "ref": "task-staged-multi",
                     "needs": "T4",
                     "after": "2026-11-23T08:02:00+00:00",
+                    "on_recovery": True,
                 },
             )
 
@@ -2072,6 +2075,7 @@ class TestBelowTierStaging(unittest.TestCase):
                     "ref": "task-wait-group",
                     "needs": "provider:antigravity/Gemini Models/T4",
                     "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
                 },
             )
 
@@ -2114,6 +2118,7 @@ class TestBelowTierStaging(unittest.TestCase):
                     "ref": "task-proceed-group",
                     "needs": "provider:antigravity/Gemini Models/T4",
                     "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
                 },
             )
 
@@ -2260,7 +2265,7 @@ def _exh(assets_path, provider, message, group=None, model=None, now="2026-11-20
 def _fu(assets_path, now="2026-11-20T21:00:00Z", **kw):
     base = dict(
         assets=assets_path, catalog=CATALOG_PATH, now=now, available=None, due=False, add=False, done=None,
-        kind=None, ref=None, needs=None, after=None,
+        kind=None, ref=None, needs=None, after=None, on_recovery=False,
     )
     base.update(kw)
     return mock.Mock(**base)
@@ -2443,7 +2448,7 @@ class TestAuditBlocking(unittest.TestCase):
             self.assertIn("2026-11-22T08:02:00+00:00", out)
             fus = orch.load_file(ap).get("followups") or []
             self.assertEqual(
-                fus, [{"kind": "resume", "ref": "rev-child-1", "needs": "T3", "after": "2026-11-22T08:02:00+00:00"}]
+                fus, [{"kind": "resume", "ref": "rev-child-1", "needs": "T3", "after": "2026-11-22T08:02:00+00:00", "on_recovery": True}]
             )
 
     # B6: the staged plan states the per-(harness, provider) continue rule and the scheduler fallback
@@ -2499,7 +2504,7 @@ class TestAuditFollowUps(unittest.TestCase):
             self.assertEqual(rc, 4, out)
             self.assertIn("followup updated", out)
             fus = orch.load_file(ap)["followups"]
-            self.assertEqual(fus, [{"kind": "resume", "ref": "t-stale", "needs": "T4", "after": "2026-11-21T04:32:00+00:00"}])
+            self.assertEqual(fus, [{"kind": "resume", "ref": "t-stale", "needs": "T4", "after": "2026-11-21T04:32:00+00:00", "on_recovery": True}])
 
     def test_f2_resume_followup_waits_for_its_after_time_on_a_renewing_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2515,6 +2520,37 @@ class TestAuditFollowUps(unittest.TestCase):
                 orch.followups_cmd, _fu(ap, now="2026-11-25T00:03:00Z", due=True, available="claude:claude-opus-5-5")
             )
             self.assertIn("followup due: [resume] batch-renew", after)
+
+    def test_f2_quota_resume_is_due_early_when_its_pool_recovers_before_after(self):
+        # A resume recorded while the needed pool was exhausted fires as soon as that pool is usable again,
+        # even before its `after` time (early renewals happen); a renewing-provider deferral keeps waiting.
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\npreferences:\n  below_tier: wait\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-27T15:59:36+00:00\n",
+            )
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5", ref="t-early"))
+            self.assertEqual(rc, 4, out)
+            fu = orch.load_file(ap)["followups"][0]
+            self.assertEqual(fu["after"], "2026-11-27T16:01:36+00:00")
+            self.assertIs(fu.get("on_recovery"), True)
+            # Still exhausted: not due.
+            _, still = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T09:00:00Z", due=True, available="claude:claude-opus-5-5"))
+            self.assertEqual(still.strip(), "")
+            # The probe shows the pool recovered days early (status back to ok): due now.
+            _run(orch.status_cmd, mock.Mock(assets=ap, now="2026-11-21T10:00:00Z", provider="claude", state="ok"))
+            _, early = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T10:05:00Z", due=True, available="claude:claude-opus-5-5"))
+            self.assertIn("followup due: [resume] t-early", early)
+            # The manual quota-resume form can opt in too.
+            rc_add, _ = _run(
+                orch.followups_cmd,
+                _fu(ap, add=True, kind="resume", ref="t-manual", needs="T4", after="2026-11-30T00:00:00+00:00", on_recovery=True),
+            )
+            self.assertEqual(rc_add, 0)
+            _, manual = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T10:05:00Z", due=True, available="claude:claude-opus-5-5"))
+            self.assertIn("followup due: [resume] t-manual", manual)
 
     def test_f3_probe_leaves_a_missing_assets_file_uncreated_unless_init(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2546,7 +2582,7 @@ class TestAuditFollowUps(unittest.TestCase):
             rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5"))
             self.assertEqual(rc, 4, out)
             self.assertIn("reset time unknown", out)
-            self.assertEqual(orch.load_file(ap)["followups"], [{"kind": "resume", "ref": "current-task", "needs": "T4"}])
+            self.assertEqual(orch.load_file(ap)["followups"], [{"kind": "resume", "ref": "current-task", "needs": "T4", "on_recovery": True}])
 
     def test_f4_check_requires_numeric_scores_for_estimated_rating(self):
         with tempfile.TemporaryDirectory() as tmp:

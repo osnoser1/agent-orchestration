@@ -571,8 +571,12 @@ def find_usable_in_assets(catalog, assets, now, need):
 
 
 def _resume_not_yet(fu, now):
-    """A `kind: resume` entry waits for its `after` time (the scheduled wakeup) even when a match is usable."""
-    if fu.get("kind") != "resume" or not fu.get("after"):
+    """A `kind: resume` entry waits for its `after` time, unless it waits on an exhausted pool (`on_recovery`).
+
+    Quota waits become due as soon as a matching model is usable again, because pools can renew early;
+    deferrals on a renewing (not exhausted) provider keep waiting for `after`.
+    """
+    if fu.get("kind") != "resume" or not fu.get("after") or fu.get("on_recovery") is True:
         return False
     after = parse_time(fu.get("after"), now)
     return bool(after and after > now)
@@ -996,12 +1000,18 @@ def _record_resume(ap, ref, needs, after_iso, now):
         return
     existing = find_existing_followup(ap, "resume", ref)
     after_txt = f", after {after_iso}" if after_iso else ""
-    if existing and existing.get("needs") == needs and (existing.get("after") or None) == (after_iso or None):
+    if (
+        existing
+        and existing.get("needs") == needs
+        and (existing.get("after") or None) == (after_iso or None)
+        and existing.get("on_recovery") is True
+    ):
         print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
         return
     entry = {"kind": "resume", "ref": ref, "needs": needs}
     if after_iso:
         entry["after"] = after_iso
+    entry["on_recovery"] = True
     record_followup(ap, entry, now=now)
     if existing:
         print(f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup")
@@ -2485,6 +2495,8 @@ def followups_cmd(a):
         entry = {"kind": kind, "ref": ref_val, "needs": needs}
         if after:
             entry["after"] = after
+        if kind == "resume" and _opt_bool(a, "on_recovery"):
+            entry["on_recovery"] = True
         record_followup(ap, entry, now=now)
         print(f"followup recorded: [{kind}] {ref_val} (needs {needs})" + (f", after {after}" if after else ""))
         return 0
@@ -2700,6 +2712,8 @@ def check(a):
                             f"assets followups[{idx}].kind: bad value {fu.get('kind')} "
                             f"(expected {'|'.join(VALID_FOLLOWUP_KINDS)})"
                         )
+                    if "on_recovery" in fu and not isinstance(fu.get("on_recovery"), bool):
+                        errs.append(f"assets followups[{idx}].on_recovery: must be true or false")
                     needs_val = str(fu.get("needs") or "").strip()
                     if needs_val.lower().startswith("provider:"):
                         parts = [p.strip() for p in needs_val[len("provider:"):].split("/") if p.strip()]
@@ -2759,6 +2773,11 @@ def main():
             p.add_argument("--ref")
             p.add_argument("--needs")
             p.add_argument("--after")
+            p.add_argument(
+                "--on-recovery",
+                action="store_true",
+                help="resume: also due as soon as the needed pool is usable again (quota waits)",
+            )
             p.add_argument("--done")
             p.add_argument("--available")
         if n == "log":

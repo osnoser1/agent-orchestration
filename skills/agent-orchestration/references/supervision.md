@@ -17,13 +17,13 @@ When the user or batch plan holds work for a specific exhausted or renewing prov
 
 1. Record a `resume` follow-up in `assets.yaml` pairing the provider (and optional quota group) with a required tier or model (`references/selection.md`):
    `python3 scripts/orch.py followups --add --kind resume --ref "<batch-or-task-ref>" --needs "provider:<provider-id>/<tier-or-model>" --after <reset_or_renews + 2m>`
-   (or `provider:<provider-id>/<group-name>/<tier>` on grouped providers).
+   (or `provider:<provider-id>/<group-name>/<tier>` on grouped providers). Add `--on-recovery` when the provider or group is exhausted, so the launch fires as soon as it renews early; omit it for a provider that renews on a schedule.
 2. When the harness supports delayed scheduling (`Scheduled resume` in `references/harnesses.md`), schedule one wakeup at `reset_or_renews + 2m` to launch the batch; otherwise report the renewal timestamp to the user.
 3. Clear the entry with `python3 scripts/orch.py followups --done "<batch-or-task-ref>"` once the batch launches.
 
 ## Durable orchestration state
 
-Store multi-item batch state in the recurring supervision prompt itself or in a user-local plan file it points to (such as `~/.config/agent-orchestration/plans/<slug>.md`; keep it in user-local storage outside the target repository and public trackers).
+Store multi-item batch and staged-run state in a user-local plan file (such as `~/.config/agent-orchestration/plans/<slug>.md`; keep it outside the target repository and public trackers), and keep a short state summary in the orchestrator's own context and, when a supervision loop runs, in its recurring prompt. This applies whether the children notify or not.
 
 Carry everything required to resume cold after context compaction or a new session:
 
@@ -32,7 +32,7 @@ Carry everything required to resume cold after context compaction or a new sessi
 3. **Open children**: each active child's ID/link, role, `provider / model @ effort`, target paths/branch, latest status, and for children staged under `below_tier: stage` the current phase, the Phase 2 target model, and the scheduled double-check time (`references/selection.md`).
 4. **Approved checkpoints**: concrete design or scope decisions the user already approved (`references/verification.md`), so resumed sessions reuse the recorded approval directly.
 5. **Remaining batches**: ordered pending batches with their conflict dependencies and briefs, or the user-local plan file path holding them.
-6. **Self-healing rule**: embed the literal instruction: *"If the plan file is missing, rebuild it from this summary before continuing."*
+6. **Self-healing rule**: put the literal line *"If the plan file is missing, rebuild it from this summary before continuing."* at the top of the plan file and in every state summary (the orchestrator's own and any supervision prompt).
 
 Refresh durable state whenever a batch launches, a child switches models or lands, quota state changes, or a checkpoint is approved.
 
