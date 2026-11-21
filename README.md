@@ -12,7 +12,7 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, preferences, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `history`, `exhaust`, `status`, `failure`, `scope`, `check`) | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `history`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
 
 Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
@@ -75,11 +75,12 @@ python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individu
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # log flags + next action
 python3 skills/agent-orchestration/scripts/orch.py scope --base origin/main --max-files 8 --max-lines 400 --expect "src/**" "tests/**"
+python3 skills/agent-orchestration/scripts/orch.py policy --check
 python3 skills/agent-orchestration/scripts/orch.py check
 python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # grouped note: lines for assets providers, local models, and follow-ups this harness does not offer
 ```
 
-`probe`, `select`, `followups`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. Output is compact by default: lists stop at 10 items with `… N more (rerun with --full)`, repeated notes group by reason, and `--full` prints every detail line. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, plus repo `--known REGEX=>ACTION` patterns first), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files.
+`probe`, `select`, `followups`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. Output is compact by default: lists stop at 10 items with `… N more (rerun with --full)`, repeated notes group by reason, and `--full` prints every detail line. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, loading repo `Known failures:` automatically or overriding with `--known REGEX=>ACTION`), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files. `policy` parses and validates `.agents/orchestration.md` or `AGENTS.md` `## Orchestration` (`--check` also verifies relative links and `SKILL.md` paths).
 
 Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).
 
@@ -87,21 +88,20 @@ Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-fligh
 
 All extension points live at two layers:
 
-1. **Per-repository policy (`AGENTS.md` `## Orchestration`)** — add an optional section to any target repository's `AGENTS.md` (read directly by supported harnesses) to override process defaults, extra high-risk paths, model preferences, conversation guidance, verification evidence, design checkpoints, and known infrastructure failure remedies. Every line is optional; absent sections use defaults. See `skills/agent-orchestration/references/repo-policy.md`.
+1. **Per-repository policy (`.agents/orchestration.md` or `AGENTS.md` `## Orchestration`)** — add an optional policy in `.agents/orchestration.md` (checked first) or in `AGENTS.md` under `## Orchestration` to override process defaults, extra high-risk triggers, model preferences, conversation guidance, verification evidence, design checkpoints, and known infrastructure failure remedies. Every line is optional; absent policy uses defaults. New installs accept only the typed format (`Models`, `High risk`, `Known failures`); temporary legacy support requires `compat: {legacy_orchestration_policy: true}` in `assets.yaml` (issue #19). See `skills/agent-orchestration/references/repo-policy.md`.
 
 ```markdown
 ## Orchestration
-Repository policy for the agent-orchestration skill; it overrides the skill's defaults here.
-- Implement: <skill names or guide>
-- Review: <skill names>
-- PR: <skill name>
-- Land: <command or process>
-- High risk: <extra paths/areas that count as high risk>
-- Models: <task-type preferences, e.g. UI/UX work → Anthropic>
-- Conversations: <when new top-level conversations are preferred or restricted>
-- Evidence: <verification evidence by change type, e.g. UI changes require browser screenshots>
-- Checkpoints: <user-visible surfaces or taste decisions that trigger a design checkpoint>
-- Known failures: <known transient/infra failure signatures and their one-rerun or remedy command>
+- Implement: [implement-feature](.agents/skills/implement-feature/SKILL.md)
+- Review: [code-review](.agents/skills/code-review/SKILL.md)
+- PR: [open-pr](.agents/skills/open-pr/SKILL.md)
+- Land: `bun run land <pr>`
+- High risk: source:policy/risky-paths.txt; db/migrations/**; class:payments; class:auth
+- Models: UI/UX work → family:anthropic; SQL migrations → family:openai
+- Conversations: cross-repo follow-ups may open a new thread when user permits
+- Evidence: UI changes → screenshots; API changes → red→green integration tests
+- Checkpoints: new screens and public CLI flags
+- Known failures: /forge (?:502|503)|lost runner/ => rerun; /lockfile corrupt/ => `rm -rf node_modules && npm ci`
 ```
 
 2. **Per-user configuration (outside git)** — lives in `~/.config/agent-orchestration/` (or beside `$AGENT_ORCHESTRATION_ASSETS`):
@@ -109,7 +109,7 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
    - `catalog.local.yaml`: local model ratings or overrides merged on top of `catalog.yaml`.
    - User-local batch plans / durable supervision summaries (e.g. `~/.config/agent-orchestration/plans/`): kept outside repositories and public trackers (`skills/agent-orchestration/references/supervision.md`).
 
-**Precedence**: explicit user instruction > `assets.yaml` (quota, pay-per-use, emergency spending, conversation authorization, design-checkpoint gate, user evidence priorities) and harness rules > target repo `## Orchestration` (phase skills/commands, high-risk paths, model preferences, repo evidence expectations, checkpoint triggers, known failure remedies) > skill defaults.
+**Precedence**: explicit user instruction > `assets.yaml` (quota, pay-per-use, emergency spending, conversation authorization, design-checkpoint gate, user evidence priorities) and harness rules > repo policy (`skills/agent-orchestration/references/repo-policy.md`) > skill defaults.
 
 ## Improving the skill
 

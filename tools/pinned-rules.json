@@ -21,5 +21,6 @@
   {"file": "AGENTS.md", "phrase": "`tests/test_output_contract.py` is the source of truth", "source": "#21 v0.10.0: compact, capped, decision-last output contract for every command"},
   {"file": "skills/agent-orchestration/SKILL.md", "phrase": "one line per event: what finished, what is next, what the user must decide", "source": "#21 v0.10.0: report to the user one line per event; model details only on request or when a decision depends on them"},
   {"file": "skills/agent-orchestration/references/brief-template.md", "phrase": "relay to the user only the one-line summary", "source": "#21 v0.10.0: child reports are for the orchestrator, not the chat"},
-  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "**High-risk reviewer (`stage` and `proceed`)**: on `high` risk, the review takes a reviewer meeting the reviewer tier", "source": "#23 v0.12.0: high-risk work under below_tier=proceed also requires a reviewer meeting the reviewer tier"}
+  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "**High-risk reviewer (`stage` and `proceed`)**: on `high` risk, the review takes a reviewer meeting the reviewer tier", "source": "#23 v0.12.0: high-risk work under below_tier=proceed also requires a reviewer meeting the reviewer tier"},
+  {"file": "skills/agent-orchestration/references/repo-policy.md", "phrase": "New installs accept only the typed format; legacy needs the compat flag (issue #19)", "source": "#24 v0.13.0: typed ## Orchestration policy required for new installs; legacy compat flag is temporary"}
 ]

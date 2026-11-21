@@ -6,7 +6,7 @@ Use these rules when coordinating multiple work items, acting on a child's compl
 
 Before launching items in parallel, compare each item's expected target paths, modules, schemas, lockfiles, and shared entrypoints:
 
-1. **Detect overlap**: when the target repo's `## Orchestration` or scripts provide overlap tooling (`references/repo-policy.md`), run that tool; otherwise compare target paths and coupled modules directly.
+1. **Detect overlap**: when repo policy (`references/repo-policy.md`) or repo scripts provide overlap tooling, run that tool; otherwise compare target paths and coupled modules directly.
 2. **Partition into batches**:
    - **Independent items** (disjoint target areas) run in parallel in the current batch, by default at most two children per quota pool at once (a user or repo instruction may change the cap) so one batch does not drain a pool; place the rest on other pools or in the next batch.
    - **Overlapping items** (touching the same files or coupled module) run sequentially across ordered batches. Keep dependent items queued in durable state and launch each one only after the earlier item lands (or its branch becomes the dependent item's base).
@@ -32,7 +32,7 @@ Store multi-item batch and staged-run state in a user-local plan file (such as `
 Carry everything required to resume cold after context compaction or a new session:
 
 1. **Provider quota snapshot**: current status, `used_percent`, and `resets_at` from `scripts/orch.py probe`.
-2. **Batch-relevant preferences**: active `assets.yaml` settings (`ui_fallback`, `below_tier`, `new_conversations`, `design_checkpoints`, `evidence`), repo `## Orchestration` lines, and user instructions for the batch.
+2. **Batch-relevant preferences**: active `assets.yaml` settings (`ui_fallback`, `below_tier`, `new_conversations`, `design_checkpoints`, `evidence`), repo policy lines (`references/repo-policy.md`), and user instructions for the batch.
 3. **Open children**: each active child's ID/link, role, `provider / model @ effort`, target paths/branch, latest status, and for children staged under `below_tier: stage` the current phase, the Phase 2 target model, and the scheduled double-check time (`references/selection.md`).
 4. **Approved checkpoints**: concrete design or scope decisions the user already approved (`references/verification.md`), so resumed sessions reuse the recorded approval directly.
 5. **Remaining batches**: ordered pending batches with their conflict dependencies and briefs, or the user-local plan file path holding them.
@@ -69,7 +69,7 @@ On each check:
 
 ## Failure-mode retries
 
-Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (one `--known 'REGEX=>ACTION'` per repo `Known failures:` line) and follow its `action:` line. It prints the `log:` flags (they carry the class) and the action, which already applies the ledger's retry count `n/2` (`--full` also prints `class:` and `retries:`): log the outcome with `scripts/orch.py log --event complete` plus those flags (`--ref` is a short item label, never a path). A stall has no error text: use its row.
+Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (loads `Known failures:` from `--repo` automatically, or pass `--known 'REGEX=>ACTION'` to override) and follow its `action:` line. It prints the `log:` flags (they carry the class) and the action, which already applies the ledger's retry count `n/2` (`--full` also prints `class:` and `retries:`): log the outcome with `scripts/orch.py log --event complete` plus those flags (`--ref` is a short item label, never a path). A stall has no error text: use its row.
 
 Without Python, map how the child failed to the next action:
 

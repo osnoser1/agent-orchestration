@@ -6,7 +6,7 @@ Apply these gates across Step 4 (Brief), Step 5 (Quality gates), and Step 6 (Fai
 
 Scale verification effort and evidence collection to task risk and what the user cares about:
 
-1. **Sources and precedence**: read persistent user priorities from `assets.yaml` (`preferences.evidence`) and repo expectations from `## Orchestration` `- Evidence:`, following the precedence order in `references/repo-policy.md`. When the user states an evidence priority in plain language, record it in `assets.yaml` (`references/assets-updates.md`).
+1. **Sources and precedence**: read persistent user priorities from `assets.yaml` (`preferences.evidence`) and repo expectations from repo policy `Evidence:` (`references/repo-policy.md`), following its precedence order. When the user states an evidence priority in plain language, record it in `assets.yaml` (`references/assets-updates.md`).
 2. **Scale and prune**: require the evidence the user and repo prioritize (such as red→green unit/integration output, or browser/device screenshots on visible changes), and drop evidence classes the user explicitly deprioritized (such as video recordings or secondary-platform captures on non-visual work) unless the task is specifically about that deprioritized area.
 3. **Forward into briefs**: list the exact commands and required evidence in each child's `VERIFICATION` block (`references/brief-template.md`).
 
@@ -26,7 +26,7 @@ Agent-facing docs (`AGENTS.md`, `CLAUDE.md`, skills, references, or catalog text
 
 ## Design checkpoints
 
-For user-visible changes whose look, layout, copy, or interaction behavior is a matter of taste (plus any surface matching `- Checkpoints:` in the repo's `## Orchestration`, `references/repo-policy.md`), apply `preferences.design_checkpoints` from `assets.yaml` (Precedence 2):
+For user-visible changes whose look, layout, copy, or interaction behavior is a matter of taste (plus any surface matching `Checkpoints:` in repo policy, `references/repo-policy.md`), apply `preferences.design_checkpoints` from `assets.yaml` (Precedence 2):
 
 - **`ask` (default)**: pause once at the checkpoint (`SKILL.md` Step 7) with concrete evidence (screenshot, recording, rendered preview, or CLI transcript) for user approval before building dependent polish or landing.
 - **`delegate`**: evaluate the concrete evidence yourself against repo standards, proceed immediately, and report the decision in one line.
@@ -50,7 +50,7 @@ Send any follow-up fixes to the implementing child via the harness's continue me
 
 When a test run, CI check, or git/forge command fails, or a PR waits on required checks while none has started, classify the state before investigating code or waiting:
 
-- **Infrastructure classification**: transient network refused/timeout to the forge or package registry, CI runner lost or preempted, or a signature matching `- Known failures:` in the target repo's `## Orchestration` (`references/repo-policy.md`).
-- **One rerun or repo remedy**: run the remedy named in `- Known failures:` or rerun the failed jobs/command once (using the harness's CI rerun in `references/harnesses.md`, or one foreground retry of the failed command).
+- **Infrastructure classification**: transient network refused/timeout to the forge or package registry, CI runner lost or preempted, or a signature matching `Known failures:` in repo policy (`references/repo-policy.md`).
+- **One rerun or repo remedy**: run the remedy named in `Known failures:` or rerun the failed jobs/command once (using the harness's CI rerun in `references/harnesses.md`, or one foreground retry of the failed command).
 - **Escalate on repeat**: if the check fails a second time after the single rerun, treat it as a real failure and diagnose the logs and code.
 - **Unstarted PR checks**: read the PR's merge state first (`gh pr view <n> --json mergeable,mergeStateStatus` on GitHub). On `CONFLICTING` or `DIRTY`, the forge cannot build the test merge commit, so `pull_request` workflows never start; send the implementing child a continue message to rebase onto the current base branch, revalidate, and push.
