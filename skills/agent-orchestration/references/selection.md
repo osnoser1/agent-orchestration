@@ -48,6 +48,8 @@ When `assets.yaml` is missing, default every discovered provider to `status: ok`
    5. **Lower cost class**: `cheap` < `normal` < `expensive`.
    6. **Lower effort** (`none` < `low` < `medium` < `high` < `xhigh`), then lower score.
 
+`status: low` and `policy: preserve` only rank a pool lower. When `select` returns a candidate from such a pool, dispatch it: work never waits for a reset, and never waits on the user, while a usable candidate exists. Only an exit `4` (nothing usable) or a Step 7 gate in `SKILL.md` (emergency, pay-per-use, `ui_fallback: defer|ask`) holds work.
+
 ## Preferred-model fallback (`preferences.ui_fallback`) and follow-ups
 When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier while at least one other tier-meeting candidate exists, classify the unmet preference from this run's discovery (`--available`):
 
