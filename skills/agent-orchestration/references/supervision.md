@@ -1,6 +1,6 @@
 # Batching, durable state, and supervision loop
 
-Use these rules when coordinating multiple work items, running several children concurrently, or deferring work until a provider renews.
+Use these rules when coordinating multiple work items, supervising non-notifying children, or deferring work until a provider renews.
 
 ## Conflict-aware batching
 
@@ -15,8 +15,9 @@ Before launching items in parallel, compare each item's expected target paths, m
 
 When the user or batch plan holds work for a specific exhausted or renewing provider (rather than spending another provider now):
 
-1. Record a `resume` follow-up in `assets.yaml` targeting that provider (or another selector from `references/selection.md`):
-   `python3 scripts/orch.py followups --add --kind resume --ref "<batch-or-task-ref>" --needs provider:<provider-id> --after <reset_or_renews + 2m>`
+1. Record a `resume` follow-up in `assets.yaml` pairing the provider (and optional quota group) with a required tier or model (`references/selection.md`):
+   `python3 scripts/orch.py followups --add --kind resume --ref "<batch-or-task-ref>" --needs "provider:<provider-id>/<tier-or-model>" --after <reset_or_renews + 2m>`
+   (or `provider:<provider-id>/<group-name>/<tier>` on grouped providers).
 2. When the harness supports delayed scheduling (`Scheduled resume` in `references/harnesses.md`), schedule one wakeup at `reset_or_renews + 2m` to launch the batch; otherwise report the renewal timestamp to the user.
 3. Clear the entry with `python3 scripts/orch.py followups --done "<batch-or-task-ref>"` once the batch launches.
 
@@ -37,14 +38,16 @@ Refresh durable state whenever a batch launches, a child switches models or land
 
 ## Supervision loop
 
-When several children run for long, schedule a recurring supervision check using the harness's scheduler (`Scheduled resume` in `references/harnesses.md`); in harnesses without a background scheduler, run the check on each user turn or child wakeup.
+Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`, Precedence 2).
+
+When several non-notifying children run for long, schedule a recurring supervision check using the harness's scheduler (`Scheduled resume` in `references/harnesses.md`); in harnesses without a background scheduler, run the check on each user turn.
 
 On each check:
 
-1. **Read cheaply**: inspect each open child with a small read limit (recent messages/run state only).
+1. **Read cheaply**: inspect each open non-notifying child with a small read limit (recent messages/run state only).
 2. **Classify and act**:
    - **Healthy**: active run in progress, or waiting on an awaited task/subagent → leave running.
-   - **Stopped by quota**: follow the quota-recovery order in `references/harnesses.md` (`orch.py exhaust` → switch model in place → new child with partial results → scheduled resume at `earliest_reset + 2m`).
+   - **Stopped by quota**: run the quota-recovery decision order in `references/harnesses.md`.
    - **Idle with pending work**: diagnose why it stopped and send one continuation message. When a Gemini child exhibits the `"ended turn while waiting"` quirk (`catalog.yaml`, `references/harnesses.md`), resend and instruct it to block in one foreground command.
    - **Completed**: run the Step 5 quality gates (`references/verification.md`), launch any dependent batch unblocked by its landing, and update durable state.
 3. **Low-noise status**: when every open child is healthy and nothing needs attention, reply with one short `"all running"` line.
@@ -52,4 +55,4 @@ On each check:
 
 ## Idempotent child messages
 
-When sending a launch, continuation, steer, or cancel request in a harness that supports idempotency keys (`references/harnesses.md`), attach a deterministic key encoding the target, action, and timestamp bucket (for example `continue-<childId>-<unix_ts>`) so the harness deduplicates retries and overlapping supervision ticks into a single turn.
+When sending a launch, continuation, steer, or cancel request in a harness that supports idempotency keys (`references/harnesses.md`), derive the key deterministically from the target, action, and the child's last observed turn or message ID (for example `continue-<childId>-<lastTurnId>` or `launch-<batchRef>-<itemSlug>`) so retries for the same observed child state carry the identical key and deduplicate into a single turn.

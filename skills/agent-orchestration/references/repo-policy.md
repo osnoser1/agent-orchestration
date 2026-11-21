@@ -15,7 +15,7 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
 - Models: <task-type preferences, e.g. UI/UX work → Anthropic>
 - Conversations: <when new top-level conversations are preferred or restricted>
 - Evidence: <verification evidence by change type, e.g. UI changes require browser screenshots>
-- Checkpoints: <surfaces or taste decisions that pause for user approval vs delegate>
+- Checkpoints: <user-visible surfaces or taste decisions that trigger a design checkpoint>
 - Known failures: <known transient/infra failure signatures and their one-rerun or remedy command>
 ```
 
@@ -31,14 +31,14 @@ Every line is optional. When the section is absent, the skill's defaults apply u
 | `Models` | Task-type model or family preferences (e.g. `UI/UX work → Anthropic`). Unmet preferences follow `references/selection.md`: `preferences.ui_fallback` (from `assets.yaml`, Precedence 2) governs switching to another family when the preferred family is `exhausted` (including mid-task quota switches in `references/harnesses.md`); `not offered here` proceeds with the best available model in this harness and one informational note. |
 | `Conversations` | Repo guidance for opening new top-level conversations (`references/harnesses.md`). |
 | `Evidence` | Verification evidence expected by change type (`references/verification.md`), scaled by user-wide priorities in `assets.yaml` (`preferences.evidence`, Precedence 2). |
-| `Checkpoints` | User-visible surfaces or taste choices that trigger a design checkpoint (`references/verification.md`). `preferences.design_checkpoints` (`ask|delegate` in `assets.yaml`, Precedence 2, default `ask`) governs whether checkpoints pause for user approval or are delegated; this line sets the repo default when omitted in `assets.yaml`. |
+| `Checkpoints` | User-visible surfaces or taste choices in this repository that trigger a design checkpoint (`references/verification.md`). |
 | `Known failures` | Known transient or infrastructure failure signatures and their remedy or one-rerun command before code investigation (`references/verification.md`). |
 
 ## Precedence
 
 1. **User's explicit instruction** — overrides everything for the current request.
 2. **User's `assets.yaml` and harness rules** — keep authority over quota limits (`low_threshold`, `exhausted_threshold`, `exhausted_until`), `preferences.ui_fallback` when a preferred family is exhausted, `preferences.evidence` (user-wide evidence priorities and deprioritized checks), `pay_per_use`, `policy: avoid`, and the ask-once gates in `SKILL.md` Step 7 (`preferences.new_conversations`, `preferences.design_checkpoints`, emergency spending). Assets and harness rules always win on these.
-3. **Repository `## Orchestration`** — overrides skill defaults for process (phase skills/commands), extra high-risk triggers, task-type model preferences (`Models:`), repo evidence expectations (`Evidence:`), checkpoint triggers and repo-default mode (`Checkpoints:`), and known infrastructure remedies (`Known failures:`).
+3. **Repository `## Orchestration`** — overrides skill defaults for process (phase skills/commands), extra high-risk triggers, task-type model preferences (`Models:`), repo evidence expectations (`Evidence:`), checkpoint triggers (`Checkpoints:`), and known infrastructure remedies (`Known failures:`).
 4. **Skill defaults** — apply for any omitted line or when `## Orchestration` is absent.
 
 ## Applying policy in briefs
@@ -58,6 +58,6 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
 - Models: UI/UX work → Anthropic; SQL migrations → OpenAI
 - Conversations: cross-repo follow-ups may open a new thread when user permits
 - Evidence: UI changes require before/after screenshots; API changes require red→green integration tests
-- Checkpoints: new screens, layout changes, and public CLI flags pause with concrete evidence
+- Checkpoints: new screens, layout changes, and public CLI flags
 - Known failures: forge 502/ETIMEDOUT or lost CI runner → rerun failed jobs once before investigating
 ```

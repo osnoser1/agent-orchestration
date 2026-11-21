@@ -94,7 +94,7 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
 - Models: <task-type preferences, e.g. UI/UX work → Anthropic>
 - Conversations: <when new top-level conversations are preferred or restricted>
 - Evidence: <verification evidence by change type, e.g. UI changes require browser screenshots>
-- Checkpoints: <surfaces or taste decisions that pause for user approval vs delegate>
+- Checkpoints: <user-visible surfaces or taste decisions that trigger a design checkpoint>
 - Known failures: <known transient/infra failure signatures and their one-rerun or remedy command>
 ```
 

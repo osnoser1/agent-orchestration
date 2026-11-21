@@ -12,10 +12,10 @@ Scale verification effort and evidence collection to task risk and what the user
 
 ## Design checkpoints
 
-For user-visible changes whose look, layout, copy, or interaction behavior is a matter of taste (plus any change matching `- Checkpoints:` in the repo's `## Orchestration`, `references/repo-policy.md`):
+For user-visible changes whose look, layout, copy, or interaction behavior is a matter of taste (plus any surface matching `- Checkpoints:` in the repo's `## Orchestration`, `references/repo-policy.md`), apply `preferences.design_checkpoints` from `assets.yaml` (Precedence 2):
 
-- **`preferences.design_checkpoints: ask` (default)**: pause once at the checkpoint (`SKILL.md` Step 7) with concrete evidence (screenshot, recording, rendered preview, or CLI transcript) for user approval before building dependent polish or landing.
-- **`preferences.design_checkpoints: delegate`**: evaluate the concrete evidence yourself against repo standards, proceed immediately, and report the decision in one line. (When `preferences.design_checkpoints` is unset in `assets.yaml`, follow the repo's `- Checkpoints:` mode if specified, else `ask`.)
+- **`ask` (default)**: pause once at the checkpoint (`SKILL.md` Step 7) with concrete evidence (screenshot, recording, rendered preview, or CLI transcript) for user approval before building dependent polish or landing.
+- **`delegate`**: evaluate the concrete evidence yourself against repo standards, proceed immediately, and report the decision in one line.
 - **Persist approval**: record every approved or delegated checkpoint (decision + evidence reference) under **Approved checkpoints** in the user-local durable state (`references/supervision.md`) so post-compaction turns and follow-up batches reuse the recorded decision.
 
 ## Final check before landing (Step 5.4)
@@ -35,5 +35,5 @@ Send any follow-up fixes to the implementing child via the harness's continue me
 When a test run, CI check, or git/forge command fails, classify the failure before investigating application code:
 
 - **Infrastructure classification**: transient network refused/timeout to the forge or package registry, CI runner lost or preempted, or a signature matching `- Known failures:` in the target repo's `## Orchestration` (`references/repo-policy.md`).
-- **One rerun or repo remedy**: run the remedy named in `- Known failures:` or rerun the failed jobs/command once (for example `ci_rerun` on the failing check in T3 Code, or one foreground retry of the failed command).
+- **One rerun or repo remedy**: run the remedy named in `- Known failures:` or rerun the failed jobs/command once (using the harness's CI rerun in `references/harnesses.md`, or one foreground retry of the failed command).
 - **Escalate on repeat**: if the check fails a second time after the single rerun, treat it as a real failure and diagnose the logs and code.

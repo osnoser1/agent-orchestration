@@ -41,6 +41,7 @@ models:
     quirks: ["Antigravity option key is thought_level."]
   - id: gemini-pro-orchestrator-neon
     name: Orchestrator (Neon)
+    aliases: [Orchestrator (Neon), gemini-4-orchestrator-neon]
     family: google
     cost: normal
     rating: unrated
@@ -48,6 +49,7 @@ models:
     quirks: ["Coordinates its own subagents; run directly as a top-level mode rather than as a leaf worker.", "Antigravity option key is thought_level."]
   - id: gemini-pro-orchestrator-g1-pro
     name: Orchestrator (Argon)
+    aliases: [Orchestrator (Argon), gemini-pro-orchestrator-argon]
     family: google
     cost: normal
     rating: unrated

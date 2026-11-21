@@ -54,7 +54,7 @@ providers:
         window: 7d
         resets_at: 2026-12-02T00:00:00+00:00
       - name: "Gemini 4 Argon"
-        models: [gemini-4-argon]
+        models: [gemini-4-argon, gemini-pro-orchestrator-g1-pro]
         status: ok
         used_percent: 0
         window: 7d
