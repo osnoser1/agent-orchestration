@@ -19,7 +19,7 @@ models:
     scores: {low: 44, medium: 55, high: 60, xhigh: 61}
     source: aa-v5
     strengths: [long-context, general-coding, cost-efficiency]
-    quirks: ["Antigravity option key is thought_level (not thinking_level).", "Children may end their turn while 'waiting': resend and instruct them to block in one command."]
+    quirks: ["Antigravity option key is thought_level (not thinking_level).", "Children may end their turn while 'waiting': resend and instruct them to block in one command.", "Children may busy-poll a background command at one model turn per poll (`references/harnesses.md`): require the harness wait in the brief."]
   - id: gemini-4-hydrogen
     name: Gemini 4 Hydrogen
     family: google
@@ -28,7 +28,7 @@ models:
     scores: {low: 27, medium: 41, high: 51, xhigh: 54}
     source: aa-v5
     strengths: [mechanical-edits, high-volume]
-    quirks: ["Antigravity option key is thought_level.", "Children may end their turn while 'waiting': resend and instruct them to block in one command."]
+    quirks: ["Antigravity option key is thought_level.", "Children may end their turn while 'waiting': resend and instruct them to block in one command.", "Children may busy-poll a background command at one model turn per poll (`references/harnesses.md`): require the harness wait in the brief."]
   - id: gemini-4-argon
     name: Gemini 4 Argon
     family: google
@@ -38,7 +38,7 @@ models:
     confidence: low
     source: aa-v5
     notes: "High effort reported ~50-53 depending on source; 51 is the midpoint. Re-check when a single source is authoritative."
-    quirks: ["Antigravity option key is thought_level."]
+    quirks: ["Antigravity option key is thought_level.", "Children may busy-poll a background command at one model turn per poll (`references/harnesses.md`): require the harness wait in the brief."]
   - id: gemini-pro-orchestrator-neon
     name: Orchestrator (Neon)
     aliases: [Orchestrator (Neon), gemini-4-orchestrator-neon]
@@ -46,7 +46,7 @@ models:
     cost: normal
     rating: unrated
     notes: "Composite Antigravity mode from agy models that coordinates its own subagents (Gemini 4 Neon with Hydrogen); no standalone Artificial Analysis score."
-    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate, use the base model (gemini-4-neon) as the worker.", "Its subagents draw from the same quota pool as the base model (Gemini Models, shared with Hydrogen) and drain it faster than the base model.", "Overbuilt when a task invited tooling (one observed case); if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level."]
+    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate, use the base model (gemini-4-neon) as the worker.", "Its subagents draw from the same quota pool as the base model (Gemini Models, shared with Hydrogen) and drain it faster than the base model.", "Overbuilt when a task invited tooling (one observed case); if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level.", "Children may busy-poll a background command at one model turn per poll (`references/harnesses.md`): require the harness wait in the brief."]
   - id: gemini-pro-orchestrator-g1-pro
     name: Orchestrator (Argon)
     aliases: [Orchestrator (Argon), gemini-pro-orchestrator-argon]
@@ -54,7 +54,7 @@ models:
     cost: normal
     rating: unrated
     notes: "Composite Antigravity mode from agy models that coordinates its own subagents (Gemini 4 Argon with Hydrogen); no standalone Artificial Analysis score."
-    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate, use the base model (gemini-4-argon) as the worker.", "Its subagents draw from the same quota pool as the base model (Gemini 4 Argon) and drain it faster than the base model.", "Overbuild was observed with Orchestrator (Neon), not with this mode; if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level."]
+    quirks: ["Coordinates its own subagents and adds a second coordinator under yours; when you already orchestrate, use the base model (gemini-4-argon) as the worker.", "Its subagents draw from the same quota pool as the base model (Gemini 4 Argon) and drain it faster than the base model.", "Overbuild was observed with Orchestrator (Neon), not with this mode; if you use it anyway, state a size budget in the brief.", "Antigravity option key is thought_level.", "Children may busy-poll a background command at one model turn per poll (`references/harnesses.md`): require the harness wait in the brief."]
   - id: claude-opus-5-5
     name: Claude Opus 5.5
     family: anthropic

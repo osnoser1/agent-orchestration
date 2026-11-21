@@ -54,6 +54,7 @@ On each check:
    - **Staged Phase 1 done**: apply the phase-boundary switch in `references/selection.md`.
    - **Stopped by quota**: run the quota-recovery decision order in `references/harnesses.md`.
    - **Idle with pending work**: diagnose why it stopped and send one continuation message. When a Gemini child exhibits the `"ended turn while waiting"` quirk (`catalog.yaml`, `references/harnesses.md`), resend and instruct it to block in one foreground command.
+   - **Polling**: recent activity shows the same short command repeated (a loop of seconds, each a model turn) → steer it once to the harness wait (`WAITING` in `references/brief-template.md`) and, while an Antigravity Gemini child runs a long background command, check at least every 30 min (sized to the ~50 min drain reported in issue 14; *unverified* as a general figure).
    - **Completed**: act on it as a completion notice (above).
 3. **Low-noise status**: when every open child is healthy and nothing needs attention, reply with one short `"all running"` line.
 4. **Wind down**: shrink the check list or widen the interval as children finish; disable or delete the recurring schedule as soon as the batch completes, and state in one line that supervision is off.

@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.7.1"
+  version: "0.7.2"
 ---
 
 # Agent orchestration
@@ -31,7 +31,7 @@ Apply the filter, tie-break, effort knee, preferred-model fallback (`preferences
 *Done when*: a primary `provider / model @ effort` (or a staged Phase 1 below-tier model plus Phase 2 tier-meeting target model under `preferences.below_tier: stage`), delegation surface, and (for reviewed work) a reviewer from `references/selection.md` are selected at their step starts (or deferred to renewal) with quirks noted and logged.
 
 ## 4. Brief
-Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md` (`GOAL`, `PHASE` when staged, `CONTEXT / KNOWN FACTS`, `CONSTRAINTS`, `VERIFICATION`, `REPORT`, `IF BLOCKED`). Name the active phase's skills or commands from the repo's `## Orchestration` section explicitly (`references/repo-policy.md`) and include proportional evidence and checkpoint triggers (`references/verification.md`). For staged work (`preferences.below_tier: stage`, `references/selection.md`) and multi-item batches, persist user-local durable state. Start the supervision loop for non-notifying children, and act on each completion notice in the same turn (`references/supervision.md`). Require every report to close with `## Obstacles / not verified`.
+Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md` (`GOAL`, `PHASE` when staged, `CONTEXT / KNOWN FACTS`, `CONSTRAINTS`, `WAITING`, `VERIFICATION`, `REPORT`, `IF BLOCKED`). Name the active phase's skills or commands from the repo's `## Orchestration` section explicitly (`references/repo-policy.md`) and include proportional evidence and checkpoint triggers (`references/verification.md`). For staged work (`preferences.below_tier: stage`, `references/selection.md`) and multi-item batches, persist user-local durable state. Start the supervision loop for non-notifying children, and act on each completion notice in the same turn (`references/supervision.md`). Require every report to close with `## Obstacles / not verified`.
 
 *Done when*: the brief carries all known facts, any staged `PHASE` boundary, explicit repo phase skills/commands, proportional verification and checkpoint rules, doc review-loop instructions when applicable, and the mandatory closing section; staged runs and multi-item batches have user-local durable state, and every non-notifying child has an active supervision loop.
 
