@@ -18,8 +18,9 @@
   orch.py history   [--ref ITEM] [--last N] [--ledger F] [--assets F]
   orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
-  orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--ledger F] [--assets F] [--now ISO]
+  orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
   orch.py scope     --base REF [--max-files N] [--max-lines N] [--expect GLOB ...] [--repo DIR]
+  orch.py policy    [--repo DIR] [--check] [--catalog F] [--assets F]
   Every command also takes --full.
 
 Exit codes:
@@ -30,7 +31,7 @@ Exit codes:
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
 `probe`, `select`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
-`check` ends with `ok: …` or `error: N problem(s); action: …`.
+`check` and `policy` end with `ok: …` or `error: N problem(s); action: …`.
 Every command is compact by default: lists stop at 10 items (`… N more (rerun with --full)`), repeated notes group by
 reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
 
@@ -39,6 +40,7 @@ YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / 
 import argparse, fnmatch, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone, date
 from email.utils import parsedate_to_datetime
+from urllib.parse import unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEF_CATALOG = os.path.join(HERE, "..", "catalog.yaml")
@@ -2991,6 +2993,12 @@ TOOL_RE = re.compile(
 )
 
 
+RERUN_ACTION_TEXT = (
+    "rerun the failed job or command once (references/verification.md); "
+    "if it fails again, diagnose it as a real failure"
+)
+
+
 def _parse_known(items):
     """`REGEX=>ACTION` strings -> [(compiled, regex_text, action)]; raises ValueError on a bad entry."""
     out = []
@@ -2998,8 +3006,11 @@ def _parse_known(items):
         rx, sep, act = item.partition("=>")
         if not sep or not rx.strip() or not act.strip():
             raise ValueError(f"--known needs REGEX=>ACTION, got: {item}")
+        act_text = " ".join(act.split())
+        if act_text == "rerun":
+            act_text = RERUN_ACTION_TEXT
         try:
-            out.append((re.compile(rx.strip(), _I), rx.strip(), " ".join(act.split())))
+            out.append((re.compile(rx.strip(), _I), rx.strip(), act_text))
         except re.error as exc:
             raise ValueError(f"--known regex {rx.strip()!r}: {exc}")
     return out
@@ -3052,19 +3063,28 @@ def failure_cmd(a):
         _action("rerun failure with --ref <item>")
         return 1
     ref = _clean_ref(_opt_str(a, "ref"))
-    try:
-        known = _parse_known([k for k in (getattr(a, "known", None) or []) if isinstance(k, str)])
-    except ValueError as exc:
-        print(str(exc))
-        print("action: fix the --known pattern (REGEX=>ACTION) and rerun failure")
-        return 1
     ap = _opt_str(a, "assets") or def_assets()
+    raw_known = [k for k in (getattr(a, "known", None) or []) if isinstance(k, str)]
+    repo_notes = []
+    if raw_known:
+        try:
+            known = _parse_known(raw_known)
+        except ValueError as exc:
+            print(str(exc))
+            print("action: fix the --known pattern (REGEX=>ACTION) and rerun failure")
+            return 1
+    else:
+        explicit_repo = _opt_str(a, "repo")
+        repo_dir = os.path.abspath(explicit_repo) if explicit_repo else _default_repo_dir()
+        known, repo_notes = _load_repo_known_failures(repo_dir, ap, explicit_repo=bool(explicit_repo))
     ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
     cls, hit, reset = classify_failure(text, now, known)
     seen = prior_failures(ledger_path, ref)
     n = len(seen)
     _detail(f"class: {cls}")
     _detail(f"retries: {n}/{MAX_RETRIES}")
+    for note in _capped(repo_notes):
+        print(f"note: {note}")
     tag = f" --ref {ref}"
     if hit:
         _detail(f"known: {hit[1]}")
@@ -3117,7 +3137,7 @@ def _glob_re(glob):
     """`*` and `?` stay inside one directory, `**` crosses them; a bare path or trailing `/` means that file or directory."""
     if glob.endswith("/"):
         glob += "**"
-    elif not re.search(r"[*?]", glob):
+    elif not re.search(r"[*?[]", glob):
         return re.compile(re.escape(glob) + r"(?:/.*)?\Z")
     out, i = [], 0
     while i < len(glob):
@@ -3127,6 +3147,17 @@ def _glob_re(glob):
         elif glob.startswith("**", i):
             out.append(".*")
             i += 2
+        elif glob[i] == "[":
+            end = glob.find("]", i + 1)
+            if end > i + 1 and "/" not in glob[i + 1 : end]:
+                inner = glob[i + 1 : end]
+                if inner.startswith("!"):
+                    inner = "^" + inner[1:]
+                out.append("[" + inner + "]")
+                i = end + 1
+            else:
+                out.append(re.escape("["))
+                i += 1
         else:
             c = glob[i]
             out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
@@ -3460,6 +3491,18 @@ def check(a):
                                 f"assets followups[{idx}].needs: bad value {needs_val} "
                                 "(expected provider:<id>/<tier|model> or provider:<id>/<group>/<tier>)"
                             )
+        compat = loaded_assets.get("compat")
+        if compat is not None:
+            if not isinstance(compat, dict):
+                errs.append("assets compat: must be a map")
+            else:
+                for ck, cv in compat.items():
+                    if ck != "legacy_orchestration_policy":
+                        errs.append(f"assets compat.{ck}: unknown compat flag")
+                    elif not isinstance(cv, bool):
+                        errs.append(
+                            f"assets compat.legacy_orchestration_policy: bad value {cv} (expected true|false)"
+                        )
     if errs:
         for line in _capped(["error: " + e for e in errs]):
             print(line)
@@ -3486,6 +3529,703 @@ def status_cmd(a):
     return 0
 
 
+# ---------- repo orchestration policy (issue #19: temporary legacy compat) ----------
+POLICY_KEYS = (
+    "Implement",
+    "Review",
+    "PR",
+    "Land",
+    "High risk",
+    "Models",
+    "Conversations",
+    "Evidence",
+    "Checkpoints",
+    "Known failures",
+)
+POLICY_KEY_MAP = {k.lower(): k for k in POLICY_KEYS}
+POLICY_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+POLICY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+LEGACY_COMPAT_MSG = "compat.legacy_orchestration_policy; scheduled for removal in issue #19"
+
+
+def _policy_compat_enabled(assets_path):
+    if not assets_path or not os.path.isfile(assets_path):
+        return False
+    try:
+        assets = load_file(assets_path) or {}
+    except OSError:
+        return False
+    compat = assets.get("compat") if isinstance(assets, dict) else None
+    return isinstance(compat, dict) and compat.get("legacy_orchestration_policy") is True
+
+
+def _default_repo_dir():
+    cwd = os.getcwd()
+    rc, out = _git(cwd, "rev-parse", "--show-toplevel")
+    top = out.strip() if rc == 0 else ""
+    return top if top and os.path.isdir(top) else cwd
+
+
+def _read_text_lossy(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines(), None
+    except OSError as exc:
+        return None, str(exc)
+
+
+def _extract_agents_orchestration(agents_path):
+    """Return `(found, sec_lines, read_err)` for `AGENTS.md` `## Orchestration`."""
+    if not os.path.isfile(agents_path):
+        return False, [], None
+    all_lines, err = _read_text_lossy(agents_path)
+    if err is not None:
+        return True, [], f"cannot read {agents_path}: {err}"
+    fence = None
+    in_sec = False
+    sec_lines = []
+    for line in all_lines:
+        if fence:
+            m = re.match(r"^\s{0,3}(`{3,}|~{3,})\s*$", line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            if in_sec:
+                sec_lines.append(line)
+            continue
+        fm = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        if fm:
+            fence = fm.group(1)
+            if in_sec:
+                sec_lines.append(line)
+            continue
+        if in_sec and re.match(r"^#{1,2}\s+", line):
+            break
+        if not in_sec and re.match(r"^##\s+Orchestration(?:\s+#*)?\s*$", line, _I):
+            in_sec = True
+            continue
+        if in_sec:
+            sec_lines.append(line)
+    return in_sec, sec_lines, None
+
+
+def _has_policy_bullets(lines):
+    return any(re.match(r"^[-*]\s+[^:\n]+?:", l) for l in lines)
+
+
+def _locate_repo_policy(repo_dir):
+    """Return `(rel_label, file_path, lines, warnings, read_err)` or None."""
+    dot_path = os.path.join(repo_dir, ".agents", "orchestration.md")
+    agents_path = os.path.join(repo_dir, "AGENTS.md")
+    if os.path.isfile(dot_path):
+        lines, err = _read_text_lossy(dot_path)
+        if err is not None:
+            return ".agents/orchestration.md", dot_path, [], [], f"cannot read .agents/orchestration.md: {err}"
+        warnings = []
+        ag_found, ag_lines, _ = _extract_agents_orchestration(agents_path)
+        if ag_found and _has_policy_bullets(ag_lines):
+            warnings.append("both .agents/orchestration.md and AGENTS.md ## Orchestration exist; ignoring AGENTS.md section")
+        return ".agents/orchestration.md", dot_path, lines, warnings, None
+    ag_found, ag_lines, ag_err = _extract_agents_orchestration(agents_path)
+    if ag_err is not None:
+        return "AGENTS.md", agents_path, [], [], ag_err
+    return ("AGENTS.md", agents_path, ag_lines, [], None) if ag_found else None
+
+
+def _strip_key_markup(raw_key):
+    k = raw_key.strip()
+    for wrap in ("**", "__", "`"):
+        if len(k) > 2 * len(wrap) and k.startswith(wrap) and k.endswith(wrap):
+            k = k[len(wrap):-len(wrap)].strip()
+    return k
+
+
+def _parse_policy_bullets(lines, compat_legacy=False):
+    """Extract ordered `{key: value}` pairs, warnings, and structural errors from policy lines."""
+    fields = {}
+    warnings = []
+    errors = []
+    fence = None
+    last_key = None
+    seen_bullet = False
+    for line in lines:
+        if fence:
+            m = re.match(r"^\s{0,3}(`{3,}|~{3,})\s*$", line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            continue
+        fm = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        if fm:
+            fence = fm.group(1)
+            last_key = None
+            continue
+        if not line.strip():
+            last_key = None
+            continue
+        if re.match(r"^#{1,6}\s+", line):
+            last_key = None
+            continue
+        if re.match(r"^[ \t]+[-*+]\s+", line):
+            last_key = None
+            errors.append(f"nested bullets are not supported in policy: {line.strip()}")
+            continue
+        if re.match(r"^\+\s+", line):
+            last_key = None
+            errors.append(f"unsupported '+' bullet (use '- Key: value'): {line.strip()}")
+            continue
+        if re.match(r"^[ \t]+\S", line):
+            if last_key is not None:
+                fields[last_key] = fields[last_key] + " " + line.strip()
+            else:
+                errors.append(f"unexpected indented line in policy: {line.strip()}")
+            continue
+        if re.match(r"^[-*]\s+", line):
+            seen_bullet = True
+            last_key = None
+            m = re.match(r"^[-*]\s+([^:\n]+?):\s*(.*)$", line)
+            if not m:
+                errors.append(f"malformed policy line (expected '- Key: value'): {line.strip()}")
+                continue
+            raw_key = _strip_key_markup(m.group(1))
+            val = m.group(2).strip()
+            key = POLICY_KEY_MAP.get(raw_key.lower())
+            if not key:
+                errors.append(f"unknown policy key {raw_key!r} (expected one of: {', '.join(POLICY_KEYS)})")
+                continue
+            if key in fields:
+                errors.append(f"duplicate policy key {key!r}")
+                continue
+            if not val:
+                errors.append(f"{key}: empty value")
+                continue
+            fields[key] = val
+            last_key = key
+            continue
+        last_key = None
+        if not seen_bullet:
+            continue
+        errors.append(f"non-bullet line in policy section (expected '- Key: value'): {line.strip()}")
+    return fields, warnings, errors
+
+
+def _split_policy_items(text, regex_mode=False):
+    """Split `;`-separated items outside `(...)`, `[...]`, backticks, and (when `regex_mode`) `/.../`."""
+    items, buf = [], []
+    paren, bracket, in_tick, in_rx = 0, 0, False, False
+    i, n = 0, len(text)
+    at_start = True
+    while i < n:
+        c = text[i]
+        if in_rx:
+            buf.append(c)
+            if c == "\\" and i + 1 < n:
+                buf.append(text[i + 1])
+                i += 2
+                continue
+            if c == "/":
+                in_rx = False
+            i += 1
+            continue
+        if in_tick:
+            buf.append(c)
+            if c == "`":
+                in_tick = False
+            i += 1
+            continue
+        if regex_mode and at_start and c == "/":
+            in_rx = True
+            at_start = False
+            buf.append(c)
+            i += 1
+            continue
+        if c == "`":
+            in_tick = True
+        elif c == "(":
+            paren += 1
+        elif c == ")" and paren > 0:
+            paren -= 1
+        elif c == "[":
+            bracket += 1
+        elif c == "]" and bracket > 0:
+            bracket -= 1
+        elif c == ";" and paren == 0 and bracket == 0:
+            item = "".join(buf).strip()
+            if item:
+                items.append(item)
+            buf = []
+            at_start = True
+            i += 1
+            continue
+        if not c.isspace():
+            at_start = False
+        buf.append(c)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _balanced_parens(text):
+    depth = 0
+    for c in text:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _parse_models_field(val, known_families, compat_legacy):
+    items = _split_policy_items(val)
+    parsed, warnings, errors = [], [], []
+    legacy = False
+    for item in items:
+        m = re.match(r"^(.*?)\s*(?:→|->)\s*(.+)$", item)
+        if not m:
+            legacy = True
+            continue
+        task, rhs = m.group(1).strip(), m.group(2).strip()
+        if not task:
+            errors.append(f"Models: missing task type before '→' in {item!r} (example: Models: ui → family:anthropic)")
+            continue
+        fm = re.match(r"^family:([A-Za-z0-9_-]+)(?:\s*(.*))?$", rhs)
+        if not fm:
+            if rhs.lower().startswith("family:"):
+                errors.append(f"Models: invalid family spec in {item!r} (example: Models: ui → family:anthropic)")
+            else:
+                legacy = True
+            continue
+        fam = fm.group(1).lower()
+        if known_families and fam not in known_families:
+            errors.append(
+                f"Models: unknown family {fam!r} (known: {', '.join(sorted(known_families))}; "
+                "example: Models: ui → family:anthropic)"
+            )
+            continue
+        rest = (fm.group(2) or "").strip()
+        note = None
+        if rest:
+            if rest.startswith("(") and rest.endswith(")") and _balanced_parens(rest[1:-1]):
+                note = rest[1:-1].strip()
+            else:
+                errors.append(
+                    f"Models: unexpected trailing text {rest!r} in {item!r} "
+                    "(wrap notes in parentheses; example: Models: ui → family:anthropic (note))"
+                )
+                continue
+        parsed.append({"task": task, "family": fam, "note": note})
+
+    if legacy:
+        if not compat_legacy:
+            errors.append(
+                "Models: legacy free-text format (example: Models: ui → family:anthropic; "
+                "the user may set compat.legacy_orchestration_policy: true in assets.yaml, issue #19)"
+            )
+            return [], warnings, errors
+        warnings.append(f"legacy Models format ({LEGACY_COMPAT_MSG})")
+        for item in items:
+            m = re.match(r"^(.*?)\s*(?:→|->)\s*(.+)$", item)
+            if m:
+                task, rhs = m.group(1).strip(), m.group(2).strip()
+                hit = next((f for f in sorted(known_families) if re.search(rf"\b{re.escape(f)}\b", rhs, _I)), None)
+                parsed.append({"task": task, "family": hit or "unknown", "note": rhs, "legacy": True})
+            else:
+                parsed.append({"task": "note", "family": "unknown", "note": item, "legacy": True})
+    return parsed, warnings, errors
+
+
+def _parse_high_risk_field(val, repo_dir, compat_legacy, check_fs=True):
+    items = _split_policy_items(val)
+    parsed, warnings, errors = [], [], []
+    legacy = False
+    real_repo = os.path.realpath(repo_dir) if repo_dir else None
+    ex = "example: High risk: db/migrations/**; source:<path>; class:<phrase>"
+    for item in items:
+        if item.startswith("source:"):
+            path = item[len("source:"):].strip()
+            if not path or POLICY_LINK_RE.search(path):
+                errors.append(f"High risk: source: takes a plain repo-relative path: {item!r} ({ex})")
+            elif path.startswith(("/", "~")) or "\\" in path or any(c.isspace() for c in path) or "*" in path or "?" in path or ".." in path.split("/"):
+                errors.append(f"High risk: invalid repo-relative path {path!r} in source: ({ex})")
+            elif check_fs and real_repo:
+                target = os.path.join(repo_dir, path)
+                real_target = os.path.realpath(target)
+                if os.path.relpath(real_target, real_repo).startswith(".."):
+                    errors.append(f"High risk: source path resolves outside repo: {path} ({ex})")
+                elif not os.path.isfile(real_target):
+                    errors.append(f"High risk: source file does not exist: {path} ({ex})")
+                else:
+                    parsed.append({"kind": "source", "value": path})
+            else:
+                parsed.append({"kind": "source", "value": path})
+        elif item.startswith("class:"):
+            phrase = item[len("class:"):].strip()
+            if not phrase:
+                errors.append(f"High risk: empty phrase after 'class:' ({ex})")
+            else:
+                parsed.append({"kind": "class", "value": phrase})
+        elif "{" in item or "}" in item:
+            errors.append(f"High risk: brace expansion unsupported in {item!r}; list each glob with ';' ({ex})")
+        elif POLICY_LINK_RE.search(item) or "," in re.sub(r"\{[^}]*\}", "", item) or any(c.isspace() for c in item):
+            legacy = True
+        else:
+            if item.startswith(("/", "~")):
+                errors.append(f"High risk: glob must be repo-relative: {item!r} ({ex})")
+            elif ".." in item.split("/"):
+                errors.append(f"High risk: glob must not contain '..': {item!r} ({ex})")
+            elif "***" in item:
+                errors.append(f"High risk: invalid glob '***' in {item!r} ({ex})")
+            elif ":" in item:
+                errors.append(f"High risk: unknown prefix in {item!r} ({ex})")
+            elif item.count("[") != item.count("]") or "[]" in item:
+                errors.append(f"High risk: invalid character class in glob {item!r} ({ex})")
+            else:
+                parsed.append({"kind": "glob", "value": item})
+
+    if legacy:
+        if not compat_legacy:
+            errors.append(
+                f"High risk: legacy free-text format ({ex}; "
+                "the user may set compat.legacy_orchestration_policy: true in assets.yaml, issue #19)"
+            )
+            return [], warnings, errors
+        warnings.append(f"legacy High risk format ({LEGACY_COMPAT_MSG})")
+        parsed = []
+        for chunk in re.split(r"[;,]", val):
+            c = chunk.strip().rstrip(".")
+            if c:
+                parsed.append({"kind": "class", "value": c, "legacy": True})
+    return parsed, warnings, errors
+
+
+def _split_known_failure_entry(item):
+    """If `item` starts with `/`, scan past the closing unescaped `/` and parse `flags` + `=> action`."""
+    s = item.strip()
+    if not s.startswith("/"):
+        if "=>" not in s:
+            return None, None, None, True
+        lhs, _, rhs = s.partition("=>")
+        return lhs.strip(), "", rhs.strip(), False
+    i, n = 1, len(s)
+    escaped = False
+    close = -1
+    while i < n:
+        c = s[i]
+        if escaped:
+            escaped = False
+        elif c == "\\":
+            escaped = True
+        elif c == "/":
+            close = i
+            break
+        i += 1
+    if close < 0:
+        if "=>" not in s:
+            return None, None, None, True
+        lhs, _, rhs = s.partition("=>")
+        return lhs.strip(), "", rhs.strip(), False
+    rest = s[close + 1:].strip()
+    if "=>" not in rest:
+        return None, None, None, True
+    flags, _, rhs = rest.partition("=>")
+    return s[: close + 1], flags.strip(), rhs.strip(), False
+
+
+def _parse_known_failures_field(val, compat_legacy):
+    items = _split_policy_items(val, regex_mode=True)
+    parsed, warnings, errors = [], [], []
+    legacy = False
+    ex = "example: Known failures: /ETIMEDOUT/ => rerun"
+    for item in items:
+        lhs, flags, rhs, is_leg = _split_known_failure_entry(item)
+        if is_leg:
+            legacy = True
+            continue
+        if flags:
+            errors.append(f"Known failures: regex flags unsupported; matching is case-insensitive ({ex})")
+            continue
+        if not (lhs.startswith("/") and lhs.endswith("/") and len(lhs) >= 3):
+            errors.append(f"Known failures: pattern {lhs!r} must be wrapped in /.../ ({ex})")
+            continue
+        display_rx = lhs[1:-1]
+        raw_rx = display_rx.replace("\\/", "/")
+        if not raw_rx:
+            errors.append(f"Known failures: empty regex in {item!r} ({ex})")
+            continue
+        try:
+            compiled = re.compile(raw_rx, _I)
+        except re.error as exc:
+            errors.append(f"Known failures: invalid regex {lhs!r}: {exc} ({ex})")
+            continue
+        if rhs == "rerun":
+            parsed.append({
+                "regex": raw_rx,
+                "display_regex": display_rx,
+                "compiled": compiled,
+                "action_kind": "rerun",
+                "action": RERUN_ACTION_TEXT,
+            })
+        elif rhs.startswith("`") and rhs.endswith("`") and len(rhs) >= 2 and "`" not in rhs[1:-1]:
+            cmd = rhs[1:-1].strip()
+            if not cmd:
+                errors.append(f"Known failures: empty command in {item!r} ({ex})")
+                continue
+            parsed.append({
+                "regex": raw_rx,
+                "display_regex": display_rx,
+                "compiled": compiled,
+                "action_kind": "command",
+                "action": cmd,
+            })
+        else:
+            errors.append(f"Known failures: action {rhs!r} must be 'rerun' or a backticked command ({ex})")
+
+    if legacy:
+        if not compat_legacy:
+            errors.append(
+                f"Known failures: legacy free-text format ({ex}; "
+                "the user may set compat.legacy_orchestration_policy: true in assets.yaml, issue #19)"
+            )
+            return [], warnings, errors
+        warnings.append(f"legacy Known failures format ({LEGACY_COMPAT_MSG})")
+        parsed = []
+        for item in items:
+            m = re.match(r"^(.*?)\s*(?:→|->)\s*(.+)$", item)
+            if m:
+                rx_txt, act = m.group(1).strip(), m.group(2).strip()
+                parsed.append({"regex": rx_txt, "display_regex": rx_txt, "action_kind": "legacy", "action": act, "legacy": True})
+            else:
+                parsed.append({"regex": item, "display_regex": item, "action_kind": "legacy", "action": "", "legacy": True})
+    return parsed, warnings, errors
+
+
+def _check_policy_links(key, text, policy_path, repo_dir):
+    errs = []
+    stripped = re.sub(r"`[^`\n]*`", "", text)
+    base_file = os.path.dirname(os.path.abspath(policy_path))
+    real_repo = os.path.realpath(repo_dir)
+    for target in POLICY_LINK_RE.findall(stripped):
+        if POLICY_SCHEME_RE.match(target) or target.startswith("//"):
+            continue
+        path, _, _ = target.partition("#")
+        if not path:
+            continue
+        rel_p = unquote(path)
+        if rel_p.startswith("/"):
+            cands = [os.path.normpath(os.path.join(real_repo, rel_p.lstrip("/")))]
+        else:
+            cands = [
+                os.path.normpath(os.path.join(base_file, rel_p)),
+                os.path.normpath(os.path.join(real_repo, rel_p)),
+            ]
+        inside = [c for c in cands if not os.path.relpath(os.path.realpath(c), real_repo).startswith("..")]
+        if not any(os.path.exists(c) for c in inside):
+            errs.append(f"{key}: broken link {target!r} (not found in repo)")
+            continue
+        if os.path.basename(rel_p) == "SKILL.md" and not any(os.path.isfile(c) for c in inside):
+            errs.append(f"{key}: linked SKILL.md does not exist: {target!r}")
+    return errs
+
+
+def _load_repo_policy(repo_dir, catalog=None, assets_path=None, check_links=False, check_fs=True):
+    located = _locate_repo_policy(repo_dir)
+    if located is None:
+        return {"found": False, "fields": {}, "parsed": {}, "warnings": [], "errors": [], "legacy_err": False}
+    source_rel, source_path, sec_lines, loc_warnings, read_err = located
+    if read_err is not None:
+        return {
+            "found": True,
+            "source_rel": source_rel,
+            "source_path": source_path,
+            "fields": {},
+            "parsed": {},
+            "warnings": loc_warnings,
+            "errors": [read_err],
+            "legacy_err": False,
+        }
+    compat = _policy_compat_enabled(assets_path)
+    fields, bullet_warns, errors = _parse_policy_bullets(sec_lines, compat_legacy=compat)
+    families = {str(m.get("family")).lower() for m in (catalog or {}).get("models", []) if m.get("family")}
+    parsed, warnings = {}, list(loc_warnings) + bullet_warns
+    legacy_err = False
+
+    for key, val in fields.items():
+        if key == "Models":
+            items, w, e = _parse_models_field(val, families, compat)
+            parsed[key] = items
+            warnings.extend(w)
+            errors.extend(e)
+            if any("legacy free-text format" in x for x in e):
+                legacy_err = True
+            if check_links:
+                for it in items:
+                    if it.get("note"):
+                        errors.extend(_check_policy_links(key, it["note"], source_path, repo_dir))
+        elif key == "High risk":
+            items, w, e = _parse_high_risk_field(val, repo_dir, compat, check_fs=check_fs)
+            parsed[key] = items
+            warnings.extend(w)
+            errors.extend(e)
+            if any("legacy free-text format" in x for x in e):
+                legacy_err = True
+        elif key == "Known failures":
+            items, w, e = _parse_known_failures_field(val, compat)
+            parsed[key] = items
+            warnings.extend(w)
+            errors.extend(e)
+            if any("legacy free-text format" in x for x in e):
+                legacy_err = True
+        else:
+            parsed[key] = val
+            if check_links:
+                errors.extend(_check_policy_links(key, val, source_path, repo_dir))
+
+    return {
+        "found": True,
+        "source_rel": source_rel,
+        "source_path": source_path,
+        "fields": fields,
+        "parsed": parsed,
+        "warnings": warnings,
+        "errors": errors,
+        "legacy_err": legacy_err,
+    }
+
+
+def _load_repo_known_failures(repo_dir, assets_path, explicit_repo=False):
+    """Load typed `Known failures` from repo policy; keep valid entries even if others fail."""
+    notes = []
+    if not repo_dir or not os.path.isdir(repo_dir):
+        if explicit_repo:
+            notes.append(f"repo directory not found: {repo_dir}")
+        return [], notes
+    located = _locate_repo_policy(repo_dir)
+    if located is None:
+        if explicit_repo:
+            notes.append(f"no repo policy found in {repo_dir}")
+        return [], notes
+    _, _, sec_lines, _, read_err = located
+    if read_err is not None:
+        if explicit_repo:
+            notes.append(read_err)
+        return [], notes
+    compat = _policy_compat_enabled(assets_path)
+    fields, _, _ = _parse_policy_bullets(sec_lines, compat_legacy=compat)
+    val = fields.get("Known failures")
+    if not val:
+        return [], notes
+    items, _, errs = _parse_known_failures_field(val, compat)
+    if errs:
+        n = len(errs)
+        noun = "entry" if n == 1 else "entries"
+        notes.append(f"repo Known failures has {n} invalid {noun}; run orch.py policy")
+    if any(it.get("legacy") for it in items):
+        notes.append("repo Known failures uses legacy format (display-only; not matched by orch.py failure)")
+    known = [(it["compiled"], it["regex"], it["action"]) for it in items if not it.get("legacy") and "compiled" in it]
+    return known, notes
+
+
+def _cap_inline_list(key, rendered_items):
+    """Render `; `-joined list within CAP items and ~240 chars in compact mode."""
+    shown, budget = [], 240
+    for it in rendered_items[:CAP]:
+        next_len = sum(len(x) + 2 for x in shown) + len(it) + len(key) + 2
+        if shown and next_len > budget:
+            break
+        shown.append(it)
+    rem = len(rendered_items) - len(shown)
+    line = f"{key}: " + "; ".join(shown)
+    if rem > 0:
+        line += f"; {_more(rem)}"
+    return line
+
+
+def _fmt_known_failure_item(it):
+    if it.get("legacy"):
+        return f"{it['display_regex']} → {it['action']}" if it.get("action") else it["display_regex"]
+    act = "rerun" if it["action_kind"] == "rerun" else f"`{it['action']}`"
+    return f"/{it['display_regex']}/ => {act}"
+
+
+def policy_cmd(a):
+    _begin(a)
+    explicit_repo = _opt_str(a, "repo")
+    repo_dir = os.path.abspath(explicit_repo) if explicit_repo else _default_repo_dir()
+    if not os.path.isdir(repo_dir):
+        print(f"error: repo directory not found: {repo_dir}")
+        print("error: 1 problem(s); action: proceed with skill defaults and pass an existing path with --repo DIR")
+        return 1
+    ap = _opt_str(a, "assets") or def_assets()
+    cat_path = _opt_str(a, "catalog") or DEF_CATALOG
+    catalog = load_catalog_with_local(cat_path, ap) if os.path.exists(cat_path) else {"models": []}
+    res = _load_repo_policy(
+        repo_dir,
+        catalog=catalog,
+        assets_path=ap,
+        check_links=_opt_bool(a, "check"),
+        check_fs=True,
+    )
+    if not res["found"]:
+        print("ok: no policy found (defaults apply)")
+        return 0
+
+    print(f"policy: {res['source_rel']}")
+    fields = res["fields"]
+    parsed = res["parsed"]
+    for key, raw_val in fields.items():
+        val = parsed.get(key)
+        if key == "Models" and val:
+            if _FULL:
+                print(f"Models ({len(val)}):")
+                for it in val:
+                    note = f" ({it['note']})" if it.get("note") else ""
+                    print(f"  {it['task']} → family:{it['family']}{note}")
+            else:
+                rendered = [f"{it['task']} → family:{it['family']}" for it in val]
+                print(_cap_inline_list("Models", rendered))
+        elif key == "High risk" and val:
+            if _FULL:
+                print(f"High risk ({len(val)}):")
+                for it in val:
+                    print(f"  {it['kind']}: {it['value']}")
+            else:
+                rendered = [
+                    it["value"] if it["kind"] == "glob" else f"{it['kind']}:{it['value']}"
+                    for it in val
+                ]
+                print(_cap_inline_list("High risk", rendered))
+        elif key == "Known failures" and val:
+            if _FULL:
+                print(f"Known failures ({len(val)}):")
+                for it in val:
+                    print(f"  {_fmt_known_failure_item(it)}")
+            else:
+                rendered = [_fmt_known_failure_item(it) for it in val]
+                print(_cap_inline_list("Known failures", rendered))
+        else:
+            txt = raw_val
+            if not _FULL and len(txt) > 220:
+                txt = txt[:200].rstrip() + " … (rerun with --full)"
+            print(f"{key}: {txt}")
+
+    for line in _capped([f"warn: {w}" for w in res["warnings"]]):
+        print(line)
+    errs = res["errors"]
+    for line in _capped([f"error: {e}" for e in errs]):
+        print(line)
+    if errs:
+        print(
+            f"error: {len(errs)} problem(s); action: proceed with skill defaults for the invalid field(s) "
+            "and tell the user once (converting is their call; references/repo-policy.md)"
+        )
+        return 1
+    n = len(fields)
+    print(f"ok: policy valid ({n} field{'s' if n != 1 else ''})")
+    return 0
+
+
 EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --help`
     "check": "check --available claude:claude-opus-5-5",
     "probe": "probe --available claude:claude-opus-5-5",
@@ -3497,13 +4237,14 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
     "status": "status claude low",
     "failure": 'failure "context length exceeded" --ref item-1',
     "scope": "scope --base origin/main --max-files 20 --expect 'src/**'",
+    "policy": "policy --check",
 }
 
 
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "select", "followups", "log", "history", "exhaust", "status", "failure", "scope"):
+    for n in ("check", "probe", "select", "followups", "log", "history", "exhaust", "status", "failure", "scope", "policy"):
         p = sub.add_parser(
             n,
             usage=f"orch.py {n} [options]",  # the options below list everything; a wrapped usage block would repeat them
@@ -3511,9 +4252,11 @@ def build_parser():
             epilog="example: python3 scripts/orch.py " + EXAMPLES[n],
         )
         p.add_argument("--full", action="store_true", help="print every detail line and remove the list caps")
-        if n != "scope":
+        if n not in ("scope", "policy"):
             p.add_argument("--assets")
             p.add_argument("--now")
+        elif n == "policy":
+            p.add_argument("--assets")
         if n not in ("log", "history", "failure", "scope"):
             p.add_argument("--catalog")
         if n == "check":
@@ -3583,7 +4326,11 @@ def build_parser():
             p.add_argument("message", help="the child's error text")
             p.add_argument("--ref", required=True, help="short item label (no paths)")
             p.add_argument("--known", action="append", metavar="REGEX=>ACTION", help="repo `Known failures:` pattern, checked first")
+            p.add_argument("--repo", help="repository directory to load Known failures from (default: cwd)")
             p.add_argument("--ledger")
+        if n == "policy":
+            p.add_argument("--repo", help="repository directory (default: the current directory)")
+            p.add_argument("--check", action="store_true", help="verify relative links and linked SKILL.md files exist")
         if n in ("exhaust", "status"):
             p.add_argument("provider")
         if n == "exhaust":
@@ -3611,6 +4358,7 @@ def main():
         "status": status_cmd,
         "failure": failure_cmd,
         "scope": scope_cmd,
+        "policy": policy_cmd,
     }[a.cmd](a)
 
 

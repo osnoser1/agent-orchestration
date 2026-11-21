@@ -173,6 +173,7 @@ class OrchContract(unittest.TestCase):
         cases["scope"] = self.scope_cases(w)
         cases["check"] = self.check_cases(w)
         cases["probe"] = self.probe_cases(w)
+        cases["policy"] = self.policy_cases(w)
         return cases
 
     def select_scenarios(self, w):
@@ -276,6 +277,29 @@ class OrchContract(unittest.TestCase):
             Case(["probe", *w.common(grouped)], 5, ORCH_FINAL, shows=("[not ok: Claude and GPT models]",), env=w.env, cwd=w.dir),
             Case(["probe", *w.common(unsaved)], 4, re.compile(r"^action: .*results not saved .*offer probe --init to the user"),
                  shows=("[note] no assets file",), env=w.env, cwd=w.dir),
+        ]
+
+    def policy_cases(self, w):
+        ok_repo = os.path.join(w.dir, "policy-ok-repo")
+        os.makedirs(ok_repo)
+        globs = "; ".join("area%02d/**" % i for i in range(30))
+        failures = "; ".join("/err%02d/ => rerun" % i for i in range(25))
+        with open(os.path.join(ok_repo, "AGENTS.md"), "w", encoding="utf-8") as fh:
+            fh.write(
+                "# AGENTS\n\n## Orchestration\n"
+                "- Implement: plan-exec\n"
+                "- High risk: %s\n"
+                "- Models: UI/UX work → family:anthropic\n"
+                "- Known failures: %s\n" % (globs, failures)
+            )
+        bad_repo = os.path.join(w.dir, "policy-bad-repo")
+        os.makedirs(bad_repo)
+        bad_lines = "\n".join("- Unknown%02d: x" % i for i in range(25))
+        with open(os.path.join(bad_repo, "AGENTS.md"), "w", encoding="utf-8") as fh:
+            fh.write("# AGENTS\n\n## Orchestration\n" + bad_lines + "\n")
+        return [
+            Case(["policy", "--repo", ok_repo, "--assets", w.assets], 8, CHECK_FINAL, last="area29/**", env=w.env, cwd=w.dir),
+            Case(["policy", "--repo", bad_repo, "--assets", w.assets], 15, CHECK_FINAL, rc=1, last="Unknown24", env=w.env, cwd=w.dir),
         ]
 
     def test_every_subcommand_has_a_contract_case(self):

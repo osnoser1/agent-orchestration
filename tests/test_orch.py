@@ -3811,5 +3811,492 @@ class TestScopeCommand(unittest.TestCase):
         self.assertEqual(lines, ["error: not a git repository", "action: run scope inside the target repo"])
 
 
+def _run_orch(fn, args):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = fn(args)
+    return rc, buf.getvalue()
+
+
+class TestRepoPolicy(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(self.repo)
+        self.assets = os.path.join(self.tmp.name, "assets.yaml")
+
+    def put(self, rel, text):
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def write_assets(self, text):
+        with open(self.assets, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def run_policy(self, check=False, full=True, assets=None):
+        args = _Args(
+            repo=self.repo,
+            check=check,
+            full=full,
+            assets=assets or self.assets,
+            catalog=CATALOG_PATH,
+        )
+        return _run_orch(orch.policy_cmd, args)
+
+    def test_no_policy_returns_ok_defaults(self):
+        self.put("AGENTS.md", "# AGENTS\n\n- Keep changes small.\n")
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "ok: no policy found (defaults apply)")
+
+    def test_locates_dot_agents_file_before_agents_md(self):
+        self.put(".agents/orchestration.md", "# Orchestration\n- Land: `bun run land <pr>`\n")
+        self.put("AGENTS.md", "# AGENTS\n\n## Orchestration\n- Land: `make land`\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 0)
+        self.assertIn("policy: .agents/orchestration.md", out)
+        self.assertIn("Land: `bun run land <pr>`", out)
+        self.assertIn("ok: policy valid (1 field)", out)
+
+    def test_unknown_and_duplicate_keys_error(self):
+        self.put(
+            "AGENTS.md",
+            "# AGENTS\n\n## Orchestration\n"
+            "- Implement: build-it\n"
+            "- Implement: build-it-again\n"
+            "- Mystery: something\n",
+        )
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+        self.assertIn("duplicate policy key 'Implement'", out)
+        self.assertIn("unknown policy key 'Mystery'", out)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("error: 2 problem(s); action: "))
+
+    def test_models_typed_parsing_and_validation(self):
+        self.put("docs/ui-guide.md", "# UI\n")
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- **Models**: UI/UX work → family:anthropic (project standard; follows [UI guide](docs/ui-guide.md)); "
+            "SQL migrations → family:openai\n",
+        )
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("family:anthropic", out)
+        self.assertIn("family:openai", out)
+
+        self.put("AGENTS.md", "## Orchestration\n- Models: UI/UX work → family:unknown-vendor\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+        self.assertIn("unknown family 'unknown-vendor'", out)
+        self.assertIn("Models: ui → family:anthropic", out)
+
+        self.put("AGENTS.md", "## Orchestration\n- Models: UI/UX work → family:anthropic trailing prose\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+        self.assertIn("unexpected trailing text", out)
+
+    def test_high_risk_typed_parsing_and_source_existence(self):
+        self.put("policy/risky-paths.txt", "auth/**\n")
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- `High risk`: db/migrations/**; src/[ab]/*.py; source:policy/risky-paths.txt; class:auth and payments\n",
+        )
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("glob: db/migrations/**", out)
+        self.assertIn("glob: src/[ab]/*.py", out)
+        self.assertIn("source: policy/risky-paths.txt", out)
+        self.assertIn("class: auth and payments", out)
+
+        self.put("AGENTS.md", "## Orchestration\n- High risk: source:policy/missing.txt; /abs/path/**; bad***glob; empty[]glob\n")
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("source file does not exist: policy/missing.txt", out)
+        self.assertIn("glob must be repo-relative", out)
+        self.assertIn("invalid glob '***'", out)
+        self.assertIn("High risk: db/migrations/**; source:<path>; class:<phrase>", out)
+
+    def test_brace_globs_are_not_treated_as_legacy(self):
+        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: true\n")
+        self.put("AGENTS.md", "## Orchestration\n- High risk: apps/{web,api}/**\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+        self.assertIn("brace expansion unsupported", out)
+        self.assertIn("list each glob with ';'", out)
+        self.assertNotIn("warn: legacy", out)
+
+    def test_indented_continuations_and_non_bullet_errors(self):
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n\n"
+            "Repository policy for the agent-orchestration skill; it overrides the skill's defaults here.\n\n"
+            "- High risk: db/**;\n"
+            "  auth/**; billing/**\n",
+        )
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("glob: db/**", out)
+        self.assertIn("glob: auth/**", out)
+        self.assertIn("glob: billing/**", out)
+
+        for bad in (
+            "## Orchestration\n- High risk: db/**;\nauth/**\n",
+            "## Orchestration\n+ Land: make land PR=<n>\n",
+            "## Orchestration\n- High risk: db/**\n  - nested\n",
+            "## Orchestration\n- Implement: x\nstray prose line between bullets\n- Land: `make land`\n",
+        ):
+            self.put("AGENTS.md", bad)
+            rc, _ = self.run_policy()
+            self.assertEqual(rc, 1, bad)
+
+    def test_dual_location_warns_only_when_agents_md_has_bullets(self):
+        self.put(".agents/orchestration.md", "# Orchestration\n- Land: `bun run land <pr>`\n")
+        self.put("AGENTS.md", "# AGENTS\n\n## Orchestration\nSee [.agents/orchestration.md](.agents/orchestration.md).\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("warn:", out)
+
+        self.put("AGENTS.md", "# AGENTS\n\n## Orchestration\n- Land: `make land`\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("warn: both .agents/orchestration.md and AGENTS.md ## Orchestration exist", out)
+
+    def test_default_repo_resolves_git_toplevel(self):
+        _git(self.repo, "init", "-q", "-b", "main")
+        self.put(".agents/orchestration.md", "- Known failures: /pod evicted/ => rerun\n")
+        sub = os.path.join(self.repo, "packages", "core")
+        os.makedirs(sub)
+        prev = os.getcwd()
+        try:
+            os.chdir(sub)
+            rc, out = _run_orch(orch.policy_cmd, _Args(repo=None, check=False, full=True, assets=self.assets, catalog=CATALOG_PATH))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("policy: .agents/orchestration.md", out)
+            rc, out = _run_orch(
+                orch.failure_cmd,
+                _Args(
+                    message="pod evicted",
+                    ref="PR-1",
+                    known=None,
+                    repo=None,
+                    ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                    assets=self.assets,
+                    now="2026-11-20T21:00:00Z",
+                    full=True,
+                ),
+            )
+            self.assertEqual(rc, 0, out)
+            self.assertIn("known: pod evicted", out)
+        finally:
+            os.chdir(prev)
+
+    def test_known_failures_typed_parsing_escapes_flags_and_arrow(self):
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- Known failures: /forge (?:502|503)|runner lost/ => rerun; "
+            "/lockfile;corrupt/ => `rm -rf node_modules && npm ci`; /tls\\/reset/ => rerun; /a => b/ => rerun\n",
+        )
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("/forge (?:502|503)|runner lost/ => rerun", out)
+        self.assertIn("/lockfile;corrupt/ => `rm -rf node_modules && npm ci`", out)
+        self.assertIn("/tls\\/reset/ => rerun", out)
+        self.assertIn("/a => b/ => rerun", out)
+
+        self.put("AGENTS.md", "## Orchestration\n- Known failures: /(unclosed/ => rerun; /ok/ => restart it; /err/i => rerun\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+        self.assertIn("invalid regex", out)
+        self.assertIn("must be 'rerun' or a backticked command", out)
+        self.assertIn("flags unsupported; matching is case-insensitive", out)
+        self.assertIn("Known failures: /ETIMEDOUT/ => rerun", out)
+
+    def test_source_realpath_must_stay_inside_repo(self):
+        outside = os.path.join(self.tmp.name, "outside.txt")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("secret\n")
+        os.makedirs(os.path.join(self.repo, "policy"), exist_ok=True)
+        os.symlink(outside, os.path.join(self.repo, "policy", "link.txt"))
+        self.put("AGENTS.md", "## Orchestration\n- High risk: source:policy/link.txt\n")
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("outside", out)
+
+    def test_check_verifies_relative_links_and_skill_md(self):
+        self.put(".agents/skills/build-plan/SKILL.md", "---\nname: build-plan\n---\n")
+        self.put("docs/guide.md", "# Guide\n")
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- Implement: [build-plan](.agents/skills/build-plan/SKILL.md) per [guide](docs/guide.md#guide).\n"
+            "- Review: [missing](docs/missing.md) and [bad-skill](.agents/skills/nope/SKILL.md).\n",
+        )
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("build-plan", [l for l in out.splitlines() if l.startswith("error:")])
+        self.assertIn("docs/missing.md", out)
+        self.assertIn("SKILL.md", out)
+
+    def test_legacy_format_rejected_and_action_does_not_tell_agent_to_edit(self):
+        self.put("policy/risky.txt", "auth/**\n")
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- Models: UI/UX work → Anthropic (team preference).\n"
+            "- High risk: database schemas, CI workflows, auth and secrets (see [risk policy](policy/risky.txt)).\n"
+            "- Known failures: registry 502 or lost runner → rerun once before investigating\n",
+        )
+        # Default (no assets / no compat flag): errors
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+        self.assertIn("legacy free-text format", out)
+        self.assertIn("issue #19", out)
+        self.assertIn("the user may set compat.legacy_orchestration_policy: true", out)
+        self.assertEqual(
+            out.strip().splitlines()[-1],
+            "error: 3 problem(s); action: proceed with skill defaults for the invalid field(s) and tell the user once (converting is their call; references/repo-policy.md)",
+        )
+
+        # Explicitly false compat flag: still errors
+        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: false\n")
+        rc, out = self.run_policy()
+        self.assertEqual(rc, 1)
+
+        # Compat flag enabled: warns, displays legacy Known failures as plain prose, and passes
+        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: true\n")
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("warn: legacy Models format", out)
+        self.assertIn("warn: legacy High risk format", out)
+        self.assertIn("warn: legacy Known failures format", out)
+        self.assertIn("issue #19", out)
+        self.assertIn("registry 502 or lost runner → rerun once before investigating", out)
+        self.assertNotIn("`rerun once before investigating`", out)
+        self.assertIn("ok: policy valid (3 fields)", out)
+
+        # Legacy Known failures are display-only in failure_cmd
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="registry 502",
+                ref="PR-7",
+                known=None,
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("note: repo Known failures uses legacy format (display-only", out)
+        self.assertNotIn("known: registry 502", out)
+
+    def test_neutral_agents_section_layout(self):
+        for sk in ("implement-feature", "code-review", "open-pr"):
+            self.put(f".agents/skills/{sk}/SKILL.md", f"---\nname: {sk}\n---\n")
+        self.put("docs/release.md", "# Release\n")
+        self.put("docs/ui-guide.md", "# UI\n")
+        self.put("policy/risky-paths.txt", "auth/**\n")
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- Implement: [implement-feature](.agents/skills/implement-feature/SKILL.md).\n"
+            "- Review: [code-review](.agents/skills/code-review/SKILL.md).\n"
+            "- PR: [open-pr](.agents/skills/open-pr/SKILL.md).\n"
+            "- Land: `make land PR=<n>` per [release guide](docs/release.md#land).\n"
+            "- High risk: source:policy/risky-paths.txt; class:payments; class:auth\n"
+            "- Models: UI/UX work → family:anthropic (follows [UI guide](docs/ui-guide.md))\n"
+            "- Evidence: UI changes → screenshots; API changes → integration tests.\n"
+            "- Checkpoints: new screens and public CLI flags.\n",
+        )
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok: policy valid (8 fields)", out)
+
+    def test_neutral_dot_agents_file_with_pointer_layout(self):
+        for sk in ("implement-feature", "code-review", "open-pr"):
+            self.put(f".agents/skills/{sk}/SKILL.md", f"---\nname: {sk}\n---\n")
+        self.put("docs/release.md", "# Release\n")
+        self.put("policy/risky-paths.txt", "deploy/**\n")
+        self.put("AGENTS.md", "# AGENTS\n\nRepo policy lives in [.agents/orchestration.md](.agents/orchestration.md).\n")
+        self.put(
+            ".agents/orchestration.md",
+            "# Orchestration\n\n"
+            "- Implement: [implement-feature](.agents/skills/implement-feature/SKILL.md).\n"
+            "- Review: [code-review](.agents/skills/code-review/SKILL.md).\n"
+            "- PR: [open-pr](.agents/skills/open-pr/SKILL.md).\n"
+            "- Land: `bun run land <pr>` per [release guide](docs/release.md).\n"
+            "- High risk: source:policy/risky-paths.txt; deploy/**; config/**; class:payments; class:auth\n"
+            "- Models: UI/UX work → family:anthropic; SQL migrations → family:openai\n"
+            "- Known failures: /forge (?:502|503)|lost runner/ => rerun; /lockfile corrupt/ => `npm ci`\n",
+        )
+        rc, out = self.run_policy(check=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("policy: .agents/orchestration.md", out)
+        self.assertIn("ok: policy valid (7 fields)", out)
+
+    def test_failure_partial_known_failures_explicit_repo_note_and_non_utf8(self):
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- Known failures: /pod evicted/ => rerun; /(broken/ => rerun\n",
+        )
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="pod evicted",
+                ref="PR-99",
+                known=None,
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("note: repo Known failures has 1 invalid entry; run orch.py policy", out)
+        self.assertIn("known: pod evicted", out)
+        policy_rerun_action = out.strip().splitlines()[-1]
+
+        # --known REGEX=>rerun agrees with policy rerun action
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="pod evicted",
+                ref="PR-99",
+                known=["pod evicted=>rerun"],
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], policy_rerun_action)
+
+        # Explicit --repo with missing policy prints note; implicit missing policy stays silent
+        empty_dir = os.path.join(self.tmp.name, "empty")
+        os.makedirs(empty_dir)
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="weird",
+                ref="PR-99",
+                known=None,
+                repo=empty_dir,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("note: no repo policy found", out)
+
+        # Non-UTF-8 AGENTS.md does not crash failure or policy
+        with open(os.path.join(self.repo, "AGENTS.md"), "wb") as fh:
+            fh.write(b"\xff\xfe## Orchestration\n- Known failures: /boom/ => rerun\n")
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="boom",
+                ref="PR-99",
+                known=None,
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        rc, _ = self.run_policy()
+        self.assertEqual(rc, 0)
+
+    def test_failure_autoloads_known_failures_from_repo_policy(self):
+        self.put(
+            "AGENTS.md",
+            "## Orchestration\n"
+            "- Known failures: /pod evicted/ => rerun; /stale cache/ => `rm -rf .cache && npm test`\n",
+        )
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="build aborted: pod evicted during step 2",
+                ref="PR-99",
+                known=None,
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("class: infra", out)
+        self.assertIn("known: pod evicted", out)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("action: rerun"))
+
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="stale cache checksum mismatch",
+                ref="PR-99",
+                known=None,
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], "action: rm -rf .cache && npm test")
+
+        # Explicit --known overrides repo policy
+        rc, out = _run_orch(
+            orch.failure_cmd,
+            _Args(
+                message="pod evicted",
+                ref="PR-99",
+                known=["pod evicted=>drain node"],
+                repo=self.repo,
+                ledger=os.path.join(self.tmp.name, "ledger.jsonl"),
+                assets=self.assets,
+                now="2026-11-20T21:00:00Z",
+                full=True,
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], "action: drain node")
+
+    def test_check_validates_compat_flags(self):
+        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: true\n")
+        rc, out = _run_orch(
+            orch.check,
+            _Args(assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", available=None, full=True),
+        )
+        self.assertEqual(rc, 0, out)
+
+        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: maybe\n  other_flag: true\n")
+        rc, out = _run_orch(
+            orch.check,
+            _Args(assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", available=None, full=True),
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("compat.legacy_orchestration_policy", out)
+        self.assertIn("compat.other_flag", out)
+
+
 if __name__ == "__main__":
     unittest.main()

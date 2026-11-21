@@ -14,7 +14,7 @@ Tiers are Artificial Analysis Intelligence Index floors (higher = smarter) from 
 | frontier (architecture, security, novel debugging) | T4 (≥57) | T4 | T4 + strongest review |
 
 ## Risk triggers (any one → high)
-Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money, plus any extra paths/areas listed under `High risk:` in the target repo's `## Orchestration` (`references/repo-policy.md`). High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step (`SKILL.md` Step 7).
+Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money, plus any extra triggers listed under `High risk:` in repo policy (`references/repo-policy.md`). High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step (`SKILL.md` Step 7).
 
 ## Complexity hints
 - `trivial`: fully specified, mechanical.
