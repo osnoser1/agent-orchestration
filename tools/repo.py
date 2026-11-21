@@ -13,6 +13,11 @@ Data files (all under tools/): versions.json (version locators), harnesses.json
 (single source for harness lists), pinned-rules.json (rules that must stay in
 the docs), model-id-allowlist.json (intentional unknown model-id tokens).
 
+Model-id allowlist: entries are exact, case-insensitive tokens; there is no
+globbing. A family prefix written in docs as `claude-opus-*` is read as the
+token `claude-opus` (trailing `-` and `.` are stripped), so allow `claude-opus`;
+an effort suffix (`-high`, ...) on a catalog id needs no entry.
+
 Output: one line per problem, `error: <rule>: <message>` (fails the run) or
 `note: ...` (information only). Rules: version, harness, links, budget, leak,
 model, pinned, skills.
@@ -43,9 +48,13 @@ MODEL_RE = re.compile(
     r"(?<![A-Za-z0-9_./-])((?:claude-(?:opus|sonnet|haiku|fable)|gpt-[0-9o]|gemini-(?:[0-9]|pro|flash))[A-Za-z0-9.-]*)"
 )
 LEAK_PATH_RE = re.compile(r"(?:/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/|[A-Za-z]:\\Users\\)")
+EMAIL_OK_LOCALS = ("noreply", "no-reply", "git")  # `git@github.com:owner/repo` is an ssh remote, not a person
 EMAIL_RE = re.compile(r"\b([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b")
 INLINE_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
-REF_LINK_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*)?$")
+REF_LINK_RE = re.compile(r"^\s{0,3}\[(?!\^)[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*)?$")
+ANCHOR_TAG_RE = re.compile(r"<a\s[^>]*?\b(?:id|name)=[\"']([^\"']+)[\"']", re.I)
+FENCE_OPEN_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+FENCE_CLOSE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})\s*$")  # a closing fence carries no info string
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
@@ -69,12 +78,12 @@ class Report:
 
 
 def sh(argv, cwd):
-    """Run a command; return (returncode, stdout). Missing binaries return 127."""
+    """Run a command; return (returncode, output): stdout, plus stderr when it fails. Missing binaries return 127."""
     try:
         p = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     except OSError as exc:
         return 127, str(exc)
-    return p.returncode, p.stdout
+    return p.returncode, p.stdout if p.returncode == 0 else p.stdout + p.stderr
 
 
 def read_text(root, rel):
@@ -101,13 +110,13 @@ def semver_tuple(v):
 
 
 def list_md(root):
-    """Tracked (or untracked, not ignored) *.md files, minus vendored skills."""
-    rels = set()
-    if os.path.isdir(os.path.join(root, ".git")):
-        rc, out = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], root)
-        if rc == 0:
-            rels = {p for p in out.split("\0") if p}
-    if not rels:
+    """Tracked (or untracked, not ignored) *.md files, minus vendored skills.
+
+    Asks git first (`.git` is a file in worktrees and submodules); walks the tree only when git fails.
+    """
+    rc, out = sh(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], root)
+    rels = {p for p in out.split("\0") if p} if rc == 0 else set()
+    if rc != 0:
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d != ".git"]
             for fn in filenames:
@@ -129,13 +138,13 @@ def blank_code(text, inline=True):
     """Blank fenced blocks (and optionally inline code spans), keeping line numbers."""
     out, fence = [], None
     for line in text.split("\n"):
-        m = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
         if fence:
+            m = FENCE_CLOSE_RE.match(line)
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = None
             out.append("")
-        elif m:
-            fence = m.group(1)
+        elif FENCE_OPEN_RE.match(line):
+            fence = FENCE_OPEN_RE.match(line).group(1)
             out.append("")
         else:
             out.append(re.sub(r"`[^`\n]*`", "", line) if inline else line)
@@ -143,14 +152,17 @@ def blank_code(text, inline=True):
 
 
 def heading_slugs(text):
-    """GitHub-style anchors for the ATX headings of one markdown text."""
+    """GitHub-style anchors: ATX headings (emphasis markers dropped) and `<a id|name>` tags. Setext headings are not read."""
     slugs, seen = set(), {}
-    for line in blank_code(text, inline=False).split("\n"):
+    body = blank_code(text, inline=False)
+    slugs.update(a.lower() for a in ANCHOR_TAG_RE.findall(body))
+    for line in body.split("\n"):
         m = re.match(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$", line)
         if not m:
             continue
         title = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(1))
         title = re.sub(r"[`*]", "", title)
+        title = re.sub(r"(?<![A-Za-z0-9])_+(\S.*?)_+(?![A-Za-z0-9])", r"\1", title)  # _emphasis_, not snake_case
         slug = re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
         n = seen.get(slug, 0)
         seen[slug] = n + 1
@@ -217,8 +229,14 @@ def check_base(root, report, cfg, current, base, run):
     if rc != 0 or not mb:
         report.error("version", "cannot find a merge-base with %s (fetch with depth 0)" % base)
         return
-    rc, diff = run(["git", "diff", "--name-only", mb], root)
-    _, untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root)
+    rc, diff = run(["git", "diff", "--name-only", "--no-renames", mb], root)  # a rename must list its old path too
+    if rc != 0:
+        report.error("version", "git diff against merge-base %s failed: %s" % (mb[:7], diff.strip() or "no output"))
+        return
+    rc, untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root)
+    if rc != 0:
+        report.error("version", "git ls-files failed: %s" % (untracked.strip() or "no output"))
+        return
     changed = {p for p in (diff + "\n" + untracked).split("\n") if p}
     guards = tuple(cfg.get("guarded_paths") or [])
     touched = sorted(p for p in changed if p.startswith(guards))
@@ -377,12 +395,13 @@ def check_leaks(report, md_files, texts):
                 report.error("leak", "%s:%d: absolute home path %r" % (rel, lineno, m.group(0)))
             for local, domain in EMAIL_RE.findall(line):
                 d = domain.lower()
-                if local.lower() in ("noreply", "no-reply") or d.startswith("example.") or d.endswith(".example") or d.endswith("noreply.github.com"):
+                if local.lower() in EMAIL_OK_LOCALS or d.startswith("example.") or d.endswith(".example") or d.endswith("noreply.github.com"):
                     continue
                 report.error("leak", "%s:%d: email address %s@%s" % (rel, lineno, local, domain))
 
 
 def check_models(root, report, md_files, texts):
+    """Every model-id-looking token must be a catalog id or alias, or an exact allowlist token (see the module docstring)."""
     known = catalog_ids(root, report)
     if known is None:
         return
@@ -515,9 +534,14 @@ def _append(root, rel, extra):
         fh.write(extra)
 
 
-def _git_repo(root):
-    env = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
-    for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git"] + env + ["commit", "-q", "-m", "base"]):
+GIT_FIXTURE_CFG = [  # keep the fixture repo independent of the caller's git config and hooks
+    "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+]
+
+
+def _git_repo(root, init_args=()):
+    for argv in (["git", "init", "-q"] + list(init_args), ["git", "add", "-A"], ["git"] + GIT_FIXTURE_CFG + ["commit", "-q", "-m", "base"]):
         rc, out = sh(argv, root)
         assert rc == 0, "git fixture setup failed: %s" % out
 
@@ -535,6 +559,8 @@ def self_test_cases():
          lambda r: (_git_repo(r), _append(r, "skills/agent-orchestration/SKILL.md", "More text.\n"),
                     _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"),
                     _edit(r, "skills/agent-orchestration/SKILL.md", '"1.0.0"', '"1.0.1"')), "HEAD"),
+        ("shipped file renamed away (--base)", "version",
+         lambda r: (_git_repo(r), sh(["git", "mv", "skills/agent-orchestration/references/harnesses.md", "moved.md"], r)), "HEAD"),
         ("unshipped file changed (--base)", None, lambda r: (_git_repo(r), _append(r, "README.md", "\nMore.\n")), "HEAD"),
         ("harness registry unsorted", "harness", lambda r: _edit(r, "tools/harnesses.json", '["Alpha", "Beta"]', '["Beta", "Alpha"]'), None),
         ("README table drops a harness", "harness", lambda r: _edit(r, "README.md", "| Beta | b |\n", ""), None),
@@ -619,20 +645,33 @@ def cmd_bump(root, new, out=print):
 
 
 # ---------- release ----------
-def release_plan(version):
-    tag = "v" + version
-    return [
-        ["git", "tag", "-a", tag, "-m", "Release " + tag],
-        ["git", "push", "origin", tag],
-        ["gh", "release", "create", tag, "--generate-notes", "--verify-tag"],
-    ]
+GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 
 
-def release_preconditions(root, run=sh, check_fn=run_checks):
-    """Return (version, problems). `run` and `check_fn` are injectable so tests need no git or network."""
-    problems = []
+def peeled_sha(ls_remote_out):
+    """Commit sha a `git ls-remote --tags` listing points at (the peeled `^{}` line wins for annotated tags)."""
+    sha = None
+    for line in ls_remote_out.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            if parts[1].endswith("^{}"):
+                return parts[0]
+            sha = parts[0]
+    return sha
+
+
+def release_state(root, run=sh, check_fn=run_checks):
+    """Verify release preconditions and work out what is left to do.
+
+    Returns a dict: version, repo (owner/name), tag, steps (argv lists still to run), notes, problems.
+    A rerun after a partial publish resumes: a tag already at HEAD (local and/or origin) skips its steps.
+    `run` and `check_fn` are injectable so tests need no git or network.
+    """
+    problems, notes = [], []
+    state = {"version": None, "repo": None, "tag": None, "steps": [], "notes": notes, "problems": problems}
     report = Report()
     _, version = check_versions(root, report)
+    state["version"] = version
     if version is None:
         problems.append("versions are not in sync: " + "; ".join(report.errors or ["unreadable"]))
     rc, out = run(["git", "status", "--porcelain"], root)
@@ -648,40 +687,73 @@ def release_preconditions(root, run=sh, check_fn=run_checks):
         problems.append("git fetch origin main failed")
     rc_h, head = run(["git", "rev-parse", "HEAD"], root)
     rc_o, origin = run(["git", "rev-parse", "origin/main"], root)
-    if rc_h != 0 or rc_o != 0 or head.strip() != origin.strip():
+    head = head.strip()
+    if rc_h != 0 or rc_o != 0 or head != origin.strip():
         problems.append("HEAD is not origin/main (push or pull first)")
     checked = check_fn(root)
     if checked.errors:
         problems.append("check has %d error(s); run: python3 tools/repo.py check" % len(checked.errors))
-    if version:
-        tag = "v" + version
-        rc, out = run(["git", "tag", "--list", tag], root)
-        if rc != 0 or out.strip():
-            problems.append("tag %s already exists locally" % tag)
-        rc, out = run(["git", "ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
-        if rc != 0:
-            problems.append("cannot query origin tags")
-        elif out.strip():
-            problems.append("tag %s already exists on origin" % tag)
-    return version, problems
+    rc, url = run(["git", "remote", "get-url", "origin"], root)
+    m = GITHUB_REMOTE_RE.search(url.strip()) if rc == 0 else None
+    if m:
+        state["repo"] = "%s/%s" % m.groups()
+    else:
+        problems.append("cannot derive owner/repo from the origin URL (gh needs --repo)")
+    if not version:
+        return state
+    tag = state["tag"] = "v" + version
+    rc, local = run(["git", "rev-parse", "--verify", "--quiet", "refs/tags/%s^{commit}" % tag], root)
+    local = local.strip() if rc == 0 else None
+    rc, listing = run(["git", "ls-remote", "--tags", "origin", "refs/tags/" + tag, "refs/tags/%s^{}" % tag], root)
+    if rc != 0:
+        problems.append("cannot query origin tags")
+        return state
+    remote = peeled_sha(listing)
+    if local and local != head:
+        problems.append("tag %s exists locally at %s, not at HEAD %s" % (tag, local[:7], head[:7]))
+    if remote and remote != head:
+        problems.append("tag %s exists on origin at %s, not at HEAD %s" % (tag, remote[:7], head[:7]))
+    if remote and remote == head and state["repo"]:
+        rc, text = run(["gh", "release", "view", tag, "--repo", state["repo"]], root)
+        if rc == 0:
+            problems.append("release %s already exists" % tag)
+        elif "not found" not in text.lower():
+            problems.append("cannot query GitHub releases: %s" % (text.strip() or "no output"))
+    if problems:
+        return state
+    if local:
+        notes.append("tag %s already exists locally at HEAD; not recreating it" % tag)
+    else:
+        state["steps"].append(["git", "tag", "-a", tag, "-m", "Release " + tag])
+    if remote:
+        notes.append("tag %s is already on origin at HEAD and has no release yet; resuming at gh" % tag)
+    else:
+        state["steps"].append(["git", "push", "origin", "refs/tags/" + tag])
+    state["steps"].append(["gh", "release", "create", tag, "--repo", state["repo"], "--generate-notes", "--verify-tag"])
+    return state
 
 
 def cmd_release(root, publish, run=sh, check_fn=run_checks, out=print):
-    version, problems = release_preconditions(root, run, check_fn)
-    for p in problems:
+    state = release_state(root, run, check_fn)
+    for p in state["problems"]:
         out("error: release: " + p)
-    if problems:
+    if state["problems"]:
         return 1
-    plan = release_plan(version)
+    for n in state["notes"]:
+        out("note: " + n)
+    version, steps = state["version"], state["steps"]
     out("%s release v%s:" % ("publishing" if publish else "dry run (pass --publish to run)", version))
-    for argv in plan:
+    for argv in steps:
         out("  " + " ".join(argv))
     if not publish:
         return 0
-    for argv in plan:
+    for argv in steps:
         rc, text = run(argv, root)
         if rc != 0:
             out("error: release: %s failed: %s" % (" ".join(argv), text.strip()))
+            if argv[0] == "gh":
+                out("recover: tag %s is on origin; finish with: %s" % (state["tag"], " ".join(argv)))
+            out("recover: or fix the cause and rerun `python3 tools/repo.py release --publish` (finished steps are skipped)")
             return 1
     out("released v%s" % version)
     return 0

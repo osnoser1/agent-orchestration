@@ -24,6 +24,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
+          # push runs skip the bump rule: main only changes through PRs, which are checked here
           if [ -n "$BASE_REF" ]; then
             python3 -I tools/repo.py check --base "origin/$BASE_REF"
           else
@@ -32,8 +33,11 @@ jobs:
       - run: python3 -I -m unittest discover -s tests -v
       - name: Only agent-orchestration is installable
         run: |
-          out=$(npx --yes skills@1.9.0 add . --list 2>&1)
+          rc=0
+          out=$(npx --yes skills@1.9.0 add . --list 2>&1) || rc=$?
           printf '%s\n' "$out"
           clean=$(printf '%s' "$out" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')
-          grep -q 'Found 1 skill' <<<"$clean"
-          grep -Eq '^[^[:alnum:]]*agent-orchestration[[:space:]]*$' <<<"$clean"
+          if [ "$rc" -ne 0 ] || ! grep -q 'Found 1 skill' <<<"$clean" || ! grep -Eq '^[^[:alnum:]]*agent-orchestration[[:space:]]*$' <<<"$clean"; then
+            echo "::error::npx skills did not list exactly agent-orchestration (exit $rc)"
+            exit 1
+          fi
