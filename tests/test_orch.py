@@ -21,6 +21,19 @@ sys.path.insert(0, SCRIPTS_DIR)
 import orch  # noqa: E402
 
 
+def _assert_none_due(tc, text):
+    """`followups` with nothing due prints only its closing `action:` line."""
+    lines = text.strip().splitlines()
+    tc.assertEqual(len(lines), 1, text)
+    tc.assertTrue(lines[0].startswith("action: no follow-up is due"), text)
+
+
+def _Args(**kw):
+    """CLI-argument stand-in. These tests assert the detailed (`--full`) output; compact output is covered in test_output_contract.py."""
+    kw.setdefault("full", True)
+    return mock.Mock(**kw)
+
+
 class TestAntigravityGroupQuota(unittest.TestCase):
     def setUp(self):
         with open(FIXTURE_PATH, encoding="utf-8") as fh:
@@ -123,7 +136,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
                 stdout=json.dumps(self.fixture),
                 stderr="",
             )
-            args = mock.Mock(
+            args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -156,7 +169,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertEqual(by_name["Gemini 4 Argon"]["status"], "ok")
             self.assertIn("gemini-pro-orchestrator-neon", by_name["Gemini Models"]["models"])
 
-            check_args = mock.Mock(assets=assets_path, catalog=CATALOG_PATH)
+            check_args = _Args(assets=assets_path, catalog=CATALOG_PATH)
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.check(check_args), 0)
 
@@ -179,7 +192,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             fake_proc = subprocess.CompletedProcess(
                 args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr=""
             )
-            probe_args = mock.Mock(
+            probe_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -192,7 +205,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
                 orch.probe(probe_args)
 
             # select --complexity hard --risk high (T4 >= 57) with antigravity models + claude fallback
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -212,7 +225,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertIn("antigravity:claude-opus-5-5: group Claude and GPT models exhausted", out)
 
             # Even with --ui (which prefers Anthropic), antigravity:claude-opus-5-5 is excluded.
-            sel_ui = mock.Mock(**{**sel_args.__dict__, "ui": True, "available": "antigravity:claude-opus-5-5,antigravity:gemini-4-neon"})
+            sel_ui = _Args(**{**sel_args.__dict__, "ui": True, "available": "antigravity:claude-opus-5-5,antigravity:gemini-4-neon"})
             buf_ui = io.StringIO()
             with contextlib.redirect_stdout(buf_ui):
                 rc_ui = orch.select(sel_ui)
@@ -220,7 +233,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertIn("implementer: antigravity / gemini-4-neon @ high", buf_ui.getvalue())
 
             # After the Claude/GPT group reset passes, antigravity:claude-opus-5-5 becomes eligible again.
-            sel_after = mock.Mock(
+            sel_after = _Args(
                 **{
                     **sel_args.__dict__,
                     "now": "2026-11-28T00:00:00Z",
@@ -260,7 +273,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
                 )
 
             # T3 (hard/low, >=50): gemini-4-argon (ok, score 51) beats gemini-4-neon (low, score 55).
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -277,11 +290,11 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertIn("implementer: antigravity / gemini-4-argon @ high", buf.getvalue())
 
             # With --fail-on-low, gemini-4-neon alone is blocked (exit 3), while gemini-4-argon succeeds (exit 0).
-            sel_blocked = mock.Mock(**{**sel_args.__dict__, "available": "antigravity:gemini-4-neon", "fail_on_low": True})
+            sel_blocked = _Args(**{**sel_args.__dict__, "available": "antigravity:gemini-4-neon", "fail_on_low": True})
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.select(sel_blocked), 3)
 
-            sel_ok = mock.Mock(**{**sel_args.__dict__, "available": "antigravity:gemini-4-argon", "fail_on_low": True})
+            sel_ok = _Args(**{**sel_args.__dict__, "available": "antigravity:gemini-4-argon", "fail_on_low": True})
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.select(sel_ok), 0)
 
@@ -306,7 +319,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
                     "    policy: normal\n"
                     "    status: ok\n"
                 )
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -344,7 +357,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             fake_all_exhausted = subprocess.CompletedProcess(
                 args=["agy"], returncode=0, stdout=json.dumps(data), stderr=""
             )
-            probe_args = mock.Mock(
+            probe_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -396,7 +409,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
                     "    policy: normal\n"
                     "    status: ok\n"
                 )
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -457,7 +470,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_anthropic_exhausted_assets(assets_path)  # default is proceed
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -505,7 +518,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_anthropic_exhausted_assets(assets_path, ui_fallback="defer")
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -532,7 +545,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_anthropic_exhausted_assets(assets_path, ui_fallback="ask")
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -587,7 +600,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             )
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = orch.select(mock.Mock(**base))
+                rc = orch.select(_Args(**base))
             self.assertEqual(rc, 3)
             self.assertIn("DEFER", buf.getvalue())
             self.assertIn("openai", buf.getvalue())
@@ -596,7 +609,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             # Override to proceed -> provisional + follow-up with needs: openai
             buf_p = io.StringIO()
             with contextlib.redirect_stdout(buf_p):
-                rc_p = orch.select(mock.Mock(**{**base, "fallback": "proceed"}))
+                rc_p = orch.select(_Args(**{**base, "fallback": "proceed"}))
             self.assertEqual(rc_p, 0)
             self.assertIn("[provisional]", buf_p.getvalue())
             fus = orch.load_file(assets_path).get("followups") or []
@@ -610,7 +623,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self._write_anthropic_exhausted_assets(assets_path, ui_fallback="proceed")
 
             # Record follow-up while Anthropic is exhausted
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -627,7 +640,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
                 self.assertEqual(orch.select(sel_args), 0)
 
             # Before reset: followups --due reports none due
-            fu_before = mock.Mock(
+            fu_before = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-21T00:00:00Z",
@@ -644,7 +657,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
 
             # After claude resets (2026-11-23T08:00:00+00:00) without discovery:
             # probe and followups --due report pending (not due) because no --available was passed.
-            probe_after = mock.Mock(
+            probe_after = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-23T09:00:00Z",
@@ -661,7 +674,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertIn("PR #99", out_probe)
             self.assertIn("claude", out_probe)
 
-            fu_after_nodisc = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-23T09:00:00Z", "available": None})
+            fu_after_nodisc = _Args(**{**fu_before.__dict__, "now": "2026-11-23T09:00:00Z", "available": None})
             buf_after_nodisc = io.StringIO()
             with contextlib.redirect_stdout(buf_after_nodisc):
                 orch.followups_cmd(fu_after_nodisc)
@@ -670,20 +683,20 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertIn("PR #99", buf_after_nodisc.getvalue())
 
             # With discovery excluding Claude: not due in probe or followups --due
-            probe_other = mock.Mock(**{**probe_after.__dict__, "available": "antigravity:gemini-4-neon"})
+            probe_other = _Args(**{**probe_after.__dict__, "available": "antigravity:gemini-4-neon"})
             buf_probe_other = io.StringIO()
             with mock.patch("orch._infer_probe", return_value=None), contextlib.redirect_stdout(buf_probe_other):
                 orch.probe(probe_other)
             self.assertNotIn("followup due", buf_probe_other.getvalue())
 
-            fu_other = mock.Mock(**{**fu_after_nodisc.__dict__, "available": "antigravity:gemini-4-neon"})
+            fu_other = _Args(**{**fu_after_nodisc.__dict__, "available": "antigravity:gemini-4-neon"})
             buf_fu_other = io.StringIO()
             with contextlib.redirect_stdout(buf_fu_other):
                 orch.followups_cmd(fu_other)
             self.assertNotIn("followup due", buf_fu_other.getvalue())
 
             # With discovery including Claude: both probe and followups --due report it due
-            probe_with_claude = mock.Mock(
+            probe_with_claude = _Args(
                 **{**probe_after.__dict__, "available": "claude:claude-sonnet-5-5,antigravity:gemini-4-neon"}
             )
             buf_probe_claude = io.StringIO()
@@ -693,7 +706,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertIn("PR #99", buf_probe_claude.getvalue())
             self.assertIn("claude", buf_probe_claude.getvalue())
 
-            fu_after = mock.Mock(
+            fu_after = _Args(
                 **{**fu_after_nodisc.__dict__, "available": "claude:claude-sonnet-5-5,antigravity:gemini-4-neon"}
             )
             buf_after = io.StringIO()
@@ -703,7 +716,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertIn("PR #99", buf_after.getvalue())
 
             # Mark done -> removed from assets.yaml
-            fu_done = mock.Mock(**{**fu_after.__dict__, "done": "PR #99", "due": False})
+            fu_done = _Args(**{**fu_after.__dict__, "done": "PR #99", "due": False})
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.followups_cmd(fu_done), 0)
             self.assertFalse(orch.load_file(assets_path).get("followups"))
@@ -716,7 +729,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
                 dst.write(src.read())
 
             for mode in (None, "proceed", "defer", "ask"):
-                sel_args = mock.Mock(
+                sel_args = _Args(
                     assets=assets_path,
                     catalog=CATALOG_PATH,
                     now="2026-11-20T21:00:00Z",
@@ -765,7 +778,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
                 )
 
             for mode in (None, "proceed", "defer", "ask"):
-                sel_args = mock.Mock(
+                sel_args = _Args(
                     assets=assets_path,
                     catalog=CATALOG_PATH,
                     now="2026-11-20T21:00:00Z",
@@ -793,7 +806,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
                 self.assertFalse(orch.load_file(assets_path).get("followups"))
 
             # Repo --prefer-family absent from this harness also proceeds with a note and no follow-up
-            sel_pf = mock.Mock(
+            sel_pf = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -829,7 +842,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
                     "    source: aa-v5.0.1\n"
                     "    strengths: [general-coding, ui-ux-review]\n"
                 )
-            sel_strength = mock.Mock(
+            sel_strength = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -855,7 +868,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_anthropic_exhausted_assets(assets_path, ui_fallback="proceed")
             # Offer ONLY antigravity:claude-sonnet-5-5 (resets 2026-11-27), NOT claude (resets 2026-11-23).
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -879,7 +892,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertEqual(fus[0]["after"], "2026-11-27T15:59:36+00:00")
 
             # Recorded follow-up is NOT due in a harness that does not offer Claude even after reset
-            sel_other = mock.Mock(
+            sel_other = _Args(
                 **{
                     **sel_args.__dict__,
                     "now": "2026-11-28T00:00:00Z",
@@ -893,7 +906,7 @@ class TestUiAndPreferredFallback(unittest.TestCase):
             self.assertNotIn("followup due", buf_other.getvalue())
 
             # It IS due once discovery includes a usable Claude model after reset
-            sel_due = mock.Mock(
+            sel_due = _Args(
                 **{
                     **sel_args.__dict__,
                     "now": "2026-11-28T00:00:00Z",
@@ -914,7 +927,7 @@ class TestDecisionLedger(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             ledger_path = os.path.join(tmp, "ledger.jsonl")
 
-            sel_log = mock.Mock(
+            sel_log = _Args(
                 assets=assets_path,
                 ledger=None,
                 now="2026-11-20T21:00:00Z",
@@ -934,7 +947,7 @@ class TestDecisionLedger(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.log_cmd(sel_log), 0)
 
-            done_log = mock.Mock(
+            done_log = _Args(
                 assets=assets_path,
                 ledger=None,
                 now="2026-11-20T21:30:00Z",
@@ -975,7 +988,7 @@ class TestDecisionLedger(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             assets_path = os.path.join(tmp, "custom-assets.yaml")
             expected_ledger = os.path.join(tmp, "ledger.jsonl")
-            args = mock.Mock(
+            args = _Args(
                 assets=None,
                 ledger=None,
                 now="2026-11-20T21:00:00Z",
@@ -1017,7 +1030,7 @@ class TestCheckExtensions(unittest.TestCase):
                 )
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+                rc = orch.check(_Args(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc, 1)
             self.assertIn("ui_fallback", buf.getvalue())
             self.assertIn("new_conversations", buf.getvalue())
@@ -1038,7 +1051,7 @@ class TestCheckExtensions(unittest.TestCase):
                 )
             buf2 = io.StringIO()
             with contextlib.redirect_stdout(buf2):
-                rc2 = orch.check(mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+                rc2 = orch.check(_Args(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc2, 0)
 
     def test_check_suggests_update_when_lockfile_stale(self):
@@ -1063,7 +1076,7 @@ class TestCheckExtensions(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = orch.check(
-                    mock.Mock(assets=assets_path, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=lock_path)
+                    _Args(assets=assets_path, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=lock_path)
                 )
             self.assertEqual(rc, 0)
             self.assertIn("npx skills update agent-orchestration", buf.getvalue())
@@ -1085,7 +1098,7 @@ class TestCheckExtensions(unittest.TestCase):
             buf_fresh = io.StringIO()
             with contextlib.redirect_stdout(buf_fresh):
                 rc_fresh = orch.check(
-                    mock.Mock(assets=assets_path, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=lock_path)
+                    _Args(assets=assets_path, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=lock_path)
                 )
             self.assertEqual(rc_fresh, 0)
             self.assertNotIn("npx skills update", buf_fresh.getvalue())
@@ -1122,14 +1135,14 @@ class TestCheckAvailable(unittest.TestCase):
         assets = os.path.join(tmp, "assets.yaml")
         _write(assets, self.ASSETS)
         _write(os.path.join(tmp, "catalog.local.yaml"), self.LOCAL)
-        args = mock.Mock(assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", **kw)
+        args = _Args(assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", **kw)
         return _run(orch.check, args)
 
     def test_notes_unavailable_providers_local_models_and_followup_needs(self):
         with tempfile.TemporaryDirectory() as tmp:
             rc, out = self._check(tmp, available="claude:claude-opus-5-5")
         self.assertEqual(rc, 0)
-        self.assertIn("OK", out)
+        self.assertIn("ok: catalog and assets valid", out)
         self.assertIn("[note] assets provider codex has no available model", out)
         self.assertIn("[note] assets provider antigravity has no available model", out)
         self.assertNotIn("assets provider claude has no", out)
@@ -1159,7 +1172,7 @@ class TestCheckAvailable(unittest.TestCase):
                 '  - {kind: resume, ref: "g-present", needs: "provider:claude/Pool/hard"}\n'
                 '  - {kind: resume, ref: "g-model", needs: "provider:claude/Pool/claude-opus-5-5"}\n',
             )
-            args = mock.Mock(
+            args = _Args(
                 assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="",
                 available="claude:claude-sonnet-5-5",
             )
@@ -1183,7 +1196,7 @@ class TestCheckAvailable(unittest.TestCase):
                 "models:\n  - id: gemini-pro-orchestrator-neon\n    name: Orchestrator (Neon)\n"
                 "    aliases: [gemini-4-orchestrator-neon]\n    family: google\n    cost: normal\n    rating: unrated\n",
             )
-            args = mock.Mock(
+            args = _Args(
                 assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="",
                 available="antigravity:gemini-4-orchestrator-neon",
             )
@@ -1201,7 +1214,7 @@ class TestCheckAvailable(unittest.TestCase):
 
     def test_missing_assets_file_still_notes_malformed_pairs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            args = mock.Mock(
+            args = _Args(
                 assets=os.path.join(tmp, "absent.yaml"), catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z",
                 lockfile="", available="oops",
             )
@@ -1214,7 +1227,7 @@ class TestCheckAvailable(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rc, out = self._check(tmp)
         self.assertEqual(rc, 0)
-        self.assertEqual(out.strip(), "OK")
+        self.assertEqual(out.strip(), "ok: catalog and assets valid")
 
 
 class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
@@ -1238,7 +1251,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             fake_proc = subprocess.CompletedProcess(
                 args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr=""
             )
-            probe_args = mock.Mock(
+            probe_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -1253,7 +1266,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
                 self.assertEqual(orch.probe(probe_args), 0)
 
             # Exhaust Gemini Models via --model gemini-4-neon with relative duration "Resets in 3h13m7s."
-            exhaust_args = mock.Mock(
+            exhaust_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -1276,7 +1289,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             self.assertIn("Resets in 3h13m7s", by_name_ex["Gemini Models"]["status_note"])
 
             # Next probe (5 minutes later, same usage fixture) MUST merge and preserve Gemini Models exhaustion!
-            probe_later = mock.Mock(**{**probe_args.__dict__, "now": "2026-11-20T21:05:00Z"})
+            probe_later = _Args(**{**probe_args.__dict__, "now": "2026-11-20T21:05:00Z"})
             buf_probe = io.StringIO()
             with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
                 "subprocess.run", return_value=fake_proc
@@ -1293,7 +1306,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             self.assertEqual(by_name_probe["Gemini 4 Argon"]["status"], "ok")
 
             # Selection skips gemini-4-neon (Gemini Models exhausted) and picks gemini-4-argon
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:05:00Z",
@@ -1341,7 +1354,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
                 )
 
             # Provider-level exhaust without --group or --model
-            exhaust_args = mock.Mock(
+            exhaust_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -1356,7 +1369,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             fake_proc = subprocess.CompletedProcess(
                 args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr=""
             )
-            probe_args = mock.Mock(
+            probe_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:05:00Z",
@@ -1376,7 +1389,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             self.assertEqual(ag["exhausted_until"], "2026-11-21T00:13:07+00:00")
 
             # After exhausted_until expires (2026-11-21T00:15:00Z), probe clears lockout to ok (2/3 groups usable)
-            probe_expired = mock.Mock(**{**probe_args.__dict__, "now": "2026-11-21T00:15:00Z"})
+            probe_expired = _Args(**{**probe_args.__dict__, "now": "2026-11-21T00:15:00Z"})
             buf_exp = io.StringIO()
             with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch(
                 "subprocess.run", return_value=fake_proc
@@ -1408,7 +1421,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             fake_proc = subprocess.CompletedProcess(
                 args=["agy"], returncode=0, stdout=json.dumps(near_data), stderr=""
             )
-            probe_args = mock.Mock(
+            probe_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -1485,7 +1498,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             # Even with emergency (claude-fable-5-2) and pay-per-use (openai-api:gpt-6-2-sol) in available,
             # select exits 4, computes earliest reset from non-emergency/non-pay-per-use tier candidates
             # (2026-11-21T00:13:07+00:00 + 2m = 2026-11-21T00:15:07+00:00), and records kind: resume once.
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -1530,7 +1543,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             self.assertEqual(len(orch.load_file(assets_path).get("followups") or []), 1)
 
             # Before reset: followups --due does not mark it due (even if pay-per-use or emergency is in available)
-            fu_before = mock.Mock(
+            fu_before = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T22:00:00Z",
@@ -1542,10 +1555,10 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             buf_before = io.StringIO()
             with contextlib.redirect_stdout(buf_before):
                 self.assertEqual(orch.followups_cmd(fu_before), 0)
-            self.assertEqual(buf_before.getvalue().strip(), "")
+            _assert_none_due(self, buf_before.getvalue())
 
             # After antigravity resets (2026-11-21T00:16:00Z): due when antigravity:gemini-4-neon is in available
-            fu_after = mock.Mock(
+            fu_after = _Args(
                 **{
                     **fu_before.__dict__,
                     "now": "2026-11-21T00:16:00Z",
@@ -1558,7 +1571,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
             self.assertIn("followup due: [resume] thread-child-1 (needs T3; usable via antigravity (Gemini Models))", buf_after.getvalue())
 
             # Clear when the child resumes
-            fu_done = mock.Mock(**{**fu_after.__dict__, "done": "thread-child-1", "due": False})
+            fu_done = _Args(**{**fu_after.__dict__, "done": "thread-child-1", "due": False})
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(orch.followups_cmd(fu_done), 0)
             self.assertFalse(orch.load_file(assets_path).get("followups"))
@@ -1582,7 +1595,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
                     "        window: 5h\n"
                     "        resets_at: 2026-11-21T00:13:07+00:00\n"
                 )
-            probe_args = mock.Mock(
+            probe_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-21T00:20:00Z",
@@ -1613,7 +1626,7 @@ class TestReviewerFallbackOrder(unittest.TestCase):
             if assets_text is not None:
                 with open(assets_path, "w", encoding="utf-8") as fh:
                     fh.write(assets_text)
-            args = mock.Mock(
+            args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -1804,7 +1817,7 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
                 )
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = orch.check(mock.Mock(assets=bad_assets, catalog=bad_cat, now="2026-11-20T21:00:00Z", lockfile=""))
+                rc = orch.check(_Args(assets=bad_assets, catalog=bad_cat, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc, 1)
             self.assertIn("aliases", buf.getvalue())
             self.assertIn("provider:claude-extra", buf.getvalue())
@@ -1822,7 +1835,7 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
                 )
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+                rc = orch.check(_Args(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc, 1)
             self.assertIn("design_checkpoints", buf.getvalue())
             self.assertIn("evidence", buf.getvalue())
@@ -1838,7 +1851,7 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
                 )
             buf2 = io.StringIO()
             with contextlib.redirect_stdout(buf2):
-                rc2 = orch.check(mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+                rc2 = orch.check(_Args(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc2, 0)
 
     def test_deferred_launch_until_specific_provider_and_group_renews_enforces_tier(self):
@@ -1900,7 +1913,7 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
                 ("batch-deferred-1", "provider:claude-extra/T3", "2026-11-25T00:02:00+00:00"),
                 ("batch-gemini-group", "provider:antigravity/Gemini Models/T3", "2026-11-26T00:02:00+00:00"),
             ):
-                add_args = mock.Mock(
+                add_args = _Args(
                     assets=assets_path,
                     catalog=CATALOG_PATH,
                     now="2026-11-20T21:00:00Z",
@@ -1918,7 +1931,7 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
 
             # At 2026-11-21: claude-extra is exhausted, and antigravity's Gemini Models group is exhausted
             # (even though primary claude AND antigravity's Claude and GPT models group are both ok!) -> neither due
-            due_before = mock.Mock(
+            due_before = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-21T12:00:00Z",
@@ -1930,10 +1943,10 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
             buf_before = io.StringIO()
             with contextlib.redirect_stdout(buf_before):
                 self.assertEqual(orch.followups_cmd(due_before), 0)
-            self.assertEqual(buf_before.getvalue().strip(), "")
+            _assert_none_due(self, buf_before.getvalue())
 
             # At 2026-11-25T00:05:00Z: claude-extra has renewed, but if only below-T3 Haiku is available on claude-extra, still not due
-            due_below_tier = mock.Mock(
+            due_below_tier = _Args(
                 **{
                     **due_before.__dict__,
                     "now": "2026-11-25T00:05:00Z",
@@ -1943,10 +1956,10 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
             buf_below = io.StringIO()
             with contextlib.redirect_stdout(buf_below):
                 self.assertEqual(orch.followups_cmd(due_below_tier), 0)
-            self.assertEqual(buf_below.getvalue().strip(), "")
+            _assert_none_due(self, buf_below.getvalue())
 
             # With T3-meeting model on claude-extra at 2026-11-25T00:05:00Z: batch-deferred-1 is due, while batch-gemini-group is still not due
-            due_mid = mock.Mock(
+            due_mid = _Args(
                 **{
                     **due_before.__dict__,
                     "now": "2026-11-25T00:05:00Z",
@@ -1962,7 +1975,7 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
             self.assertNotIn("batch-gemini-group", buf_mid.getvalue())
 
             # At 2026-11-26T00:05:00Z: antigravity's Gemini Models group resets -> batch-gemini-group is now due too
-            due_after = mock.Mock(**{**due_before.__dict__, "now": "2026-11-26T00:05:00Z"})
+            due_after = _Args(**{**due_before.__dict__, "now": "2026-11-26T00:05:00Z"})
             buf_after = io.StringIO()
             with contextlib.redirect_stdout(buf_after):
                 self.assertEqual(orch.followups_cmd(due_after), 0)
@@ -2029,7 +2042,7 @@ class TestBelowTierStaging(unittest.TestCase):
                 fh.write("version: 1\npreferences:\n  below_tier: skip\nproviders: []\n")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+                rc = orch.check(_Args(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc, 1)
             self.assertIn("preferences.below_tier", buf.getvalue())
 
@@ -2040,7 +2053,7 @@ class TestBelowTierStaging(unittest.TestCase):
                 buf_ok = io.StringIO()
                 with contextlib.redirect_stdout(buf_ok):
                     rc_ok = orch.check(
-                        mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="")
+                        _Args(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="")
                     )
                 self.assertEqual(rc_ok, 0)
 
@@ -2049,7 +2062,7 @@ class TestBelowTierStaging(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_grouped_below_tier_assets(assets_path)  # default is stage
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -2092,7 +2105,7 @@ class TestBelowTierStaging(unittest.TestCase):
             )
 
             # Before Gemini Models resets: not due even though Gemini 4 Argon is ok
-            fu_before = mock.Mock(
+            fu_before = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T22:00:00Z",
@@ -2104,10 +2117,10 @@ class TestBelowTierStaging(unittest.TestCase):
             buf_before = io.StringIO()
             with contextlib.redirect_stdout(buf_before):
                 self.assertEqual(orch.followups_cmd(fu_before), 0)
-            self.assertEqual(buf_before.getvalue().strip(), "")
+            _assert_none_due(self, buf_before.getvalue())
 
             # After Gemini Models resets at 2026-11-21T00:13:07+00:00: follow-up is due via antigravity (Gemini Models)
-            fu_after = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-21T00:16:00Z"})
+            fu_after = _Args(**{**fu_before.__dict__, "now": "2026-11-21T00:16:00Z"})
             buf_after = io.StringIO()
             with contextlib.redirect_stdout(buf_after):
                 self.assertEqual(orch.followups_cmd(fu_after), 0)
@@ -2121,7 +2134,7 @@ class TestBelowTierStaging(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -2160,7 +2173,7 @@ class TestBelowTierStaging(unittest.TestCase):
             )
 
             # At reviewer step (--implementer), below-tier reviewer is disallowed for high-risk work under stage
-            rev_args = mock.Mock(**{**sel_args.__dict__, "implementer": "gpt-6-2-sol", "ref": "rev-staged"})
+            rev_args = _Args(**{**sel_args.__dict__, "implementer": "gpt-6-2-sol", "ref": "rev-staged"})
             buf_rev = io.StringIO()
             with contextlib.redirect_stdout(buf_rev):
                 rc_rev = orch.select(rev_args)
@@ -2173,7 +2186,7 @@ class TestBelowTierStaging(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_grouped_below_tier_assets(assets_path, below_tier="wait")
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -2213,7 +2226,7 @@ class TestBelowTierStaging(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             self._write_grouped_below_tier_assets(assets_path, below_tier="proceed")
 
-            sel_args = mock.Mock(
+            sel_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -2269,7 +2282,7 @@ class TestBelowTierStaging(unittest.TestCase):
             implementer=None,
         )
         base.update(kw)
-        return mock.Mock(**base)
+        return _Args(**base)
 
     def test_stage_without_any_tier_meeting_model_offered_keeps_no_tier_match(self):
         # Staging needs a tier-meeting target waiting on quota; with none offered, select stays exit 2.
@@ -2320,7 +2333,7 @@ class TestBelowTierStaging(unittest.TestCase):
             assets_path = os.path.join(tmp, "assets.yaml")
             with open(assets_path, "w", encoding="utf-8") as fh:
                 fh.write("version: 1\nproviders:\n  - id: claude\n    policy: normal\n    status: ok\n")
-            ex = mock.Mock(
+            ex = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
@@ -2382,11 +2395,11 @@ def _sel(assets_path, available, **kw):
         implementer=None,
     )
     base.update(kw)
-    return mock.Mock(**base)
+    return _Args(**base)
 
 
 def _exh(assets_path, provider, message, group=None, model=None, now="2026-11-20T21:00:00Z"):
-    return mock.Mock(
+    return _Args(
         assets=assets_path, catalog=CATALOG_PATH, now=now, provider=provider, message=message, group=group, model=model
     )
 
@@ -2397,11 +2410,11 @@ def _fu(assets_path, now="2026-11-20T21:00:00Z", **kw):
         kind=None, ref=None, needs=None, after=None, on_recovery=False,
     )
     base.update(kw)
-    return mock.Mock(**base)
+    return _Args(**base)
 
 
 def _probe(assets_path, now="2026-11-20T21:00:00Z", provider=None, init=False):
-    return mock.Mock(
+    return _Args(
         assets=assets_path, catalog=CATALOG_PATH, now=now, provider=provider,
         low_threshold=None, exhausted_threshold=None, available=None, init=init,
     )
@@ -2644,7 +2657,7 @@ class TestAuditFollowUps(unittest.TestCase):
                 _fu(ap, add=True, kind="resume", ref="batch-renew", needs="provider:claude/T3", after="2026-11-25T00:02:00+00:00"),
             )
             _, before = _run(orch.followups_cmd, _fu(ap, due=True, available="claude:claude-opus-5-5"))
-            self.assertEqual(before.strip(), "")
+            _assert_none_due(self, before)
             _, after = _run(
                 orch.followups_cmd, _fu(ap, now="2026-11-25T00:03:00Z", due=True, available="claude:claude-opus-5-5")
             )
@@ -2667,9 +2680,9 @@ class TestAuditFollowUps(unittest.TestCase):
             self.assertIs(fu.get("on_recovery"), True)
             # Still exhausted: not due.
             _, still = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T09:00:00Z", due=True, available="claude:claude-opus-5-5"))
-            self.assertEqual(still.strip(), "")
+            _assert_none_due(self, still)
             # The probe shows the pool recovered days early (status back to ok): due now.
-            _run(orch.status_cmd, mock.Mock(assets=ap, now="2026-11-21T10:00:00Z", provider="claude", state="ok"))
+            _run(orch.status_cmd, _Args(assets=ap, now="2026-11-21T10:00:00Z", provider="claude", state="ok"))
             _, early = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T10:05:00Z", due=True, available="claude:claude-opus-5-5"))
             self.assertIn("followup due: [resume] t-early", early)
             # The manual quota-resume form can opt in too.
@@ -2695,16 +2708,16 @@ class TestAuditFollowUps(unittest.TestCase):
     def test_f3_check_handles_missing_assets_and_validates_pay_per_use(self):
         with tempfile.TemporaryDirectory() as tmp:
             missing = os.path.join(tmp, "missing.yaml")
-            rc, out = _run(orch.check, mock.Mock(assets=missing, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            rc, out = _run(orch.check, _Args(assets=missing, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc, 0, out)
             self.assertIn("no assets file", out)
             bad = os.path.join(tmp, "bad.yaml")
             _write(bad, "version: 1\npreferences:\n  pay_per_use: bogus\nproviders: []\n")
-            rc_bad, out_bad = _run(orch.check, mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            rc_bad, out_bad = _run(orch.check, _Args(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc_bad, 1)
             self.assertIn("preferences.pay_per_use", out_bad)
             _write(bad, "version: 1\npreferences:\n  usage_cache_ttl_seconds: -1\nproviders: []\n")
-            rc_ttl, out_ttl = _run(orch.check, mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            rc_ttl, out_ttl = _run(orch.check, _Args(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc_ttl, 1)
             self.assertIn("preferences.usage_cache_ttl_seconds", out_ttl)
 
@@ -2726,7 +2739,7 @@ class TestAuditFollowUps(unittest.TestCase):
                 os.path.join(tmp, "catalog.local.yaml"),
                 "models:\n  - id: new-model-x\n    name: New Model X\n    family: openai\n    cost: normal\n    rating: estimated\n",
             )
-            rc, out = _run(orch.check, mock.Mock(assets=ap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            rc, out = _run(orch.check, _Args(assets=ap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc, 1, out)
             self.assertIn("new-model-x: estimated needs numeric scores", out)
             self.assertTrue(cat["models"])
@@ -2770,8 +2783,8 @@ class TestAuditRecheck(unittest.TestCase):
             fu = orch.load_file(ap)["followups"][0]
             self.assertIs(fu.get("fail_on_low"), True)
             _, still = _run(orch.followups_cmd, _fu(ap, due=True, available=avail))
-            self.assertEqual(still.strip(), "")
-            _run(orch.status_cmd, mock.Mock(assets=ap, now="2026-11-21T00:00:00Z", provider="antigravity", state="ok"))
+            _assert_none_due(self, still)
+            _run(orch.status_cmd, _Args(assets=ap, now="2026-11-21T00:00:00Z", provider="antigravity", state="ok"))
             _, due = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T00:05:00Z", due=True, available=avail))
             self.assertIn("followup due: [resume] task-low-stage", due)
 
@@ -3020,7 +3033,7 @@ class TestSelectActionLine(unittest.TestCase):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
             "action: stage: dispatch Phase 1 codex/gpt-6-2-sol @ xhigh now; switch to claude/claude-opus-5-5 @ xhigh "
-            "at the Phase 1 boundary, with a resume double check at 2026-11-23T08:02:00+00:00",
+            "at the Phase 1 boundary (earliest reset 2026-11-23T08:00:00+00:00), with a resume double check at 2026-11-23T08:02:00+00:00",
             ref="a-stage",
         )
 
@@ -3094,7 +3107,7 @@ class TestSelectActionLine(unittest.TestCase):
     def test_exit4_all_tier_models_exhausted_holds_until_reset_plus_margin(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5", 4,
-            "action: hold until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            "action: hold until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             ref="a-hold",
         )
 
@@ -3136,14 +3149,14 @@ class TestSelectActionLine(unittest.TestCase):
     def test_high_risk_no_reviewer_waits_for_the_tier(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 4,
-            "action: hold the review until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             implementer="gpt-6-2-sol", ref="a-rev-wait",
         )
 
     def test_no_reviewer_exhausted_holds_the_review(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5", 4,
-            "action: hold the review until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             complexity="hard", risk="medium", implementer="claude-opus-5-5", ref="a-rev-none",
         )
 
@@ -3181,14 +3194,14 @@ class TestSelectActionLine(unittest.TestCase):
         )
 
 
-def _fail(message, ref="item-1", ledger=None, known=None, assets=None):
-    return mock.Mock(
-        message=message, ref=ref, ledger=ledger, known=known, assets=assets, now="2026-11-20T21:00:00Z"
+def _fail(message, ref="item-1", ledger=None, known=None, assets=None, full=True):
+    return _Args(
+        message=message, ref=ref, ledger=ledger, known=known, assets=assets, now="2026-11-20T21:00:00Z", full=full
     )
 
 
 def _log_failure(ledger, ref, fclass, outcome="failed"):
-    return mock.Mock(
+    return _Args(
         assets=None, ledger=ledger, now="2026-11-20T21:00:00Z", event="complete", complexity="hard", risk="low",
         ui=False, surface="subagent", provider="codex", model="gpt-6-2-sol", effort="high", reviewer=None,
         outcome=outcome, findings=None, repo="demo", provisional=False, ref=ref, failure_class=fclass,
@@ -3219,10 +3232,18 @@ class TestFailureCommand(unittest.TestCase):
         self.assertEqual(f["log"], "--event complete --outcome quota --failure-class quota --ref item-1")
         self.assertEqual(
             f["action"],
-            "if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
+            "quota (resets 2026-11-23T03:00:00-05:00): if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
             "(add --model or --group per references/quota-errors.md) and follow the quota order in references/harnesses.md; "
             "otherwise treat it as infra: rerun once",
         )
+
+    def test_compact_output_keeps_the_log_flags_and_the_action(self):
+        rc, out = _run(orch.failure_cmd, _fail("You've hit your weekly limit \u00b7 resets Nov 23, 3am (America/New_York)", full=False))
+        lines = out.rstrip("\n").split("\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(lines), 2, out)
+        self.assertEqual(lines[0], "log: --event complete --outcome quota --failure-class quota --ref item-1")
+        self.assertTrue(lines[1].startswith("action: quota (resets 2026-11-23T03:00:00-05:00): "), out)
 
     def test_quota_without_a_reset_time(self):
         _, f, _ = self.run_failure(_fail("429 Too Many Requests: rate limit exceeded"))
@@ -3298,7 +3319,8 @@ class TestFailureCommand(unittest.TestCase):
             led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "tool")])
             _, f, _ = self.run_failure(_fail("rate limit reached, try again in 2h", ledger=led))
             self.assertEqual((f["class"], f["retries"]), ("quota", "2/2"))
-            self.assertTrue(f["action"].startswith("if the limit is the model provider's"))
+            self.assertTrue(f["action"].startswith("quota (resets "))
+            self.assertIn("if the limit is the model provider's", f["action"])
 
     def test_known_failures_win_over_every_class(self):
         known = ["eslint exploded=>run npm ci once, then rerun", "ETIMEDOUT=>never reached"]
@@ -3391,9 +3413,9 @@ def _git(root, *argv):
 
 
 def _scope(root, **kw):
-    base = dict(repo=root, base="main", max_files=None, max_lines=None, expect=None)
+    base = dict(repo=root, base="main", max_files=None, max_lines=None, expect=None, full=True)
     base.update(kw)
-    rc, out = _run(orch.scope_cmd, mock.Mock(**base))
+    rc, out = _run(orch.scope_cmd, _Args(**base))
     lines = out.rstrip("\n").split("\n")
     return rc, {k: v for k, _, v in (ln.partition(": ") for ln in lines)}, lines
 
@@ -3417,6 +3439,27 @@ class TestScopeCommand(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
+
+    def test_compact_output_labels_each_flagged_file_and_caps_the_list(self):
+        for rel in ("package.json", "x.orig", "src/ok.py", "other/a.py"):
+            self.put(rel, "1\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "w")
+        base = dict(repo=self.root, base="main", max_files=None, max_lines=None, expect=["src/**"], full=False)
+        rc, out = _run(orch.scope_cmd, _Args(**base))
+        lines = out.rstrip("\n").split("\n")
+        self.assertEqual((rc, len(lines)), (0, 1), out)
+        self.assertIn("other/a.py (outside)", lines[0])
+        self.assertIn("package.json (manifest, outside)", lines[0])
+        self.assertIn("x.orig (outside, stray)", lines[0])
+        self.assertNotIn("src/ok.py", lines[0])
+        self.assertNotIn("more (rerun", lines[0])
+        for i in range(8):
+            self.put("other/f%d.py" % i, "1\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "more")
+        _, out = _run(orch.scope_cmd, _Args(**base))
+        self.assertIn("\u2026 6 more (rerun with --full)", out)
 
     def test_clean_diff_within_budget_is_ok(self):
         self.put("src/app.py", "print(1)\nprint(2)\n")

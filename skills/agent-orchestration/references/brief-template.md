@@ -13,4 +13,6 @@ REPORT (short): what changed · exact command + output/visual evidence · doc re
 IF BLOCKED: report the blocker and stop before destructive or irreversible actions.
 ```
 
+A child's report is for the orchestrator: relay to the user only the one-line summary per `SKILL.md` Step 7 (**Reporting to the user**); the details go in the PR body or report.
+
 When a child creates or edits agent-facing docs (`AGENTS.md`, `CLAUDE.md`, skills, or references), require it to run the target repo's writing guide (or `writing-for-agents` when none exists) as a review → fix → re-review loop capped at 3 passes, report the rounds, and list any remaining findings under `## Obstacles / not verified`. Every child report ends with `## Obstacles / not verified` listing skipped checks, missing tools, unverified branches, residual doc-review findings, or `"None"`. The independent review then repeats the loop (`references/verification.md`).

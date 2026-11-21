@@ -17,5 +17,8 @@
   {"file": "skills/agent-orchestration/SKILL.md", "phrase": "follow its final `action:` line", "source": "#20 v0.9.0: select's action line replaces reading exit codes"},
   {"file": "skills/agent-orchestration/references/supervision.md", "phrase": "and follow its `action:` line", "source": "#20 v0.9.0: failure classifies and counts retries in a script"},
   {"file": "skills/agent-orchestration/references/verification.md", "phrase": "and follow its `action:` line", "source": "#20 v0.9.0: scope check runs as a script"},
-  {"file": "AGENTS.md", "phrase": "say \"run X and follow its `action:` line\"", "source": "#20 v0.9.0: deterministic work lives in tested scripts, docs point to the command"}
+  {"file": "AGENTS.md", "phrase": "say \"run X and follow its `action:` line\"", "source": "#20 v0.9.0: deterministic work lives in tested scripts, docs point to the command"},
+  {"file": "AGENTS.md", "phrase": "`tests/test_output_contract.py` is the source of truth", "source": "#21 v0.10.0: compact, capped, decision-last output contract for every command"},
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "one line per event: what finished, what is next, what the user must decide", "source": "#21 v0.10.0: report to the user one line per event; model details only on request or when a decision depends on them"},
+  {"file": "skills/agent-orchestration/references/brief-template.md", "phrase": "relay to the user only the one-line summary", "source": "#21 v0.10.0: child reports are for the orchestrator, not the chat"}
 ]

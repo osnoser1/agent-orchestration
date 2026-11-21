@@ -72,13 +72,13 @@ python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk 
   --provider antigravity --model gemini-4-neon --effort high --outcome ok --findings 1 --repo my-app
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
-python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # class, retries n/2, next action
+python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # log flags + next action
 python3 skills/agent-orchestration/scripts/orch.py scope --base origin/main --max-files 8 --max-lines 400 --expect "src/**" "tests/**"
 python3 skills/agent-orchestration/scripts/orch.py check
-python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # [note] for assets providers, local models, and follow-ups this harness does not offer
+python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # grouped note: lines for assets providers, local models, and follow-ups this harness does not offer
 ```
 
-`select`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, plus repo `--known REGEX=>ACTION` patterns first), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files.
+`probe`, `select`, `followups`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. Output is compact by default: lists stop at 10 items with `… N more (rerun with --full)`, repeated notes group by reason, and `--full` prints every detail line. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, plus repo `--known REGEX=>ACTION` patterns first), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files.
 
 Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).
 

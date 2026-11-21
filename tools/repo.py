@@ -9,6 +9,11 @@ Commands:
   bump X.Y.Z                        write a new, higher version to every file in tools/versions.json
   release [--publish]               verify release preconditions; dry run unless --publish
 
+Output contract (tests/test_output_contract.py is the source of truth): compact by
+default, every list capped at 10 per rule followed by `… N more (rerun with --full)`,
+no color, no prompts, and the last line is the decision: `ok: …` or
+`error: N problem(s); action: <fix or rerun hint>`. `--full` prints every line.
+
 Data files (all under tools/): versions.json (version locators), harnesses.json
 (single source for harness lists), pinned-rules.json (rules that must stay in
 the docs), model-id-allowlist.json (intentional unknown model-id tokens).
@@ -18,9 +23,9 @@ globbing. A family prefix written in docs as `claude-opus-*` is read as the
 token `claude-opus` (trailing `-` and `.` are stripped), so allow `claude-opus`;
 an effort suffix (`-high`, ...) on a catalog id needs no entry.
 
-Output: one line per problem, `error: <rule>: <message>` (fails the run) or
-`note: ...` (information only). Rules: version, harness, links, budget, leak,
-model, pinned, skills.
+Output: one line per problem, `error: <rule>: <message>` (fails the run);
+`note:` lines (information only) appear with --full. Rules: version, version-git
+(git could not answer for --base), harness, links, budget, leak, model, pinned, skills.
 """
 import argparse
 import glob
@@ -40,6 +45,18 @@ REPO_ROOT = os.path.dirname(HERE)
 SKILL_WORD_BUDGET = 1500  # SKILL.md body words
 AGENTS_MAX_LINES = 150
 VENDORED_PREFIXES = (".agents/skills/writing-for-agents/",)  # `npx skills update` owns these
+CAP = 10  # list items shown per rule unless --full
+RULE_FIX = {  # one fix hint per rule, joined into the closing `error: N problem(s); action: …` line
+    "version": "run python3 tools/repo.py bump <X.Y.Z> (the version files must agree first)",
+    "version-git": "run: git fetch --unshallow (or git fetch origin), then rerun with the same --base",
+    "harness": "edit the list or table to match tools/harnesses.json (alphabetical)",
+    "links": "fix or remove the broken link or anchor",
+    "budget": "shorten the file to its budget",
+    "leak": "replace the path or email with a placeholder",
+    "model": "use a catalog id or alias, or add the token to tools/model-id-allowlist.json",
+    "pinned": "restore the pinned phrase, or change it together with its tools/pinned-rules.json entry",
+    "skills": "restore skills/*/SKILL.md",
+}
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 EFFORT_SUFFIX = re.compile(r"^(.+)-(none|low|medium|high|xhigh|max|ultra)$")
 
@@ -59,15 +76,30 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 # ---------- plumbing ----------
+def more(n):
+    return "… %d more (rerun with --full)" % n
+
+
+def capped(items, full):
+    """`items` limited to CAP unless `full`, plus a trailing `… N more` entry when some were cut."""
+    items = list(items)
+    if full or len(items) <= CAP:
+        return items
+    return items[:CAP] + [more(len(items) - CAP)]
+
+
 class Report:
     def __init__(self):
         self.lines = []  # (kind, text)
+        self.briefs = []  # short facts for the closing `ok:` line
 
     def error(self, rule, msg):
         self.lines.append(("error", "%s: %s" % (rule, msg)))
 
-    def note(self, msg):
+    def note(self, msg, brief=False):
         self.lines.append(("note", msg))
+        if brief:
+            self.briefs.append(msg)
 
     @property
     def errors(self):
@@ -75,6 +107,28 @@ class Report:
 
     def render(self):
         return ["%s: %s" % (k, t) for k, t in self.lines]
+
+    def render_compact(self, full=False):
+        """Error lines grouped by rule and capped per rule; notes only with --full."""
+        if full:
+            return self.render()
+        groups = {}
+        for t in self.errors:
+            groups.setdefault(t.split(":", 1)[0], []).append("error: " + t)
+        return [line for lines in groups.values() for line in capped(lines, False)]
+
+    def closing(self):
+        """The last line: `ok: …` or `error: N problem(s); action: …`."""
+        errors = self.errors
+        if not errors:
+            return "ok: all checks passed" + (" (%s)" % "; ".join(self.briefs) if self.briefs else "")
+        rules = []
+        for t in errors:
+            rule = t.split(":", 1)[0]
+            if rule not in rules:
+                rules.append(rule)
+        hints = "; ".join("%s: %s" % (r, RULE_FIX[r]) if r in RULE_FIX else r for r in rules)
+        return "error: %d problem(s); action: %s, then rerun python3 tools/repo.py check" % (len(errors), hints)
 
 
 def sh(argv, cwd):
@@ -227,15 +281,15 @@ def check_base(root, report, cfg, current, base, run):
     rc, mb = run(["git", "merge-base", base, "HEAD"], root)
     mb = mb.strip()
     if rc != 0 or not mb:
-        report.error("version", "cannot find a merge-base with %s (fetch with depth 0)" % base)
+        report.error("version-git", "cannot find a merge-base with %s; run: git fetch --unshallow (or git fetch origin)" % base)
         return
     rc, diff = run(["git", "diff", "--name-only", "--no-renames", mb], root)  # a rename must list its old path too
     if rc != 0:
-        report.error("version", "git diff against merge-base %s failed: %s" % (mb[:7], diff.strip() or "no output"))
+        report.error("version-git", "git diff against merge-base %s failed: %s" % (mb[:7], diff.strip() or "no output"))
         return
     rc, untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root)
     if rc != 0:
-        report.error("version", "git ls-files failed: %s" % (untracked.strip() or "no output"))
+        report.error("version-git", "git ls-files failed: %s" % (untracked.strip() or "no output"))
         return
     changed = {p for p in (diff + "\n" + untracked).split("\n") if p}
     guards = tuple(cfg.get("guarded_paths") or [])
@@ -247,11 +301,11 @@ def check_base(root, report, cfg, current, base, run):
     rc, old_text = run(["git", "show", "%s:%s" % (mb, first["file"])], root)
     hit = find_version(old_text, first["pattern"]) if rc == 0 else None
     if hit is None:
-        report.note("%s has no version at merge-base %s; skipping bump check" % (first["file"], mb[:7]))
+        report.note("%s has no version at merge-base %s; skipping bump check" % (first["file"], mb[:7]), brief=True)
         return
     old = hit[0]
     if not SEMVER.match(old):
-        report.note("%s has a non-semver version %r at merge-base; skipping bump check" % (first["file"], old))
+        report.note("%s has a non-semver version %r at merge-base; skipping bump check" % (first["file"], old), brief=True)
         return
     if current is None:
         return  # sync error already reported
@@ -378,7 +432,7 @@ def check_budgets(root, report, texts):
         with open(path, encoding="utf-8") as fh:
             body = split_frontmatter(fh.read())[1]
         words = len(body.split())
-        report.note("%s body: %d/%d words" % (rel, words, SKILL_WORD_BUDGET))
+        report.note("%s body: %d/%d words" % (rel, words, SKILL_WORD_BUDGET), brief=True)
         if words > SKILL_WORD_BUDGET:
             report.error("budget", "%s body has %d words; budget is %d" % (rel, words, SKILL_WORD_BUDGET))
     if "AGENTS.md" in texts:
@@ -469,12 +523,11 @@ def run_checks(root, base=None, run=sh):
     return report
 
 
-def cmd_check(root, base, out=print):
+def cmd_check(root, base, out=print, full=False):
     report = run_checks(root, base)
-    for line in report.render():
+    for line in report.render_compact(full):
         out(line)
-    if not report.errors:
-        out("ok: all checks passed")
+    out(report.closing())
     return 1 if report.errors else 0
 
 
@@ -552,6 +605,7 @@ def self_test_cases():
     return [
         ("baseline fixture passes", None, lambda r: None, None),
         ("version files disagree", "version", lambda r: _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"), None),
+        ("--base without git history", "version-git", lambda r: None, "origin/main"),
         ("version not X.Y.Z", "version", lambda r: _edit(r, ".claude-plugin/plugin.json", "1.0.0", "v1"), None),
         ("shipped file changed, version same (--base)", "version",
          lambda r: (_git_repo(r), _append(r, "skills/agent-orchestration/SKILL.md", "More text.\n")), "HEAD"),
@@ -588,8 +642,8 @@ def self_test_cases():
     ]
 
 
-def cmd_self_test(out=print):
-    failures = 0
+def cmd_self_test(out=print, full=False):
+    failures, cases, failed = 0, 0, []
     for name, rule, mutate, base in self_test_cases():
         tmp = tempfile.mkdtemp(prefix="repo-selftest-")
         try:
@@ -603,31 +657,41 @@ def cmd_self_test(out=print):
             else:
                 good = rule in fired
                 want = "error rule %r" % rule
+            cases += 1
             if good:
-                out("self-test ok: %s -> %s" % (name, "pass" if rule is None else "%s fired" % rule))
+                if full:
+                    out("self-test ok: %s -> %s" % (name, "pass" if rule is None else "%s fired" % rule))
             else:
                 failures += 1
-                out("error: self-test: %s expected %s, got %s" % (name, want, errors or "no errors"))
+                failed.append("error: self-test: %s expected %s, got %s" % (name, want, errors or "no errors"))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-    out("self-test: %s" % ("FAILED (%d)" % failures if failures else "all rules fire"))
-    return 1 if failures else 0
+    for line in capped(failed, full):
+        out(line)
+    if failures:
+        out("error: %d problem(s); action: fix the rule or its fixture in tools/repo.py, then rerun check --self-test" % failures)
+        return 1
+    out("ok: self-test: %d cases, every rule fires" % cases)
+    return 0
 
 
 # ---------- bump ----------
-def cmd_bump(root, new, out=print):
+def cmd_bump(root, new, out=print, full=False):
     if not SEMVER.match(new):
         out("error: bump: %r is not X.Y.Z" % new)
+        out("error: 1 problem(s); action: pass a version like 1.2.3")
         return 1
     report = Report()
     cfg, current = check_versions(root, report)
     if current is None:
-        for line in report.render():
+        for line in report.render_compact(full):
             out(line)
         out("error: bump: versions must agree before bumping")
+        out("error: %d problem(s); action: fix the version files listed above, then rerun bump" % (len(report.errors) + 1))
         return 1
     if semver_tuple(new) <= semver_tuple(current):
         out("error: bump: %s must be higher than the current %s" % (new, current))
+        out("error: 1 problem(s); action: pass a higher X.Y.Z")
         return 1
     # Plan every write before touching any file.
     plans = []
@@ -640,7 +704,9 @@ def cmd_bump(root, new, out=print):
     for path, rel, text in plans:
         with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
-        out("bumped %s: %s -> %s" % (rel, current, new))
+        if full:
+            out("bumped %s: %s -> %s" % (rel, current, new))
+    out("ok: bumped %d file(s) %s -> %s" % (len(plans), current, new))
     return 0
 
 
@@ -733,19 +799,21 @@ def release_state(root, run=sh, check_fn=run_checks):
     return state
 
 
-def cmd_release(root, publish, run=sh, check_fn=run_checks, out=print):
+def cmd_release(root, publish, run=sh, check_fn=run_checks, out=print, full=False):
     state = release_state(root, run, check_fn)
-    for p in state["problems"]:
-        out("error: release: " + p)
+    for line in capped(["error: release: " + p for p in state["problems"]], full):
+        out(line)
     if state["problems"]:
+        out("error: %d problem(s); action: fix the problems above, then rerun python3 tools/repo.py release" % len(state["problems"]))
         return 1
     for n in state["notes"]:
         out("note: " + n)
     version, steps = state["version"], state["steps"]
     out("%s release v%s:" % ("publishing" if publish else "dry run (pass --publish to run)", version))
-    for argv in steps:
+    for argv in steps:  # at most three commands: the approval payload, so shown in full
         out("  " + " ".join(argv))
     if not publish:
+        out("ok: dry run v%s (%d step(s)); action: show the steps above to the user, then rerun with --publish after approval" % (version, len(steps)))
         return 0
     for argv in steps:
         rc, text = run(argv, root)
@@ -754,31 +822,49 @@ def cmd_release(root, publish, run=sh, check_fn=run_checks, out=print):
             if argv[0] == "gh":
                 out("recover: tag %s is on origin; finish with: %s" % (state["tag"], " ".join(argv)))
             out("recover: or fix the cause and rerun `python3 tools/repo.py release --publish` (finished steps are skipped)")
+            out("error: 1 problem(s); action: follow the recover: line above")
             return 1
-    out("released v%s" % version)
+    out("ok: released v%s" % version)
     return 0
 
 
 # ---------- main ----------
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="repo.py", description="Maintainer tooling for this repository.")
+def build_parser():
+    exits = "exit codes: 0 ok; 1 any `error:` line (the last line says what to do)"
+    ap = argparse.ArgumentParser(
+        prog="repo.py",
+        description="Maintainer tooling for this repository.",
+        epilog=exits,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("check", help="run repo-wide rules")
+
+    def add(name, help_text, example):
+        p = sub.add_parser(
+            name, help=help_text, description=help_text, epilog="example: python3 tools/repo.py " + example,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        p.add_argument("--root", default=REPO_ROOT, help="repository root (default: this repository)")
+        p.add_argument("--full", action="store_true", help="print every line and remove the list caps")
+        return p
+
+    c = add("check", "run repo-wide rules", "check --base origin/main")
     c.add_argument("--base", help="git ref (e.g. origin/main): shipped changes since the merge-base need a version bump")
-    c.add_argument("--root", default=REPO_ROOT, help="repository root (default: this repository)")
     c.add_argument("--self-test", action="store_true", help="assert every rule fires on a broken fixture tree")
-    b = sub.add_parser("bump", help="write a higher X.Y.Z to every version file")
+    b = add("bump", "write a higher X.Y.Z to every version file", "bump 1.2.0")
     b.add_argument("version")
-    b.add_argument("--root", default=REPO_ROOT)
-    r = sub.add_parser("release", help="verify preconditions, then tag and publish a release")
+    r = add("release", "verify preconditions, then tag and publish a release", "release  # dry run; add --publish after approval")
     r.add_argument("--publish", action="store_true", help="run the tag, push and gh release commands (default: dry run)")
-    r.add_argument("--root", default=REPO_ROOT)
-    a = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
     if a.cmd == "check":
-        return cmd_self_test() if a.self_test else cmd_check(os.path.abspath(a.root), a.base)
+        return cmd_self_test(full=a.full) if a.self_test else cmd_check(os.path.abspath(a.root), a.base, full=a.full)
     if a.cmd == "bump":
-        return cmd_bump(os.path.abspath(a.root), a.version)
-    return cmd_release(os.path.abspath(a.root), a.publish)
+        return cmd_bump(os.path.abspath(a.root), a.version, full=a.full)
+    return cmd_release(os.path.abspath(a.root), a.publish, full=a.full)
 
 
 if __name__ == "__main__":

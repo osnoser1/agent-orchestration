@@ -63,7 +63,7 @@ On each check:
 
 ## Failure-mode retries
 
-Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (one `--known 'REGEX=>ACTION'` per repo `Known failures:` line) and follow its `action:` line. It prints the class, `retries: n/2` counted from the ledger, and the `log:` flags: log the outcome with `scripts/orch.py log --event complete` plus those flags (`--ref` is a short item label, never a path). A stall has no error text: use its row.
+Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (one `--known 'REGEX=>ACTION'` per repo `Known failures:` line) and follow its `action:` line. It prints the `log:` flags (they carry the class) and the action, which already applies the ledger's retry count `n/2` (`--full` also prints `class:` and `retries:`): log the outcome with `scripts/orch.py log --event complete` plus those flags (`--ref` is a short item label, never a path). A stall has no error text: use its row.
 
 Without Python, map how the child failed to the next action:
 
