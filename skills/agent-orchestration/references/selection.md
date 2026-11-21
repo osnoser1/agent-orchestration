@@ -77,7 +77,7 @@ Applies when no usable candidate meets the required tier, at least one tier-meet
 2. **`wait`**: start nothing; `select` plans the resume at `earliest_reset + 2m` (its `action: hold until` line), records the `resume` entry as `stage` does, and exits `4`.
 3. **`proceed`** (`select` exits `0`): run all phases on the best usable below-tier model, mark the work `[provisional]` in the report and ledger (`orch.py log --provisional`), record one `kind: resume` entry per ref (same `needs` and `after` as `stage`) for a tier-meeting re-review when one becomes usable, and for the reviewer apply **High-risk reviewer** below on `high` risk or the full fallback order on low/medium risk.
 
-**High-risk reviewer (`stage` and `proceed`)**: on `high` risk, the review takes a reviewer meeting the reviewer tier (`rt`: fallback steps 1 and 2, or step 5 when the implementer's model meets `rt`). When none is usable but an `rt` model waits on quota renewal, `select` records a `resume` follow-up for `rt` and exits `4`. With no `rt` model waiting, the full fallback order applies.
+**High-risk reviewer (`stage` and `proceed`)**: on `high` risk, the review takes a reviewer meeting the reviewer tier (`rt`: fallback steps 1 and 2, or step 5 when the implementer's model meets `rt`) under `stage` and for provisional `proceed` work (implementer below the required tier). When none is usable but an `rt` model waits on quota renewal, `select` records a `resume` follow-up for `rt` and exits `4`. With no `rt` model waiting, the full fallback order applies.
 
 With no usable model at any tier, every mode behaves like `wait` (exit `4` when a tier-meeting model is exhausted, else `3` or `2`; `references/harnesses.md`).
 
