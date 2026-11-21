@@ -49,3 +49,5 @@ When a test run, CI check, or git/forge command fails, classify the failure befo
 - **Infrastructure classification**: transient network refused/timeout to the forge or package registry, CI runner lost or preempted, or a signature matching `- Known failures:` in the target repo's `## Orchestration` (`references/repo-policy.md`).
 - **One rerun or repo remedy**: run the remedy named in `- Known failures:` or rerun the failed jobs/command once (using the harness's CI rerun in `references/harnesses.md`, or one foreground retry of the failed command).
 - **Escalate on repeat**: if the check fails a second time after the single rerun, treat it as a real failure and diagnose the logs and code.
+
+A PR that waits on required checks while none has started is not an infrastructure failure. Read its merge state first (`gh pr view <n> --json mergeable,mergeStateStatus` on GitHub). `CONFLICTING` or `DIRTY` means the forge cannot build the merge commit, so `pull_request` workflows never start and no wait, rerun or landing queue retry helps. Send the implementing child a rebase onto the current base branch, then revalidate and push.
