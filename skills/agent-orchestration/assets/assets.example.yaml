@@ -10,6 +10,7 @@ preferences:
   below_tier: stage                               # stage | wait | proceed (when every tier-meeting model is out of quota)
   new_conversations: ask                          # ask | allow (authorization to open new top-level conversations)
   design_checkpoints: ask                         # ask | delegate (pause for user approval on taste/design checkpoints)
+  # usage_cache_ttl_seconds: 300                  # optional: seconds `probe` reuses a cached Claude usage reading
   # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
 providers:

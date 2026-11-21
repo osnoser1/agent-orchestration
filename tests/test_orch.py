@@ -3,10 +3,13 @@ import copy
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2574,6 +2577,10 @@ class TestAuditFollowUps(unittest.TestCase):
             rc_bad, out_bad = _run(orch.check, mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
             self.assertEqual(rc_bad, 1)
             self.assertIn("preferences.pay_per_use", out_bad)
+            _write(bad, "version: 1\npreferences:\n  usage_cache_ttl_seconds: -1\nproviders: []\n")
+            rc_ttl, out_ttl = _run(orch.check, mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc_ttl, 1)
+            self.assertIn("preferences.usage_cache_ttl_seconds", out_ttl)
 
     def test_f3_wait_records_resume_without_ref_and_with_unknown_reset(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2687,6 +2694,162 @@ class TestAuditRecheck(unittest.TestCase):
                 _fu(ap, now="2026-11-21T01:00:00Z", add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T04:32:00+00:00"),
             )
             self.assertIn("followup already scheduled", same)
+
+class TestClaudeUsageCache(unittest.TestCase):
+    T0 = datetime(2026, 11, 21, 4, 55, tzinfo=timezone.utc)
+    BODY = {"five_hour": {"utilization": 31, "resets_at": "2026-11-21T09:00:00Z"}}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cdir = os.path.join(tmp.name, "claude")
+        os.makedirs(self.cdir)
+        with open(os.path.join(self.cdir, ".credentials.json"), "w") as fh:
+            json.dump({"claudeAiOauth": {"accessToken": "sk-secret-token"}}, fh)
+        self.tmp = tmp.name
+        self.cache_dir = os.path.join(tmp.name, "usage-cache")
+
+    def cfg(self, **kw):
+        return {"config_dir": self.cdir, "_cache_dir": self.cache_dir, **kw}
+
+    def cache_files(self):
+        return [os.path.join(self.cache_dir, f) for f in sorted(os.listdir(self.cache_dir))]
+
+    def at(self, seconds):
+        return self.T0 + timedelta(seconds=seconds)
+
+    def ok(self):
+        resp = mock.MagicMock()
+        resp.__enter__.return_value.read.return_value = json.dumps(self.BODY).encode()
+        return resp
+
+    def err(self, msg):
+        return urllib.error.URLError(msg)
+
+    def err429(self, retry_after=None):
+        hdrs = {"Retry-After": retry_after} if retry_after else {}
+        return urllib.error.HTTPError("u", 429, "Too Many", hdrs, None)
+
+    def probe(self, seconds, effects, **kw):
+        with mock.patch("orch.urllib.request.urlopen", side_effect=effects) as m:
+            out = orch.probe_claude(self.cfg(**kw), self.at(seconds))
+        return out, m.call_count
+
+    def test_cache_hit_makes_no_request(self):
+        (res, _), n = self.probe(0, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+        (res2, note), n2 = self.probe(299, [])
+        self.assertEqual((res2, note, n2), (res, None, 0))
+
+    def test_ttl_expiry_requests_again(self):
+        self.probe(0, [self.ok()])
+        (res, _), n = self.probe(301, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_429_retry_after_backs_off_and_reports_last_known(self):
+        self.probe(0, [self.ok()])
+        (res, note), n = self.probe(400, [self.err429("900")])
+        self.assertIsNone(res)
+        self.assertEqual(n, 1)
+        self.assertEqual(
+            note, "unverified (HTTP 429, backing off until 05:16Z); last known 31% of 5h at 04:55Z"
+        )
+        (res, note2), n2 = self.probe(800, [], _fresh=True)
+        self.assertEqual((res, n2), (None, 0))
+        self.assertIn("backing off until 05:16Z", note2)
+        (res, _), n3 = self.probe(1400, [self.ok()])
+        self.assertEqual((res["used_percent"], n3), (31, 1))
+        (res, note), n4 = self.probe(1400 + 400, [self.err("boom")])
+        self.assertEqual((res, n4), (None, 1), "backoff cleared by the success")
+        self.assertNotIn("backing off", note)
+
+    def test_429_http_date_and_default_backoff(self):
+        cases = [
+            ("Sat, 21 Nov 2026 05:00:00 GMT", "05:00Z"),
+            ("Sat, 21 Nov 2026 05:00:00 -0000", "05:00Z"),
+            (None, "05:05Z"),
+            ("soon", "05:05Z"),
+            ("\u00b3", "05:05Z"),
+            ("9" * 30, "04:55Z"),  # capped at one day: renders the same clock time tomorrow
+        ]
+        for retry_after, until in cases:
+            with self.subTest(retry_after=retry_after):
+                shutil.rmtree(self.cache_dir, ignore_errors=True)
+                (_, note), _ = self.probe(0, [self.err429(retry_after)])
+                self.assertEqual(note, f"unverified (HTTP 429, backing off until {until})")
+
+    def test_non_429_error_reports_last_known_without_backoff(self):
+        self.probe(0, [self.ok()])
+        for err in (self.err("boom"), urllib.error.HTTPError("u", 500, "x", {}, None)):
+            (res, note), n = self.probe(400, [err])
+            self.assertEqual((res, n), (None, 1))
+            self.assertIn("last known 31% of 5h at 04:55Z", note)
+        (res, _), n = self.probe(401, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_config_dirs_keep_separate_entries(self):
+        other = os.path.join(self.tmp, "claude-work")
+        shutil.copytree(self.cdir, other)
+        self.probe(0, [self.ok()])
+        self.probe(0, [self.err429()], config_dir=other)
+        self.assertEqual(len(self.cache_files()), 2)
+        (res, _), n = self.probe(10, [])
+        self.assertEqual((res["used_percent"], n), (31, 0))
+        (res, note), n = self.probe(10, [], config_dir=other)
+        self.assertEqual((res, n), (None, 0))
+        self.assertIn("backing off", note)
+
+    def test_cached_result_past_its_reset_is_refetched(self):
+        self.probe(0, [self.ok()])
+        (_, _), n = self.probe(10, [self.ok()], _cache_ttl=10**6)
+        self.assertEqual(n, 0)
+        later = (datetime(2026, 11, 21, 9, 0, 1, tzinfo=timezone.utc) - self.T0).total_seconds()
+        (res, note), n = self.probe(later, [self.err("boom")], _cache_ttl=10**6)
+        self.assertEqual((res, n), (None, 1))
+
+    def test_429_without_prior_data(self):
+        (res, note), n = self.probe(0, [self.err429()])
+        self.assertEqual((res, n), (None, 1))
+        self.assertNotIn("last known", note)
+        (res, note), n = self.probe(60, [])
+        self.assertEqual((res, n), (None, 0))
+        self.assertIn("backing off", note)
+
+    def test_corrupt_cache_is_ignored(self):
+        os.makedirs(self.cache_dir)
+        key = orch.hashlib.sha256(self.cdir.encode()).hexdigest()[:16]
+        with open(os.path.join(self.cache_dir, f"claude-{key}.json"), "w") as fh:
+            fh.write("{not json")
+        (res, _), n = self.probe(0, [self.ok()])
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_fresh_bypasses_ttl_only(self):
+        self.probe(0, [self.ok()])
+        (res, _), n = self.probe(10, [self.ok()], _fresh=True)
+        self.assertEqual((res["used_percent"], n), (31, 1))
+
+    def test_cache_outlives_probe_without_assets_file(self):
+        ap = os.path.join(self.tmp, "assets.yaml")
+        cfg = {"kind": "claude", "config_dir": self.cdir}
+        args = _probe(ap, now="2026-11-21T04:55:00Z", provider="claude")
+        args.fresh = False
+        with mock.patch.object(orch, "_infer_probe", return_value=cfg), mock.patch(
+            "orch.urllib.request.urlopen", side_effect=[self.ok()]
+        ) as m:
+            _, first = _run(orch.probe, args)
+            _, second = _run(orch.probe, args)
+        self.assertEqual(m.call_count, 1)
+        self.assertFalse(os.path.exists(ap))
+        self.assertEqual(len(self.cache_files()), 1)
+        self.assertNotIn("sk-secret-token", first + second)
+
+    def test_token_never_written_to_cache(self):
+        self.probe(0, [self.ok()])
+        self.probe(400, [self.err429()])
+        for path in self.cache_files():
+            with open(path) as fh:
+                self.assertNotIn("sk-secret-token", fh.read())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # Batching, durable state, and supervision loop
 
-Use these rules when coordinating multiple work items, supervising non-notifying children, or deferring work until a provider renews.
+Use these rules when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, or deferring work until a provider renews.
 
 ## Conflict-aware batching
 
@@ -34,11 +34,15 @@ Carry everything required to resume cold after context compaction or a new sessi
 5. **Remaining batches**: ordered pending batches with their conflict dependencies and briefs, or the user-local plan file path holding them.
 6. **Self-healing rule**: put the literal line *"If the plan file is missing, rebuild it from this summary before continuing."* at the top of the plan file and in every state summary (the orchestrator's own and any supervision prompt).
 
-Refresh durable state whenever a batch launches, a child switches models or lands, quota state changes, or a checkpoint is approved.
+Refresh durable state whenever a batch launches, a child switches models, completes, or lands, quota state changes, or a checkpoint is approved.
+
+## Completion notices
+
+When a child reports completion (a harness task notification, or its final or `finished` milestone message), act on it in the same turn: read its result, take the next step it unblocks (the Step 5 quality gates in `references/verification.md`, a dependent batch item, or a report to the user). The turn ends with that next step started or done.
 
 ## Supervision loop
 
-Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`; harness rules keep authority under Precedence 2 in `references/repo-policy.md`).
+Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Brief such children to message the orchestrator at each milestone where the harness lets them (`references/brief-template.md`), so the loop is a fallback for silence, not the main signal. Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`; harness rules keep authority under Precedence 2 in `references/repo-policy.md`).
 
 When several non-notifying children run for long, schedule a recurring supervision check using the harness's scheduler (`Scheduled resume` in `references/harnesses.md`); in harnesses without a background scheduler, run the check on each user turn.
 
@@ -50,7 +54,7 @@ On each check:
    - **Staged Phase 1 done**: apply the phase-boundary switch in `references/selection.md`.
    - **Stopped by quota**: run the quota-recovery decision order in `references/harnesses.md`.
    - **Idle with pending work**: diagnose why it stopped and send one continuation message. When a Gemini child exhibits the `"ended turn while waiting"` quirk (`catalog.yaml`, `references/harnesses.md`), resend and instruct it to block in one foreground command.
-   - **Completed**: run the Step 5 quality gates (`references/verification.md`), launch any dependent batch unblocked by its landing, and update durable state.
+   - **Completed**: act on it as a completion notice (above).
 3. **Low-noise status**: when every open child is healthy and nothing needs attention, reply with one short `"all running"` line.
 4. **Wind down**: shrink the check list or widen the interval as children finish; disable or delete the recurring schedule as soon as the batch completes, and state in one line that supervision is off.
 
