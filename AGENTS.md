@@ -9,3 +9,4 @@
 - Version: the PR author runs `python3 tools/repo.py bump <X.Y.Z>` once per PR that changes `skills/agent-orchestration/` or `.claude-plugin/`. Patch = fix or doc wording, minor = new rule or feature, major = breaking `assets.yaml` or catalog schema.
 - Release only when the user asks: show the dry run (`python3 tools/repo.py release`) and get approval before `--publish`, which tags and creates the GitHub release.
 - Rules that must survive edits live in `tools/pinned-rules.json`; change a pinned rule and its entry together.
+- Orchestrating work in this repo: follow [.agents/orchestration.md](.agents/orchestration.md).
