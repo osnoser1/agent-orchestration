@@ -1,0 +1,7 @@
+{
+  "files": [
+    {"file": ".claude-plugin/plugin.json", "pattern": "\"version\":\\s*\"([^\"]+)\""},
+    {"file": "skills/agent-orchestration/SKILL.md", "pattern": "^  version:\\s*\"([^\"]+)\"\\s*$"}
+  ],
+  "guarded_paths": ["skills/agent-orchestration/", ".claude-plugin/"]
+}

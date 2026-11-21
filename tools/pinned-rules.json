@@ -1,0 +1,15 @@
+[
+  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "`status: low` and `policy: preserve` only rank a pool lower; neither holds work.", "source": "#16 v0.7.3: low or preserve quota never holds work"},
+  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "Do not add `--fail-on-low` to avoid a `low` pool", "source": "#16 v0.7.3: --fail-on-low is a pre-flight check, not a way around a low pool"},
+  {"file": "skills/agent-orchestration/references/brief-template.md", "phrase": "Every poll is a full model turn that carries the whole conversation and spends quota", "source": "#15 v0.7.2: forbid short polling loops"},
+  {"file": "skills/agent-orchestration/references/brief-template.md", "phrase": "sleep at least 30 s between checks", "source": "#15 v0.7.2: minimum gap between re-checks"},
+  {"file": "skills/agent-orchestration/references/verification.md", "phrase": "the forge cannot build the test merge commit, so `pull_request` workflows never start", "source": "#13 v0.7.1: unstarted PR checks mean a merge conflict"},
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "act on each completion notice in the same turn", "source": "#12 v0.7.0: completion notices are acted on in the same turn"},
+  {"file": "skills/agent-orchestration/references/verification.md", "phrase": "the author's own pass never stands alone", "source": "#11 v0.6.0: agent-facing docs get an independent review"},
+  {"file": "skills/agent-orchestration/references/verification.md", "phrase": "compare `git diff --stat` and any manifest or lockfile changes against the brief's size budget", "source": "#11 v0.6.0: scope check before review"},
+  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "**Phase 1** runs now on the best usable below-tier model and covers low-risk preparation only", "source": "#8 v0.5.0: below_tier stage"},
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "Ask the user once before destructive or irreversible actions, publishing, spending emergency models/efforts", "source": "#8 v0.5.0: approval gates"},
+  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "Capability comes before independence", "source": "#6 (unversioned): reviewer fallback order"},
+  {"file": "skills/agent-orchestration/references/selection.md", "phrase": "Different family meeting the reviewer tier", "source": "#6 (unversioned): cross-family reviewer is the first fallback step"},
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "**Red→green evidence**: require failing repro/test output before the fix and passing output after", "source": "#1 (unversioned): red→green evidence gate"}
+]
