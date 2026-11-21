@@ -2,7 +2,7 @@
 # YAML subset: block maps, "- " lists of maps, one-line {..} and [..].
 # Scores = Artificial Analysis Intelligence Index (higher = smarter) per reasoning effort.
 # cost: cheap | normal | expensive | emergency (ask once before emergency models or efforts).
-# rating: rated | unrated (research unrated models once per references/research-unrated.md).
+# rating: rated | estimated (numeric scores required) | unrated (research unrated models once per references/research-unrated.md).
 # Antigravity note: `agy models` lists base ids alongside effort-suffixed ids (e.g. gemini-4-neon-high); pass --effort only with base ids.
 version: 1
 updated: 2026-11-20

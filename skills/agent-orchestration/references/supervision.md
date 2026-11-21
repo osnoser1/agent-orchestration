@@ -38,7 +38,7 @@ Refresh durable state whenever a batch launches, a child switches models or land
 
 ## Supervision loop
 
-Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`, Precedence 2).
+Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`; harness rules keep authority under Precedence 2 in `references/repo-policy.md`).
 
 When several non-notifying children run for long, schedule a recurring supervision check using the harness's scheduler (`Scheduled resume` in `references/harnesses.md`); in harnesses without a background scheduler, run the check on each user turn.
 
@@ -53,6 +53,8 @@ On each check:
    - **Completed**: run the Step 5 quality gates (`references/verification.md`), launch any dependent batch unblocked by its landing, and update durable state.
 3. **Low-noise status**: when every open child is healthy and nothing needs attention, reply with one short `"all running"` line.
 4. **Wind down**: shrink the check list or widen the interval as children finish; disable or delete the recurring schedule as soon as the batch completes, and state in one line that supervision is off.
+
+*Done when*: each check has classified and acted on every open non-notifying child and refreshed durable state, and the recurring schedule is removed once no such child remains.
 
 ## Idempotent child messages
 
