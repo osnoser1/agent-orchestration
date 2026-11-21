@@ -12,7 +12,7 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, preferences, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `exhaust`, `status`, `check`) | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `exhaust`, `status`, `failure`, `scope`, `check`) | rarely |
 
 Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
@@ -72,9 +72,13 @@ python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk 
   --provider antigravity --model gemini-4-neon --effort high --outcome ok --findings 1 --repo my-app
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
+python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # class, retries n/2, next action
+python3 skills/agent-orchestration/scripts/orch.py scope --base origin/main --max-files 8 --max-lines 400 --expect "src/**" "tests/**"
 python3 skills/agent-orchestration/scripts/orch.py check
 python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # [note] for assets providers, local models, and follow-ups this harness does not offer
 ```
+
+`select`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, plus repo `--known REGEX=>ACTION` patterns first), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files.
 
 Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).
 

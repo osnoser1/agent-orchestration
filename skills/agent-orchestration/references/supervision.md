@@ -63,7 +63,9 @@ On each check:
 
 ## Failure-mode retries
 
-Map how a child failed to the next action, and log the outcome with `scripts/orch.py log --event complete --outcome <outcome>`.
+Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (one `--known 'REGEX=>ACTION'` per repo `Known failures:` line) and follow its `action:` line. It prints the class, `retries: n/2` counted from the ledger, and the `log:` flags: log the outcome with `scripts/orch.py log --event complete` plus those flags (`--ref` is a short item label, never a path). A stall has no error text: use its row.
+
+Without Python, map how the child failed to the next action:
 
 | How the child failed | Next action | Outcome |
 |---|---|---|
@@ -74,9 +76,9 @@ Map how a child failed to the next action, and log the outcome with `scripts/orc
 | Stall | The harness row's stall handling in `references/harnesses.md`; for non-notifying children, the supervision loop above. | `stall` |
 | Unknown | Retry once; a failed retry counts toward the two below. | `failed` |
 
-After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements made under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count.
+After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count. `failure` counts ledger lines carrying that `--ref` and a `--failure-class` of `context-cap`, `tool`, or `unknown`, and restarts the count at an `--outcome ok` completion without `--failure-class`; give each item its own `--ref`.
 
-*Done when*: each failed child's next action is taken from the table, its outcome is logged, and any item past two failed retries is reported to the user with evidence.
+*Done when*: each failed child's next action is taken from the `action:` line (or the table), its outcome is logged, and any item past two failed retries is reported to the user with evidence.
 
 ## Confirm stop before replacement
 

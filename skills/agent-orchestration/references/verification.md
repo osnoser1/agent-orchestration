@@ -12,7 +12,7 @@ Scale verification effort and evidence collection to task risk and what the user
 
 ## Scope check before review
 
-When the implementer reports, and before the review pass, compare `git diff --stat` and any manifest or lockfile changes against the brief's size budget and the acceptance criteria. When the diff outgrows them, send the implementing child a trim request first: name what the acceptance criteria require and ask for a one-line justification per production file. Review the trimmed diff. For a non-notifying child, run the same check from the supervision loop (`references/supervision.md`) while it works.
+When the implementer reports, and before the review pass, run `python3 scripts/orch.py scope --base <base-ref> --max-files <N> --max-lines <N> --expect <GLOB>...` (budget and globs from the brief) and follow its `action:` line. It lists manifest and lockfile changes, files outside the expected globs, and stray scratch files. When the diff outgrows the size budget or the acceptance criteria (`action: trim`), send the implementing child a trim request first: name what the acceptance criteria require and ask for a one-line justification per production file. Review the trimmed diff. For a non-notifying child, run the same check from the supervision loop (`references/supervision.md`) while it works. Without Python, compare `git diff --stat` and any manifest or lockfile changes against the brief's size budget and the acceptance criteria.
 
 *Done when*: the diff fits the size budget, or each file over it carries an accepted justification, before review starts.
 
@@ -35,10 +35,10 @@ For user-visible changes whose look, layout, copy, or interaction behavior is a 
 After cross-family review findings are resolved and before landing, verify five items:
 
 1. **Diff and one key test**: read the diff and run one key verification command yourself. When a diff is too large to read cheaply in orchestrator context, delegate reading it to a `cheap` subagent (or reuse the reviewer **evidence pack** from `references/selection.md`) and judge its `path:line` summary yourself.
-2. **Dependency and tooling proportionality**: re-run the scope check (**Scope check before review**) on the diff after review fixes, and flag new dependencies, scripts, or abstractions that are disproportionately large for the problem solved.
+2. **Dependency and tooling proportionality**: re-run `orch.py scope` (**Scope check before review**) on the diff after review fixes, and flag new dependencies, scripts, or abstractions that are disproportionately large for the problem solved.
 3. **User-visible evidence**: when the change is user-visible, verify concrete visual or behavioral evidence (screenshots, recordings, or transcripts) scaled to `preferences.evidence` and repo `Evidence:`.
 4. **Repo budgets and limits**: verify any size, bundle, performance, lint, or schema budgets the target repository defines.
-5. **Maintainability**: confirm clean module boundaries, proportionate tests, and absence of stray scratch or debug files.
+5. **Maintainability**: confirm clean module boundaries and proportionate tests; `orch.py scope` lists stray scratch files (check debug leftovers yourself).
 
 Send any follow-up fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
 
