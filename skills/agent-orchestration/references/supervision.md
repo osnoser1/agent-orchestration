@@ -8,7 +8,7 @@ Before launching items in parallel, compare each item's expected target paths, m
 
 1. **Detect overlap**: when the target repo's `## Orchestration` or scripts provide overlap tooling (`references/repo-policy.md`), run that tool; otherwise compare target paths and coupled modules directly.
 2. **Partition into batches**:
-   - **Independent items** (disjoint target areas) run in parallel in the current batch, with at most two children per quota pool at once so one batch does not drain a pool; place the rest on other pools or in the next batch.
+   - **Independent items** (disjoint target areas) run in parallel in the current batch, by default at most two children per quota pool at once (a user or repo instruction may change the cap) so one batch does not drain a pool; place the rest on other pools or in the next batch.
    - **Overlapping items** (touching the same files or coupled module) run sequentially across ordered batches. Keep dependent items queued in durable state and launch each one only after the earlier item lands (or its branch becomes the dependent item's base).
 
 ## Deferred launch until a provider renews
