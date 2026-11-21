@@ -1,4 +1,4 @@
-# Verification, design checkpoints, and landing checks
+# Verification, scope check, doc review, design checkpoints, and landing checks
 
 Apply these gates across Step 4 (Brief), Step 5 (Quality gates), and Step 6 (Failure handling).
 
@@ -9,6 +9,18 @@ Scale verification effort and evidence collection to task risk and what the user
 1. **Sources and precedence**: read persistent user priorities from `assets.yaml` (`preferences.evidence`) and repo expectations from `## Orchestration` `- Evidence:`, following the precedence order in `references/repo-policy.md`. When the user states an evidence priority in plain language, record it in `assets.yaml` (`references/assets-updates.md`).
 2. **Scale and prune**: require the evidence the user and repo prioritize (such as red→green unit/integration output, or browser/device screenshots on visible changes), and drop evidence classes the user explicitly deprioritized (such as video recordings or secondary-platform captures on non-visual work) unless the task is specifically about that deprioritized area.
 3. **Forward into briefs**: list the exact commands and required evidence in each child's `VERIFICATION` block (`references/brief-template.md`).
+
+## Scope check before review
+
+When the implementer reports, and before the review pass, compare `git diff --stat` and any manifest or lockfile changes against the brief's size budget and the acceptance criteria. When the diff outgrows them, send the implementing child a trim request first: name what the acceptance criteria require and ask for a one-line justification per production file. Review the trimmed diff. For a non-notifying child, run the same check from the supervision loop (`references/supervision.md`) while it works.
+
+*Done when*: the diff fits the size budget, or each file over it carries an accepted justification, before review starts.
+
+## Agent-facing doc review
+
+Agent-facing docs (`AGENTS.md`, `CLAUDE.md`, skills, references, or catalog text that agents read) get the review → fix → re-review loop from `references/brief-template.md` as part of the independent review (`SKILL.md` Step 5.3): the reviewer runs it on those files, so the author's own pass never stands alone. For docs you edit yourself as orchestrator, delegate that review to a fresh reviewer chosen by the reviewer order in `references/selection.md` from any usable model (the order ends at the same model in a fresh conversation, so quota is the only blocker). When none is usable, say so in the report before opening the PR.
+
+*Done when*: a delegated reviewer's final pass finds zero defects, or its residual findings are listed under `## Obstacles / not verified`, or the report names that no model was usable, before the PR.
 
 ## Design checkpoints
 
@@ -23,7 +35,7 @@ For user-visible changes whose look, layout, copy, or interaction behavior is a 
 After cross-family review findings are resolved and before landing, verify five items:
 
 1. **Diff and one key test**: read the diff and run one key verification command yourself. When a diff is too large to read cheaply in orchestrator context, delegate reading it to a `cheap` subagent (or reuse the reviewer **evidence pack** from `references/selection.md`) and judge its `path:line` summary yourself.
-2. **Dependency and tooling proportionality**: inspect manifest, lockfile, and build/config changes; flag new dependencies, scripts, or abstractions that are disproportionately large for the problem solved.
+2. **Dependency and tooling proportionality**: re-run the scope check (**Scope check before review**) on the diff after review fixes, and flag new dependencies, scripts, or abstractions that are disproportionately large for the problem solved.
 3. **User-visible evidence**: when the change is user-visible, verify concrete visual or behavioral evidence (screenshots, recordings, or transcripts) scaled to `preferences.evidence` and repo `Evidence:`.
 4. **Repo budgets and limits**: verify any size, bundle, performance, lint, or schema budgets the target repository defines.
 5. **Maintainability**: confirm clean module boundaries, proportionate tests, and absence of stray scratch or debug files.

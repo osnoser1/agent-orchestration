@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.5.2"
+  version: "0.6.0"
 ---
 
 # Agent orchestration
@@ -38,7 +38,7 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`) us
 ## 5. Quality gates
 1. **Red→green evidence**: require failing repro/test output before the fix and passing output after, scaled to the user's and repo's evidence priorities (`references/verification.md`).
 2. **Design checkpoints**: for user-visible taste decisions, apply the checkpoint gate in `references/verification.md` and record approved checkpoints in durable state (`references/supervision.md`).
-3. **Cross-family review**: review with a different model family given the diff or a shared **evidence pack**; when no such model is usable, take the next step of the reviewer fallback order and note it in the report (`references/selection.md`). Send fixes back to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
+3. **Cross-family review**: run the scope check first (`references/verification.md`); then review with a different model family given the diff or a shared **evidence pack**; when no such model is usable, take the next step of the reviewer fallback order and note it in the report (`references/selection.md`). Agent-facing docs, including your own edits, get the doc review loop in this review (`references/verification.md`). Send fixes back to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
 4. **Final check before landing**: run the pre-landing verification checklist in `references/verification.md` and send any follow-up fixes to the implementing child.
 5. **Land**: follow the repo's `Land:` policy (`references/repo-policy.md`) or documented process (`AGENTS.md`/`CLAUDE.md`), advance any dependent batch waiting on these paths, and shrink or disable the supervision loop when the batch finishes (`references/supervision.md`).
 6. **Log outcome**: append completion (`ok|failed|quota|stall|rework` + findings count) to the decision ledger (`scripts/orch.py log`, `references/improvement.md`).
@@ -61,7 +61,7 @@ Execute routine orchestration choices (including in-place model switches, staged
 ## References (load on demand)
 - `references/selection.md` — tier floors, risk triggers, effort knee, quota pools and tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), below-tier staging (`below_tier`), follow-up kinds and due rule, reviewer timing and fallback order, review gate.
 - `references/supervision.md` — conflict-aware batching, deferred launch on provider renewal, user-local durable state, recurring supervision loop for non-notifying children, and idempotent child messages.
-- `references/verification.md` — proportional evidence (`evidence`), design checkpoints (`design_checkpoints`), final check before landing, and single rerun for known infrastructure failures.
+- `references/verification.md` — proportional evidence (`evidence`), scope check before review, agent-facing doc review, design checkpoints (`design_checkpoints`), final check before landing, and single rerun for known infrastructure failures.
 - `references/repo-policy.md` — target-repo `## Orchestration` contract, precedence, and explicit brief forwarding.
 - `references/harnesses.md` — delegation surface (`subagent` vs `conversation`), in-place model switching and scheduled resume on quota exhaustion, and alphabetical harness matrix.
 - `references/brief-template.md` — delegation brief layout, doc review-loop rule, and mandatory report sections.
