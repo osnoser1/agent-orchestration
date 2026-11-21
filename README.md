@@ -14,9 +14,9 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
 | `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `exhaust`, `status`, `check`) | rarely |
 
-Selection summary (authoritative rules in `skills/agent-orchestration/references/selection.md`): complexity × risk → tier floor → filter out pay-per-use, exhausted, emergency, unrated, and below-floor models → rank by UI/UX strength (`--ui`) or repo family preference (`--prefer-family`), quota health, policy (`ending` > `spend-first` > `normal` > `preserve`), sooner reset/renewal, lower cost class, and lower effort (with `<3`-point effort knee) → reviewer chosen when its step starts from a different family when possible, with a never-blocking fallback order (`## Reviewer and review gate`): capability before independence. When a preferred UI/UX or family model is offered here but exhausted, `preferences.ui_fallback` (`proceed|defer|ask`, default `proceed`) either marks the work provisional and queues a follow-up review in `assets.yaml`, recommends deferring until reset, or asks once; when the preferred family is not offered by the current harness, selection proceeds with the best available model, emits one informational note, and queues no follow-up.
+Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
-Emergency models, `max`/`ultra` efforts, and pay-per-use APIs require one explicit approval. A missing or stale assets file falls back to defaults (all discovered providers `ok`, policy `normal`) and reports that in one line.
+Emergency models, `max`/`ultra` efforts, and pay-per-use APIs require one explicit approval. A missing assets file falls back to defaults (all discovered providers `ok`, policy `normal`) and reports that in one line.
 
 ## Install
 
@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/osnoser1/agent-orchestration/main/s
   -o ~/.config/agent-orchestration/assets.yaml
 ```
 
-During discovery, `orch.py probe` updates `used_percent`, `window`, and `resets_at` automatically, marks providers `low` at `>=85%` (configurable via `preferences.low_threshold`) and `exhausted` at `100%`, and clears expired lockouts back to `ok`:
+During discovery, `orch.py probe` updates `used_percent`, `window`, and `resets_at` automatically, marks providers `low` at `>=85%` (configurable via `preferences.low_threshold`) and `exhausted` at `>=98%` (configurable via `preferences.exhausted_threshold`), and clears expired lockouts back to `ok`:
 
 - **Antigravity**: queries `agy -p "/usage" --output-format json < /dev/null` (zero-token cost; requires one-time sign-in in the interactive `agy` TUI) and persists per-group quotas under `groups:` so an exhausted model group excludes only its models; otherwise reports `unverified`.
 - **Claude**: calls `GET https://api.anthropic.com/api/oauth/usage` per configured directory (`~/.claude` and any `$CLAUDE_CONFIG_DIR` via `probe: {kind: claude, config_dir: ...}`). Credentials stay local and are omitted from logs and `assets.yaml`; missing tokens or HTTP 401 report `unverified`.
@@ -75,7 +75,7 @@ python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py check
 ```
 
-Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / 100%).
+Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).
 
 ## Extending per repository
 
@@ -99,7 +99,7 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
 ```
 
 2. **Per-user configuration (outside git)** — lives in `~/.config/agent-orchestration/` (or beside `$AGENT_ORCHESTRATION_ASSETS`):
-   - `assets.yaml`: your providers, probe config, policies, live quota state, `preferences.ui_fallback` (`proceed|defer|ask`), `preferences.new_conversations` (`ask|allow`), `preferences.design_checkpoints` (`ask|delegate`), `preferences.evidence`, `preferences.tier_floors`, and deferred `followups`.
+   - `assets.yaml`: your providers, probe config, policies, live quota state, `preferences.ui_fallback` (`proceed|defer|ask`), `preferences.below_tier` (`stage|wait|proceed`), `preferences.new_conversations` (`ask|allow`), `preferences.design_checkpoints` (`ask|delegate`), `preferences.evidence`, `preferences.tier_floors`, and deferred `followups`.
    - `catalog.local.yaml`: local model ratings or overrides merged on top of `catalog.yaml`.
    - User-local batch plans / durable supervision summaries (e.g. `~/.config/agent-orchestration/plans/`): kept outside repositories and public trackers (`skills/agent-orchestration/references/supervision.md`).
 

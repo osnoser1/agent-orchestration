@@ -1388,6 +1388,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
                     "ref": "thread-child-1",
                     "needs": "T3",
                     "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
                 },
             )
 
@@ -1841,6 +1842,851 @@ class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
                 buf_after.getvalue(),
             )
 
+
+class TestBelowTierStaging(unittest.TestCase):
+    def _write_grouped_below_tier_assets(self, path, below_tier=None):
+        pref_block = f"preferences:\n  below_tier: {below_tier}\n" if below_tier else ""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\n"
+                f"{pref_block}"
+                "providers:\n"
+                "  - id: antigravity\n"
+                "    policy: spend-first\n"
+                "    status: ok\n"
+                "    groups:\n"
+                '      - name: "Gemini Models"\n'
+                "        models: [gemini-4-neon, gemini-4-hydrogen]\n"
+                "        status: exhausted\n"
+                "        used_percent: 100\n"
+                "        window: 5h\n"
+                "        resets_at: 2026-11-21T00:13:07+00:00\n"
+                "        exhausted_until: 2026-11-21T00:13:07+00:00\n"
+                '      - name: "Claude and GPT models"\n'
+                "        models: [claude-opus-5-5, claude-sonnet-5-5]\n"
+                "        status: exhausted\n"
+                "        used_percent: 100\n"
+                "        window: 7d\n"
+                "        resets_at: 2026-11-27T15:59:36+00:00\n"
+                "        exhausted_until: 2026-11-27T15:59:36+00:00\n"
+                '      - name: "Gemini 4 Argon"\n'
+                "        models: [gemini-4-argon]\n"
+                "        status: ok\n"
+                "        used_percent: 0\n"
+                "        window: 7d\n"
+                "        resets_at: 2026-11-27T21:23:09+00:00\n"
+            )
+
+    def _write_multi_provider_below_tier_assets(self, path, below_tier=None):
+        pref_block = f"preferences:\n  below_tier: {below_tier}\n" if below_tier else ""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\n"
+                f"{pref_block}"
+                "providers:\n"
+                "  - id: claude\n"
+                "    policy: normal\n"
+                "    status: exhausted\n"
+                "    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: codex\n"
+                "    policy: normal\n"
+                "    status: ok\n"
+            )
+
+    def test_check_validates_below_tier_preference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.yaml")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\npreferences:\n  below_tier: skip\nproviders: []\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1)
+            self.assertIn("preferences.below_tier", buf.getvalue())
+
+            for valid in ("stage", "wait", "proceed"):
+                good = os.path.join(tmp, f"good-{valid}.yaml")
+                with open(good, "w", encoding="utf-8") as fh:
+                    fh.write(f"version: 1\npreferences:\n  below_tier: {valid}\nproviders: []\n")
+                buf_ok = io.StringIO()
+                with contextlib.redirect_stdout(buf_ok):
+                    rc_ok = orch.check(
+                        mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="")
+                    )
+                self.assertEqual(rc_ok, 0)
+
+    def test_stage_default_grouped_provider_reports_staged_plan_and_group_scoped_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path)  # default is stage
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-staged-group",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertNotIn("NO CANDIDATE", out)
+            self.assertIn("STAGE (below_tier=stage)", out)
+            self.assertIn("phase 1", out)
+            self.assertIn("antigravity / gemini-4-argon @ high (score 51", out)
+            self.assertIn("phase 2", out)
+            self.assertIn("switch same child in place to antigravity / gemini-4-neon @ high", out)
+            self.assertIn("2026-11-21T00:15:07+00:00", out)
+            self.assertIn("high-risk work under stage takes a reviewer meeting T4", out)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-staged-group",
+                    "needs": "provider:antigravity/Gemini Models/T4",
+                    "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
+                },
+            )
+
+            # Before Gemini Models resets: not due even though Gemini 4 Argon is ok
+            fu_before = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T22:00:00Z",
+                available="antigravity:claude-opus-5-5,antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                due=True,
+                add=False,
+                done=None,
+            )
+            buf_before = io.StringIO()
+            with contextlib.redirect_stdout(buf_before):
+                self.assertEqual(orch.followups_cmd(fu_before), 0)
+            self.assertEqual(buf_before.getvalue().strip(), "")
+
+            # After Gemini Models resets at 2026-11-21T00:13:07+00:00: follow-up is due via antigravity (Gemini Models)
+            fu_after = mock.Mock(**{**fu_before.__dict__, "now": "2026-11-21T00:16:00Z"})
+            buf_after = io.StringIO()
+            with contextlib.redirect_stdout(buf_after):
+                self.assertEqual(orch.followups_cmd(fu_after), 0)
+            self.assertIn(
+                "followup due: [resume] task-staged-group (needs provider:antigravity/Gemini Models/T4; usable via antigravity (Gemini Models))",
+                buf_after.getvalue(),
+            )
+
+    def test_stage_non_grouped_provider_records_tier_need_and_blocks_high_risk_below_tier_reviewer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="claude:claude-opus-5-5,codex:gpt-6-2-sol",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-staged-multi",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertNotIn("NO CANDIDATE", out)
+            self.assertIn("STAGE (below_tier=stage)", out)
+            self.assertIn("codex / gpt-6-2-sol @ xhigh (score 55.74", out)
+            self.assertIn("switch same child in place to claude / claude-opus-5-5 @ xhigh", out)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-staged-multi",
+                    "needs": "T4",
+                    "after": "2026-11-23T08:02:00+00:00",
+                    "on_recovery": True,
+                },
+            )
+
+            # At reviewer step (--implementer), below-tier reviewer is disallowed for high-risk work under stage
+            rev_args = mock.Mock(**{**sel_args.__dict__, "implementer": "gpt-6-2-sol", "ref": "rev-staged"})
+            buf_rev = io.StringIO()
+            with contextlib.redirect_stdout(buf_rev):
+                rc_rev = orch.select(rev_args)
+            self.assertEqual(rc_rev, 4)
+            self.assertIn("NO REVIEWER", buf_rev.getvalue())
+            self.assertIn("high-risk work under below_tier=stage takes a reviewer meeting T4", buf_rev.getvalue())
+
+    def test_wait_mode_preserves_no_candidate_and_schedule_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path, below_tier="wait")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-wait-group",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 4)
+            out = buf.getvalue()
+            self.assertIn("NO CANDIDATE", out)
+            self.assertIn("SCHEDULE_RESUME", out)
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-wait-group",
+                    "needs": "provider:antigravity/Gemini Models/T4",
+                    "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
+                },
+            )
+
+    def test_proceed_mode_runs_all_phases_provisionally_and_records_tier_followup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path, below_tier="proceed")
+
+            sel_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                complexity="hard",
+                risk="high",
+                available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+                ui=False,
+                fail_on_low=False,
+                prefer_family=None,
+                fallback=None,
+                below_tier=None,
+                ref="task-proceed-group",
+                implementer=None,
+            )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(sel_args)
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertNotIn("NO CANDIDATE", out)
+            self.assertIn("[provisional] (below_tier=proceed)", out)
+            self.assertIn("implementer: antigravity / gemini-4-argon @ high (score 51", out)
+            self.assertIn("reviewer (T4, same model, fresh conversation, below tier): antigravity / gemini-4-argon @ high", out)
+
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(
+                fus[0],
+                {
+                    "kind": "resume",
+                    "ref": "task-proceed-group",
+                    "needs": "provider:antigravity/Gemini Models/T4",
+                    "after": "2026-11-21T00:15:07+00:00",
+                    "on_recovery": True,
+                },
+            )
+
+
+    def _sel_args(self, assets_path, available, **kw):
+        base = dict(
+            assets=assets_path,
+            catalog=CATALOG_PATH,
+            now="2026-11-20T21:00:00Z",
+            complexity="hard",
+            risk="high",
+            available=available,
+            ui=False,
+            fail_on_low=False,
+            prefer_family=None,
+            fallback=None,
+            below_tier=None,
+            ref=None,
+            implementer=None,
+        )
+        base.update(kw)
+        return mock.Mock(**base)
+
+    def test_stage_without_any_tier_meeting_model_offered_keeps_no_tier_match(self):
+        # Staging needs a tier-meeting target waiting on quota; with none offered, select stays exit 2.
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(self._sel_args(assets_path, "codex:gpt-6-2-sol", ref="task-no-target"))
+            self.assertEqual(rc, 2)
+            self.assertIn("NO CANDIDATE", buf.getvalue())
+            self.assertNotIn("STAGE", buf.getvalue())
+            self.assertEqual(orch.load_file(assets_path).get("followups") or [], [])
+
+    def test_stage_high_risk_reviewer_degrades_when_no_reviewer_tier_model_is_waiting(self):
+        # Nothing at the reviewer tier is exhausted, so there is nothing to wait for: fallback order applies.
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_multi_provider_below_tier_assets(assets_path, below_tier="stage")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(
+                    self._sel_args(assets_path, "codex:gpt-6-2-sol", implementer="gpt-6-2-sol", ref="rev-none")
+                )
+            self.assertEqual(rc, 0)
+            self.assertNotIn("NO REVIEWER", buf.getvalue())
+            self.assertIn("reviewer degraded", buf.getvalue())
+
+    def test_proceed_followup_is_deduplicated_per_ref(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            self._write_grouped_below_tier_assets(assets_path, below_tier="proceed")
+            args = self._sel_args(
+                assets_path, "antigravity:gemini-4-neon,antigravity:gemini-4-argon", ref="task-proceed-dup"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.select(args), 0)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(orch.select(args), 0)
+            self.assertIn("followup already scheduled: [resume] task-proceed-dup", buf.getvalue())
+            self.assertEqual(len(orch.load_file(assets_path).get("followups") or []), 1)
+
+    def test_model_specific_limit_keeps_same_pool_models_usable(self):
+        # A per-model cap (exhaust --model on an ungrouped provider) locks only that model; the rest of
+        # the account's pool stays a valid fallback, and stage upgrades within the same pool at the boundary.
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\nproviders:\n  - id: claude\n    policy: normal\n    status: ok\n")
+            ex = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                provider="claude",
+                message="You've hit your weekly limit for Opus · resets Nov 23, 8am (UTC)",
+                group=None,
+                model="claude-opus-5-5",
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.exhaust(ex), 0)
+            avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5"
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.select(self._sel_args(assets_path, avail, complexity="standard", risk="low"))
+            self.assertEqual(rc, 0)
+            self.assertIn("implementer: claude / claude-sonnet-5-5", buf.getvalue())
+
+            buf_stage = io.StringIO()
+            with contextlib.redirect_stdout(buf_stage):
+                rc_stage = orch.select(self._sel_args(assets_path, avail, risk="medium", ref="task-same-pool"))
+            self.assertEqual(rc_stage, 0)
+            out = buf_stage.getvalue()
+            self.assertIn("(phase 1, low-risk only", out)
+            self.assertIn("claude / claude-sonnet-5-5", out)
+            self.assertIn("switch same child in place to claude / claude-opus-5-5", out)
+            self.assertIn("select when the review step starts in phase 2", out)
+            fus = orch.load_file(assets_path).get("followups") or []
+            self.assertEqual(fus[0]["needs"], "provider:claude/claude-opus-5-5/T3")
+            self.assertEqual(fus[0]["after"], "2026-11-23T08:02:00+00:00")
+
+
+def _run(fn, args):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = fn(args)
+    return rc, buf.getvalue()
+
+
+def _write(path, text):
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _sel(assets_path, available, **kw):
+    base = dict(
+        assets=assets_path,
+        catalog=CATALOG_PATH,
+        now="2026-11-20T21:00:00Z",
+        complexity="hard",
+        risk="high",
+        available=available,
+        ui=False,
+        fail_on_low=False,
+        prefer_family=None,
+        fallback=None,
+        below_tier=None,
+        ref=None,
+        implementer=None,
+    )
+    base.update(kw)
+    return mock.Mock(**base)
+
+
+def _exh(assets_path, provider, message, group=None, model=None, now="2026-11-20T21:00:00Z"):
+    return mock.Mock(
+        assets=assets_path, catalog=CATALOG_PATH, now=now, provider=provider, message=message, group=group, model=model
+    )
+
+
+def _fu(assets_path, now="2026-11-20T21:00:00Z", **kw):
+    base = dict(
+        assets=assets_path, catalog=CATALOG_PATH, now=now, available=None, due=False, add=False, done=None,
+        kind=None, ref=None, needs=None, after=None, on_recovery=False,
+    )
+    base.update(kw)
+    return mock.Mock(**base)
+
+
+def _probe(assets_path, now="2026-11-20T21:00:00Z", provider=None, init=False):
+    return mock.Mock(
+        assets=assets_path, catalog=CATALOG_PATH, now=now, provider=provider,
+        low_threshold=None, exhausted_threshold=None, available=None, init=init,
+    )
+
+
+GROUPED_AG = (
+    "  - id: antigravity\n"
+    "    policy: spend-first\n"
+    "    status: {pst}\n"
+    "{pextra}"
+    "    groups:\n"
+    '      - name: "Gemini Models"\n'
+    "        models: [gemini-4-neon, gemini-4-hydrogen]\n"
+    "        status: {gem}\n"
+    "        used_percent: {gem_pct}\n"
+    "        window: 7d\n"
+    "        resets_at: 2026-11-21T00:13:07+00:00\n"
+    '      - name: "Claude and GPT models"\n'
+    "        models: [claude-opus-5-5, claude-sonnet-5-5]\n"
+    "        status: exhausted\n"
+    "        used_percent: 100\n"
+    "        window: 7d\n"
+    "        resets_at: 2026-11-27T15:59:36+00:00\n"
+    "        exhausted_until: 2026-11-27T15:59:36+00:00\n"
+    '      - name: "Gemini 4 Argon"\n'
+    "        models: [gemini-4-argon]\n"
+    "        status: {arg}\n"
+    "        used_percent: {arg_pct}\n"
+    "        window: 7d\n"
+    "        resets_at: 2026-11-27T21:23:09+00:00\n"
+)
+
+
+def _grouped_ag(pst="ok", pextra="", gem="ok", gem_pct=10, arg="ok", arg_pct=0):
+    return GROUPED_AG.format(pst=pst, pextra=pextra, gem=gem, gem_pct=gem_pct, arg=arg, arg_pct=arg_pct)
+
+
+class TestAuditBlocking(unittest.TestCase):
+    """Red→green repros for the cross-family scenario audit of v0.5.0 (blocking items 1-7)."""
+
+    def setUp(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            self.fixture = json.load(fh)
+
+    # B1: stale provider-level exhaustion on grouped providers
+    def test_b1_exhaust_without_group_on_grouped_provider_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n" + _grouped_ag())
+            rc, out = _run(orch.exhaust, _exh(ap, "antigravity", "Individual quota reached. Resets in 3h13m7s."))
+            self.assertEqual(rc, 1)
+            self.assertIn("--model", out)
+            self.assertIn("Gemini Models", out)
+            self.assertEqual(orch.load_file(ap)["providers"][0]["status"], "ok")
+
+    def test_b1_probe_clears_provider_lock_when_a_previously_exhausted_group_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            extra = (
+                "    probe: {kind: antigravity}\n"
+                "    exhausted_until: 2026-11-21T03:00:00+00:00\n"
+                '    status_note: "Individual quota reached"\n'
+            )
+            _write(ap, "version: 1\nproviders:\n" + _grouped_ag(pst="exhausted", pextra=extra, gem="exhausted", gem_pct=100))
+            fake = subprocess.CompletedProcess(args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr="")
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch("subprocess.run", return_value=fake):
+                rc, out = _run(orch.probe, _probe(ap, now="2026-11-20T21:05:00Z", provider="antigravity"))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("antigravity: ok (2/3 groups usable)", out)
+            ag = orch.load_file(ap)["providers"][0]
+            self.assertEqual(ag["status"], "ok")
+            self.assertNotIn("exhausted_until", ag)
+            rc_sel, sel_out = _run(orch.select, _sel(ap, "antigravity:gemini-4-neon", now="2026-11-20T21:05:00Z"))
+            self.assertEqual(rc_sel, 0, sel_out)
+            self.assertNotIn("provider exhausted", sel_out)
+
+    def test_b1_ui_preference_counts_provider_exhaustion_on_grouped_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            extra = "    exhausted_until: 2026-11-21T03:00:00+00:00\n"
+            _write(
+                ap,
+                "version: 1\nproviders:\n"
+                + _grouped_ag(pst="exhausted", pextra=extra).replace(
+                    "models: [claude-opus-5-5, claude-sonnet-5-5]\n        status: exhausted",
+                    "models: [claude-opus-5-5, claude-sonnet-5-5]\n        status: ok",
+                )
+                + "  - id: codex\n    status: ok\n",
+            )
+            rc, out = _run(
+                orch.select,
+                _sel(ap, "antigravity:claude-sonnet-5-5,codex:gpt-6-2-sol", complexity="standard", risk="low", ui=True),
+            )
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("not offered", out)
+            self.assertIn("[provisional] preferred ui-ux-review exhausted", out)
+
+    # B2: high-risk stage reviewer must use a tier-meeting same-model review before waiting
+    def test_b2_stage_high_risk_reviewer_prefers_tier_meeting_same_model_over_waiting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\npreferences:\n  below_tier: stage\nproviders:\n"
+                "  - id: antigravity\n    status: ok\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: codex\n    status: ok\n",
+            )
+            avail = "antigravity:gemini-4-neon,claude:claude-opus-5-5,codex:gpt-6-2-sol"
+            rc, out = _run(orch.select, _sel(ap, avail, implementer="gemini-4-neon", ref="rev-high-1"))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("same model, fresh conversation): antigravity / gemini-4-neon", out)
+            self.assertNotIn("NO REVIEWER", out)
+            self.assertEqual(orch.load_file(ap).get("followups") or [], [])
+
+    # B3: group-scoped needs only when every exhausted target sits in ONE (provider, group)
+    def test_b3_needs_stays_tier_wide_when_targets_span_two_groups_of_one_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n" + _grouped_ag(gem="exhausted", gem_pct=100).replace(
+                "resets_at: 2026-11-21T00:13:07+00:00\n",
+                "resets_at: 2026-11-21T00:13:07+00:00\n        exhausted_until: 2026-11-21T00:13:07+00:00\n",
+            ))
+            avail = "antigravity:claude-opus-5-5,antigravity:gemini-4-neon,antigravity:gemini-4-argon"
+            rc, out = _run(orch.select, _sel(ap, avail, ref="task-two-groups"))
+            self.assertEqual(rc, 0, out)
+            fus = orch.load_file(ap).get("followups") or []
+            self.assertEqual(fus[0]["needs"], "T4")
+
+    # B4: an expired provider lockout clears exactly once while its groups stay exhausted
+    def test_b4_expired_provider_lock_clears_once_when_groups_stay_exhausted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            extra = (
+                "    exhausted_until: 2026-11-20T20:00:00+00:00\n"
+                '    status_note: "quota reached"\n'
+            )
+            text = "version: 1\nproviders:\n" + _grouped_ag(pst="exhausted", pextra=extra, gem="exhausted", gem_pct=100, arg="exhausted", arg_pct=100)
+            text = text.replace(
+                "resets_at: 2026-11-21T00:13:07+00:00\n",
+                "resets_at: 2026-11-21T00:13:07+00:00\n        exhausted_until: 2026-11-21T00:13:07+00:00\n",
+            ).replace(
+                "resets_at: 2026-11-27T21:23:09+00:00\n",
+                "resets_at: 2026-11-27T21:23:09+00:00\n        exhausted_until: 2026-11-27T21:23:09+00:00\n",
+            )
+            _write(ap, text)
+            _, first = _run(orch.probe, _probe(ap, provider="none"))
+            _, second = _run(orch.probe, _probe(ap, provider="none"))
+            self.assertIn("antigravity: expired lockout cleared", first)
+            self.assertNotIn("expired lockout cleared", second)
+            ag = orch.load_file(ap)["providers"][0]
+            self.assertEqual(ag["status"], "exhausted")
+            self.assertEqual(ag["exhausted_until"], "2026-11-21T00:13:07+00:00")
+            self.assertNotIn("status_note", ag)
+
+    # B5: mid-review, every reviewer exhausted -> SCHEDULE_RESUME + resume follow-up
+    def test_b5_reviewer_step_with_all_exhausted_schedules_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T08:00:00+00:00\n",
+            )
+            rc, out = _run(
+                orch.select,
+                _sel(ap, "claude:claude-opus-5-5,codex:gpt-6-2-sol", risk="low", implementer="claude-opus-5-5", ref="rev-child-1"),
+            )
+            self.assertEqual(rc, 4)
+            self.assertIn("NO REVIEWER", out)
+            self.assertIn("SCHEDULE_RESUME", out)
+            self.assertIn("2026-11-22T08:02:00+00:00", out)
+            fus = orch.load_file(ap).get("followups") or []
+            self.assertEqual(
+                fus, [{"kind": "resume", "ref": "rev-child-1", "needs": "T3", "after": "2026-11-22T08:02:00+00:00", "on_recovery": True}]
+            )
+
+    # B6: the staged plan states the per-(harness, provider) continue rule and the scheduler fallback
+    def test_b6_stage_plan_names_verified_pairs_and_no_scheduler_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: codex\n    status: ok\n",
+            )
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5,codex:gpt-6-2-sol", ref="t-b6"))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("verified or observed (harness, provider) pair", out)
+            self.assertIn("without a scheduler", out)
+            self.assertIn("defer the new Phase 2 child", out)
+
+    # B7: a second per-model cap on an ungrouped provider
+    def test_b7_second_model_cap_on_ungrouped_provider_appends_a_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n  - id: claude\n    status: ok\n")
+            rc1, _ = _run(orch.exhaust, _exh(ap, "claude", "Opus limit · resets Nov 23, 8am (UTC)", model="claude-opus-5-5"))
+            rc2, out2 = _run(orch.exhaust, _exh(ap, "claude", "Sonnet limit · resets Nov 22, 8am (UTC)", model="claude-sonnet-5-5"))
+            self.assertEqual((rc1, rc2), (0, 0), out2)
+            cl = orch.load_file(ap)["providers"][0]
+            self.assertEqual(cl["status"], "ok")
+            self.assertEqual({g["name"] for g in cl["groups"]}, {"claude-opus-5-5", "claude-sonnet-5-5"})
+            avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,claude:claude-haiku-5-5"
+            rc, out = _run(orch.select, _sel(ap, avail, complexity="trivial", risk="low"))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("implementer: claude / claude-haiku-5-5", out)
+            # Pending follow-ups still see the uncapped model of that provider.
+            _run(orch.followups_cmd, _fu(ap, add=True, kind="resume", ref="r-anth", needs="anthropic"))
+            _, pend = _run(orch.followups_cmd, _fu(ap))
+            self.assertIn("usable in assets via claude", pend)
+
+
+class TestAuditFollowUps(unittest.TestCase):
+    """Red→green repros for the audit's follow-up items."""
+
+    def test_f1_resume_after_is_updated_when_the_task_is_exhausted_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\npreferences:\n  below_tier: wait\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-21T04:30:00+00:00\n"
+                "followups:\n  - kind: resume\n    ref: t-stale\n    needs: T4\n    after: 2026-11-21T00:15:07+00:00\n",
+            )
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5", now="2026-11-21T01:00:00Z", ref="t-stale"))
+            self.assertEqual(rc, 4, out)
+            self.assertIn("followup updated", out)
+            fus = orch.load_file(ap)["followups"]
+            self.assertEqual(fus, [{"kind": "resume", "ref": "t-stale", "needs": "T4", "after": "2026-11-21T04:32:00+00:00", "on_recovery": True}])
+
+    def test_f2_resume_followup_waits_for_its_after_time_on_a_renewing_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n  - id: claude\n    status: low\n    used_percent: 90\n")
+            _run(
+                orch.followups_cmd,
+                _fu(ap, add=True, kind="resume", ref="batch-renew", needs="provider:claude/T3", after="2026-11-25T00:02:00+00:00"),
+            )
+            _, before = _run(orch.followups_cmd, _fu(ap, due=True, available="claude:claude-opus-5-5"))
+            self.assertEqual(before.strip(), "")
+            _, after = _run(
+                orch.followups_cmd, _fu(ap, now="2026-11-25T00:03:00Z", due=True, available="claude:claude-opus-5-5")
+            )
+            self.assertIn("followup due: [resume] batch-renew", after)
+
+    def test_f2_quota_resume_is_due_early_when_its_pool_recovers_before_after(self):
+        # A resume recorded while the needed pool was exhausted fires as soon as that pool is usable again,
+        # even before its `after` time (early renewals happen); a renewing-provider deferral keeps waiting.
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\npreferences:\n  below_tier: wait\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-27T15:59:36+00:00\n",
+            )
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5", ref="t-early"))
+            self.assertEqual(rc, 4, out)
+            fu = orch.load_file(ap)["followups"][0]
+            self.assertEqual(fu["after"], "2026-11-27T16:01:36+00:00")
+            self.assertIs(fu.get("on_recovery"), True)
+            # Still exhausted: not due.
+            _, still = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T09:00:00Z", due=True, available="claude:claude-opus-5-5"))
+            self.assertEqual(still.strip(), "")
+            # The probe shows the pool recovered days early (status back to ok): due now.
+            _run(orch.status_cmd, mock.Mock(assets=ap, now="2026-11-21T10:00:00Z", provider="claude", state="ok"))
+            _, early = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T10:05:00Z", due=True, available="claude:claude-opus-5-5"))
+            self.assertIn("followup due: [resume] t-early", early)
+            # The manual quota-resume form can opt in too.
+            rc_add, _ = _run(
+                orch.followups_cmd,
+                _fu(ap, add=True, kind="resume", ref="t-manual", needs="T4", after="2026-11-30T00:00:00+00:00", on_recovery=True),
+            )
+            self.assertEqual(rc_add, 0)
+            _, manual = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T10:05:00Z", due=True, available="claude:claude-opus-5-5"))
+            self.assertIn("followup due: [resume] t-manual", manual)
+
+    def test_f3_probe_leaves_a_missing_assets_file_uncreated_unless_init(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "sub", "assets.yaml")
+            with mock.patch.object(orch, "_infer_probe", return_value=None), mock.patch("shutil.which", return_value=None):
+                rc, out = _run(orch.probe, _probe(ap))
+                self.assertEqual(rc, 0)
+                self.assertFalse(os.path.exists(ap))
+                self.assertIn("--init", out)
+                _run(orch.probe, _probe(ap, init=True))
+            self.assertTrue(os.path.exists(ap))
+
+    def test_f3_check_handles_missing_assets_and_validates_pay_per_use(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "missing.yaml")
+            rc, out = _run(orch.check, mock.Mock(assets=missing, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("no assets file", out)
+            bad = os.path.join(tmp, "bad.yaml")
+            _write(bad, "version: 1\npreferences:\n  pay_per_use: bogus\nproviders: []\n")
+            rc_bad, out_bad = _run(orch.check, mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc_bad, 1)
+            self.assertIn("preferences.pay_per_use", out_bad)
+
+    def test_f3_wait_records_resume_without_ref_and_with_unknown_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\npreferences:\n  below_tier: wait\nproviders:\n  - id: claude\n    status: exhausted\n")
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5"))
+            self.assertEqual(rc, 4, out)
+            self.assertIn("reset time unknown", out)
+            self.assertEqual(orch.load_file(ap)["followups"], [{"kind": "resume", "ref": "current-task", "needs": "T4", "on_recovery": True}])
+
+    def test_f4_check_requires_numeric_scores_for_estimated_rating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cat = orch.load_file(CATALOG_PATH)
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders: []\n")
+            _write(
+                os.path.join(tmp, "catalog.local.yaml"),
+                "models:\n  - id: new-model-x\n    name: New Model X\n    family: openai\n    cost: normal\n    rating: estimated\n",
+            )
+            rc, out = _run(orch.check, mock.Mock(assets=ap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1, out)
+            self.assertIn("new-model-x: estimated needs numeric scores", out)
+            self.assertTrue(cat["models"])
+
+
+class TestAuditRecheck(unittest.TestCase):
+    """Red→green repros for the second audit pass on d5ad9da."""
+
+    def setUp(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            self.fixture = json.load(fh)
+
+    def test_n1_expired_model_cap_resume_is_ready_without_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n  - id: claude\n    status: ok\n")
+            rc_ex, _ = _run(orch.exhaust, _exh(ap, "claude", "Opus limit · resets Nov 21, 2am (UTC)", model="claude-opus-5-5"))
+            self.assertEqual(rc_ex, 0)
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5,claude:claude-sonnet-5-5", ref="t-cap"))
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(orch.load_file(ap)["followups"][0]["needs"], "provider:claude/claude-opus-5-5/T4")
+            _, pend = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T02:03:00Z", due=True))
+            self.assertIn("followup pending: needs provider:claude/claude-opus-5-5/T4", pend)
+            self.assertIn("usable in assets via claude", pend)
+
+    def test_n2_fail_on_low_stage_keeps_its_resume_pending_while_the_pool_is_low(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: antigravity\n    status: low\n    used_percent: 90\n"
+                "  - id: codex\n    status: ok\n",
+            )
+            avail = "claude:claude-opus-5-5,antigravity:gemini-4-neon,codex:gpt-6-2-sol"
+            rc, out = _run(orch.select, _sel(ap, avail, fail_on_low=True, ref="task-low-stage"))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("STAGE", out)
+            self.assertNotIn("followup due", out)
+            fu = orch.load_file(ap)["followups"][0]
+            self.assertIs(fu.get("fail_on_low"), True)
+            _, still = _run(orch.followups_cmd, _fu(ap, due=True, available=avail))
+            self.assertEqual(still.strip(), "")
+            _run(orch.status_cmd, mock.Mock(assets=ap, now="2026-11-21T00:00:00Z", provider="antigravity", state="ok"))
+            _, due = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T00:05:00Z", due=True, available=avail))
+            self.assertIn("followup due: [resume] task-low-stage", due)
+
+    def test_n3_probe_derived_groups_reject_bare_exhaust_under_a_custom_provider_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n" + _grouped_ag().replace("- id: antigravity", "- id: ag-work"))
+            rc, out = _run(orch.exhaust, _exh(ap, "ag-work", "Individual quota reached. Resets in 1h."))
+            self.assertEqual(rc, 1, out)
+            self.assertIn("--model", out)
+
+    def test_n3_probe_treats_exhausted_group_without_used_percent_as_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            extra = (
+                "    probe: {kind: antigravity}\n"
+                "    exhausted_until: 2026-11-21T03:00:00+00:00\n"
+                '    status_note: "Individual quota reached"\n'
+            )
+            text = "version: 1\nproviders:\n" + _grouped_ag(pst="exhausted", pextra=extra, gem="exhausted")
+            text = text.replace("        used_percent: 10\n", "")
+            _write(ap, text)
+            fake = subprocess.CompletedProcess(args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr="")
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch("subprocess.run", return_value=fake):
+                rc, out = _run(orch.probe, _probe(ap, now="2026-11-20T21:05:00Z", provider="antigravity"))
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(orch.load_file(ap)["providers"][0]["status"], "ok")
+
+    def test_n3_followups_add_refreshes_a_stale_resume_after(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders: []\n")
+            _run(orch.followups_cmd, _fu(ap, add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T00:15:07+00:00"))
+            rc, out = _run(
+                orch.followups_cmd,
+                _fu(ap, now="2026-11-21T01:00:00Z", add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T04:32:00+00:00"),
+            )
+            self.assertEqual(rc, 0)
+            self.assertIn("followup updated", out)
+            self.assertEqual(
+                orch.load_file(ap)["followups"],
+                [{"kind": "resume", "ref": "r1", "needs": "T3", "after": "2026-11-21T04:32:00+00:00"}],
+            )
+            _, same = _run(
+                orch.followups_cmd,
+                _fu(ap, now="2026-11-21T01:00:00Z", add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T04:32:00+00:00"),
+            )
+            self.assertIn("followup already scheduled", same)
 
 if __name__ == "__main__":
     unittest.main()
