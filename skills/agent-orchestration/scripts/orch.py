@@ -1178,8 +1178,8 @@ def _schedule_resume(label, earliest_dt):
 
 
 def choose_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, risk, below_tier_mode):
-    """Return `(pick, wait)`; `wait` is `(earliest_reset, needs)` when a high-risk `stage` review waits for `rt`."""
-    if risk == "high" and below_tier_mode == "stage":
+    """Return `(pick, wait)`; `wait` is `(earliest_reset, needs)` when a high-risk `stage`/`proceed` review waits for `rt`."""
+    if risk == "high" and below_tier_mode in ("stage", "proceed"):
         pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, tier_only=True)
         if pick:
             return pick, None
@@ -1212,7 +1212,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     if wait:
         earliest_dt, needs = wait
         _detail(
-            f"NO REVIEWER: high-risk work under below_tier=stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
+            f"NO REVIEWER: high-risk work under below_tier={below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
             "wait for one to renew"
         )
         resume_iso = _schedule_resume(f"{rt} reviewers", earliest_dt)
@@ -1383,9 +1383,16 @@ def select(a):
             if ref_val:
                 assets = load_file(ap)
             _detail(f"implementer: {fmt(impl)}")
-            pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
+            pick, wait = choose_reviewer(
+                catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low), a.risk, below_tier_mode
+            )
             if pick:
                 print_reviewer(rt, pick, impl["model"], floors[rt])
+            elif wait:
+                _detail(
+                    f"reviewer ({rt}): high-risk work under {below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
+                    f"wait for one to renew (needs {wait[1]})"
+                )
             _print_notes(notes)
             _print_due(catalog, assets, now, avail)
             _action(
@@ -1487,7 +1494,7 @@ def select(a):
         print_reviewer(rt, pick, impl["model"], floors[rt])
     elif wait:
         _detail(
-            f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
+            f"reviewer ({rt}): high-risk work under {below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
             f"wait for one to renew (needs {wait[1]})"
         )
     _print_notes(notes)

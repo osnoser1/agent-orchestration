@@ -218,6 +218,9 @@ class OrchContract(unittest.TestCase):
             case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-wait"), 4,
                  r"^action: hold the review until \S+; follow-up recorded: schedule its wakeup$",
                  "followup recorded: [resume] a-rev-wait"),
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "proceed", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-proceed-wait"), 4,
+                 r"^action: hold the review until \S+; follow-up recorded: schedule its wakeup$",
+                 "followup recorded: [resume] a-rev-proceed-wait"),
         ]
 
     def scope_cases(self, w):
