@@ -11,6 +11,8 @@ Before launching items in parallel, compare each item's expected target paths, m
    - **Independent items** (disjoint target areas) run in parallel in the current batch, by default at most two children per quota pool at once (a user or repo instruction may change the cap) so one batch does not drain a pool; place the rest on other pools or in the next batch.
    - **Overlapping items** (touching the same files or coupled module) run sequentially across ordered batches. Keep dependent items queued in durable state and launch each one only after the earlier item lands (or its branch becomes the dependent item's base).
 
+*Done when*: every item sits in a batch, overlapping items are ordered across batches, and each batch's independent items stay within the pool cap.
+
 ## Deferred launch until a provider renews
 
 When the user holds work for a specific exhausted or renewing provider (rather than spending another provider now):
@@ -20,6 +22,8 @@ When the user holds work for a specific exhausted or renewing provider (rather t
    (or `provider:<provider-id>/<group-name>/<tier>` on grouped providers). Add `--on-recovery` when the provider or group is exhausted, so the launch fires as soon as it renews early; omit it for a provider that renews on a schedule.
 2. When the harness supports delayed scheduling (`Scheduled resume` in `references/harnesses.md`), schedule one wakeup at `reset_or_renews + 2m` to launch the batch; otherwise report the renewal timestamp to the user.
 3. Clear the entry with `python3 scripts/orch.py followups --done "<batch-or-task-ref>"` once the batch launches.
+
+*Done when*: the `resume` follow-up exists and its wakeup is scheduled (or the renewal time is reported), and the follow-up is cleared once the batch launches.
 
 ## Durable orchestration state
 
@@ -35,6 +39,8 @@ Carry everything required to resume cold after context compaction or a new sessi
 6. **Self-healing rule**: put the literal line *"If the plan file is missing, rebuild it from this summary before continuing."* at the top of the plan file and in every state summary (the orchestrator's own and any supervision prompt).
 
 Refresh durable state whenever a batch launches, a child switches models, completes, or lands, quota state changes, or a checkpoint is approved.
+
+*Done when*: the plan file and the state summary carry all six items, refreshed at the latest launch, switch, completion, landing, quota change, or checkpoint approval.
 
 ## Completion notices
 

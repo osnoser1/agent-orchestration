@@ -12,7 +12,7 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, preferences, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `exhaust`, `status`, `failure`, `scope`, `check`) | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `history`, `exhaust`, `status`, `failure`, `scope`, `check`) | rarely |
 
 Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
@@ -70,6 +70,7 @@ python3 skills/agent-orchestration/scripts/orch.py select --complexity standard 
 python3 skills/agent-orchestration/scripts/orch.py followups --due
 python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk high \
   --provider antigravity --model gemini-4-neon --effort high --outcome ok --findings 1 --repo my-app
+python3 skills/agent-orchestration/scripts/orch.py history --last 5   # per ref: model, reviewer, outcome, findings, provisional, pending follow-ups
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # log flags + next action
@@ -114,7 +115,7 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
 
 Consumer repositories feed orchestration findings back upstream rather than patching installed skill copies locally (`skills/agent-orchestration/references/improvement.md`):
 
-- **Decision ledger**: `orch.py log` appends one structured JSON line per delegation (selection + completion) to `ledger.jsonl` next to `assets.yaml` — timestamp, repo basename, delegation surface (`subagent|conversation`), task class, chosen model/effort, reviewer, outcome (`ok|failed|quota|stall|rework`), and review findings count. Prompts, code, secrets, full paths, and personal data are never recorded.
+- **Decision ledger**: `orch.py log` appends one structured JSON line per delegation (selection + completion) to `ledger.jsonl` next to `assets.yaml` — timestamp, repo basename, delegation surface (`subagent|conversation`), task class, chosen model/effort, reviewer, outcome (`ok|failed|quota|stall|rework`), and review findings count. Prompts, code, secrets, full paths, and personal data are never recorded. `orch.py history` answers which-model, which-reviewer, outcome, and pending-follow-up questions per `--ref` item.
 - **Retrospective findings**: during a repo's retrospective (`retro` / `retro-dispatch`), file an upstream issue on `osnoser1/agent-orchestration` using `.github/ISSUE_TEMPLATE/retro-finding.md` with ledger evidence for wrong model/effort choices, quota surprises, stalled children, brief gaps, or missing harness quirks. Submit new or updated model ratings as a PR editing `skills/agent-orchestration/catalog.yaml` with `orch.py check` passing.
 - **Keeping installs current**: check and update at the start of every retrospective (or weekly):
   - Global install: `npx skills check -g` then `npx skills update agent-orchestration -g` (add `-y` for non-interactive runs).
@@ -123,7 +124,7 @@ Consumer repositories feed orchestration findings back upstream rather than patc
 
 ## Contributing
 
-To add or re-rate models, edit `skills/agent-orchestration/catalog.yaml` (scores per effort, `source`, retrieval date, `confidence`; `rating: unrated` when data is unavailable), run `python3 skills/agent-orchestration/scripts/orch.py check`, and open a PR. Keep personal quota data, emails, and private project names out of commits. Maintainers validate with `python3 tools/repo.py check` and release with `tools/repo.py bump` / `release` (see `AGENTS.md`).
+To add or re-rate models, edit `skills/agent-orchestration/catalog.yaml` (scores per effort, `source`, retrieval date, `confidence`; `rating: unrated` when data is unavailable), run `python3 skills/agent-orchestration/scripts/orch.py check`, and open a PR. Keep personal quota data, emails, and private project names out of commits. Maintainers validate with `python3 tools/repo.py check` and release with `repo.py bump` / `repo.py release` (see `AGENTS.md`).
 
 ## Standards followed
 

@@ -3420,6 +3420,87 @@ def _scope(root, **kw):
     return rc, {k: v for k, _, v in (ln.partition(": ") for ln in lines)}, lines
 
 
+def _hist(ledger, assets=None, ref=None, last=None, full=True):
+    return _Args(ledger=ledger, assets=assets, ref=ref, last=last, now="2026-11-20T21:00:00Z", full=full)
+
+
+class TestHistoryCommand(unittest.TestCase):
+    """`orch.py history` answers which-model / which-reviewer / outcome / follow-up questions from the ledger and assets."""
+
+    ENTRIES = [
+        {"event": "select", "ref": "PR-1", "provider": "claude", "model": "claude-opus-5-5", "effort": "high", "reviewer": None, "provisional": True},
+        {"event": "select", "provider": "codex", "model": "gpt-6-2-sol", "effort": "low"},  # no ref: not listed, counted
+        {"event": "complete", "ref": "PR-1", "provider": "claude", "model": "claude-opus-5-5", "effort": "high",
+         "reviewer": "codex:gpt-6-2-sol", "outcome": "ok", "findings": 2},
+        {"event": "select", "ref": "PR-2", "provider": "codex", "model": "gpt-6-2-sol", "effort": "high", "reviewer": None},
+        {"event": "complete", "ref": "PR-2", "provider": "codex", "model": "gpt-6-2-sol", "effort": "high", "outcome": "failed",
+         "failure_class": "context-cap"},
+    ]
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ledger = os.path.join(tmp.name, "ledger.jsonl")
+        self.assets = os.path.join(tmp.name, "assets.yaml")
+        self.write_ledger(self.ENTRIES)
+        _write(self.assets, "version: 1\nproviders:\n  - id: claude\nfollowups:\n  - kind: resume\n    ref: PR-2\n    needs: T3\n"
+                            "  - kind: ui-review\n    ref: PR-9\n    needs: any\n")
+
+    def write_ledger(self, entries):
+        _write(self.ledger, "".join(json.dumps(e) + "\n" for e in entries) + "not json\n[1]\n")
+
+    def history(self, **kw):
+        rc, out = _run(orch.history_cmd, _hist(self.ledger, **{"assets": self.assets, **kw}))
+        return rc, out.rstrip("\n").split("\n")
+
+    def test_one_line_per_ref_most_recent_first_with_a_summary(self):
+        rc, lines = self.history()
+        self.assertEqual(rc, 0)
+        self.assertEqual(lines, [
+            "PR-2: codex:gpt-6-2-sol @ high; reviewer none; failed (context-cap); pending resume",
+            "PR-1: claude:claude-opus-5-5 @ high; reviewer codex:gpt-6-2-sol; ok, 2 finding(s); provisional",
+            "PR-9: no ledger entry; pending ui-review",
+            "ok: 3 ref(s); 2 pending follow-up(s); 1 ledger entry has no ref (log with --ref to track them)",
+        ])
+
+    def test_ref_filter_and_last(self):
+        _, lines = self.history(ref="PR-1")
+        self.assertEqual([l.split(":")[0] for l in lines], ["PR-1", "ok"])
+        self.assertEqual(lines[-1], "ok: 1 ref(s); 0 pending follow-up(s)")
+        _, lines = self.history(last=1)
+        self.assertEqual(lines[0].split(":")[0], "PR-2")
+        self.assertEqual(lines[-1].split(";")[0], "ok: 1 ref(s)")
+
+    def test_open_item_has_no_outcome_yet(self):
+        self.write_ledger(self.ENTRIES[:1])
+        _, lines = self.history()
+        self.assertEqual(lines[0], "PR-1: claude:claude-opus-5-5 @ high; reviewer none; open; provisional")
+
+    def test_unknown_ref_is_an_error_with_an_action(self):
+        rc, lines = self.history(ref="PR-404")
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines[0], "error: no ledger entry or follow-up for ref PR-404")
+        self.assertRegex(lines[-1], r"^error: 1 problem\(s\); action: ")
+
+    def test_missing_ledger_and_assets_is_an_empty_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = _run(orch.history_cmd, _hist(os.path.join(tmp, "none.jsonl"), assets=os.path.join(tmp, "none.yaml")))
+        self.assertEqual((rc, out), (0, "ok: 0 ref(s); 0 pending follow-up(s)\n"))
+
+    def test_compact_caps_the_list_and_full_shows_all(self):
+        self.write_ledger([{"event": "select", "ref": "item-%02d" % i, "provider": "p", "model": "m", "effort": "high"} for i in range(25)])
+        _, lines = self.history(full=False)
+        self.assertEqual(len(lines), 12)  # 10 refs, the `… N more` line, the summary
+        self.assertEqual(lines[10], "… 17 more (rerun with --full)")
+        _, lines = self.history(full=True)
+        self.assertEqual(len(lines), 28)  # 25 refs, the PR-2 and PR-9 follow-ups (no ledger entry), then the summary
+
+    def test_ledger_privacy_paths_in_refs_are_already_stripped(self):
+        self.write_ledger([{"event": "select", "ref": "PR-1", "provider": "p", "model": "m", "effort": "high"}])
+        _, lines = self.history(ref="/home/someone/work/PR-1")
+        self.assertTrue(lines[0].startswith("PR-1: "), lines)
+
+
 class TestScopeCommand(unittest.TestCase):
     """`orch.py scope` compares the diff to the brief's budget and flags manifests and strays."""
 

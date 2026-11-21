@@ -146,6 +146,15 @@ class OrchContract(unittest.TestCase):
         cases["log"] = [Case(["log", "--complexity", "standard", "--risk", "low", "--provider", "claude", "--model", "claude-opus-5-5",
                               "--effort", "high", "--ledger", os.path.join(w.dir, "ledger.jsonl"), *w.common()],
                              3, re.compile(r"^logged \S"), env=env, cwd=w.dir)]
+        hist = os.path.join(w.dir, "history-ledger.jsonl")
+        with open(hist, "w", encoding="utf-8") as fh:
+            for i in range(40):
+                fh.write(json.dumps({"event": "select", "ref": "item-%02d" % i, "provider": "claude", "model": "claude-opus-5-5", "effort": "high"}) + "\n")
+        cases["history"] = [
+            Case(["history", "--ledger", hist, *w.common(assets)], 14, re.compile(r"^ok: 40 ref\(s\); 30 pending follow-up\(s\)$"),
+                 last="item-00", env=env, cwd=w.dir),
+            Case(["history", "--ledger", hist, "--ref", "no-such-item", *w.common(assets)], 3, CHECK_FINAL, rc=1, env=env, cwd=w.dir),
+        ]
         cases["status"] = [Case(["status", "claude", "low", *w.common()], 3, re.compile(r"^claude: low$"), env=env, cwd=w.dir)]
         cases["exhaust"] = [
             Case(["exhaust", "claude", "You've hit your weekly limit · resets Nov 23, 3am (America/New_York)", *w.common()],

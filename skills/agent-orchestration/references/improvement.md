@@ -8,7 +8,9 @@ Use the local decision ledger to turn orchestration friction observed during ret
 
 Log twice per delegation:
 - **At selection** (Step 3): `python3 scripts/orch.py log --event select --complexity <c> --risk <r> [--ui] [--provisional] --surface subagent|conversation --provider <p> --model <m> --effort <e> [--reviewer <r>] --repo <name>`
-- **At completion or failure** (Step 5 / 6): add `--event complete --outcome ok|failed|quota|stall|rework --findings <n>`, and for a failed child `--ref <item> --failure-class quota|infra|context-cap|tool|unknown` (`orch.py failure` prints these flags)
+- **At completion or failure** (Step 5 / 6): add `--event complete --outcome ok|failed|quota|stall|rework --findings <n>`, and for a failed child `--failure-class quota|infra|context-cap|tool|unknown` (`orch.py failure` prints these flags)
+
+Pass the same `--ref <item>` on every log of an item: `orch.py failure` counts retries from it, and `scripts/orch.py history [--ref <item>] [--last N]` prints one line per item (model, reviewer, outcome, findings, provisional, pending follow-ups) for which-model and which-reviewer questions.
 
 Recorded fields: `ts`, `event`, `repo` (basename only — paths are stripped automatically), `surface` (`subagent|conversation`), `complexity`, `risk`, `ui`, `provider`, `model`, `effort`, `reviewer`, `outcome`, `findings`, and optional `provisional`, `ref` (a short item label such as `PR-42`, slugified from `--ref`; never a path), and `failure_class` (`quota|infra|context-cap|tool|unknown`; `orch.py failure` counts retries from them, `references/supervision.md`). Keep prompts, source code, secrets, full paths, and personal data out of the ledger.
 
