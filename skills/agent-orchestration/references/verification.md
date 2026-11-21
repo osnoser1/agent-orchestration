@@ -42,10 +42,11 @@ After cross-family review findings are resolved and before landing, verify five 
 
 Send any follow-up fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
 
-## Known infrastructure failures
+## Known infrastructure failures and unstarted PR checks
 
-When a test run, CI check, or git/forge command fails, classify the failure before investigating application code:
+When a test run, CI check, or git/forge command fails, or a PR waits on required checks while none has started, classify the state before investigating code or waiting:
 
 - **Infrastructure classification**: transient network refused/timeout to the forge or package registry, CI runner lost or preempted, or a signature matching `- Known failures:` in the target repo's `## Orchestration` (`references/repo-policy.md`).
 - **One rerun or repo remedy**: run the remedy named in `- Known failures:` or rerun the failed jobs/command once (using the harness's CI rerun in `references/harnesses.md`, or one foreground retry of the failed command).
 - **Escalate on repeat**: if the check fails a second time after the single rerun, treat it as a real failure and diagnose the logs and code.
+- **Unstarted PR checks**: read the PR's merge state first (`gh pr view <n> --json mergeable,mergeStateStatus` on GitHub). On `CONFLICTING` or `DIRTY`, the forge cannot build the test merge commit, so `pull_request` workflows never start; send the implementing child a continue message to rebase onto the current base branch, revalidate, and push.

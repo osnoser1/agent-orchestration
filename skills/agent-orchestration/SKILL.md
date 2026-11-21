@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.7.0"
+  version: "0.7.1"
 ---
 
 # Agent orchestration
@@ -47,11 +47,11 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`) us
 
 ## 6. Quota and failure handling
 - **Quota error** (any child, implementer or reviewer): parse the reset time (`references/quota-errors.md`), persist `exhausted` to assets (`scripts/orch.py exhaust`, scoped per `references/quota-errors.md`), log `--outcome quota` (`scripts/orch.py log`), and follow the single decision order in `references/harnesses.md` (switch model in place → start a new child with partial results → schedule a resume at `earliest_reset + 2m`; quota pools and `preferences.below_tier` in `references/selection.md`). Inform the user in one line.
-- **Known infrastructure failures**: apply the single-rerun gate in `references/verification.md` before investigating.
+- **Known infrastructure failures and unstarted PR checks**: apply the single-rerun and merge-state gates in `references/verification.md` before investigating or waiting.
 - **Harness quirks or stalls**: follow the harness row in `references/harnesses.md`, `quirks` in `catalog.yaml`, and the supervision loop in `references/supervision.md`; log `stall` outcomes to the ledger.
 - **Manual fallback**: when the user reports facts probes cannot see (plan cancelled, renewal date, manual reset, evidence or checkpoint preferences), update assets per `references/assets-updates.md`.
 
-*Done when*: exhausted providers or quota groups carry reset times in assets, expired lockouts clear, transient infra failures get one rerun before investigation, interrupted or staged work switches in place or schedules a post-reset wakeup (`kind: resume` in `followups`), and outcomes are logged.
+*Done when*: exhausted providers or quota groups carry reset times in assets, expired lockouts clear, transient infra failures get one rerun before investigation, PRs with unstarted checks have their merge state checked and conflicts sent back for rebase, interrupted or staged work switches in place or schedules a post-reset wakeup (`kind: resume` in `followups`), and outcomes are logged.
 
 ## 7. Decide vs ask
 Execute routine orchestration choices (including in-place model switches, staged Phase 1 launches and immediate phase-boundary switches under `preferences.below_tier: stage`, same-conversation scheduled resumes, recurring supervision checks over non-notifying children, single reruns of known infrastructure failures, and delegated design checkpoints when `preferences.design_checkpoints: delegate`) and report them briefly. Ask the user once before destructive or irreversible actions, publishing, spending emergency models/efforts, spending pay-per-use APIs under `preferences.pay_per_use: ask` (under `never`, keep them excluded), opening a new top-level conversation when `preferences.new_conversations: ask`, proceeding when `preferences.ui_fallback: ask`, approving a taste checkpoint when `preferences.design_checkpoints: ask` (default), or resolving ambiguity that changes the outcome.
@@ -61,7 +61,7 @@ Execute routine orchestration choices (including in-place model switches, staged
 ## References (load on demand)
 - `references/selection.md` — tier floors, risk triggers, effort knee, quota pools and tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), below-tier staging (`below_tier`), follow-up kinds and due rule, reviewer timing and fallback order, review gate.
 - `references/supervision.md` — conflict-aware batching, deferred launch on provider renewal, user-local durable state, completion notices, recurring supervision loop for non-notifying children, and idempotent child messages.
-- `references/verification.md` — proportional evidence (`evidence`), scope check before review, agent-facing doc review, design checkpoints (`design_checkpoints`), final check before landing, and single rerun for known infrastructure failures.
+- `references/verification.md` — proportional evidence (`evidence`), scope check before review, agent-facing doc review, design checkpoints (`design_checkpoints`), final check before landing, single rerun for known infrastructure failures, and merge-state check for unstarted PR checks.
 - `references/repo-policy.md` — target-repo `## Orchestration` contract, precedence, and explicit brief forwarding.
 - `references/harnesses.md` — delegation surface (`subagent` vs `conversation`), in-place model switching and scheduled resume on quota exhaustion, and alphabetical harness matrix.
 - `references/brief-template.md` — delegation brief layout, doc review-loop rule, and mandatory report sections.
