@@ -48,6 +48,10 @@ When `assets.yaml` is missing, default every discovered provider to `status: ok`
    5. **Lower cost class**: `cheap` < `normal` < `expensive`.
    6. **Lower effort** (`none` < `low` < `medium` < `high` < `xhigh`), then lower score.
 
+`status: low` and `policy: preserve` only rank a pool lower; neither holds work. When `select` returns a candidate from such a pool, dispatch it: work never waits for a reset and never waits on the user while a usable tier-meeting candidate exists. Only exhaustion of every tier-meeting candidate (exit `4`, or a `STAGE` plan under **Below-tier handling**) or a Step 7 gate in `SKILL.md` (emergency, pay-per-use, `ui_fallback: defer|ask`) holds work. Do not add `--fail-on-low` to avoid a `low` pool; it is a pre-flight check that blocks with exit `3` (`references/harnesses.md`, step 5).
+
+Manage quota by choosing, not pausing: the ranking above, the effort knee, and the cheapest model that meets each phase's tier pick the least wasteful candidate. Then spend less of it with delta re-reviews (**Reviewer and review gate**) and a per-pool cap on parallel children (`references/supervision.md`).
+
 ## Preferred-model fallback (`preferences.ui_fallback`) and follow-ups
 When `--ui` (`ui-ux-review`) or a repo `Models:` family preference (`--prefer-family`) has no usable candidate meeting the tier while at least one other tier-meeting candidate exists, classify the unmet preference from this run's discovery (`--available`):
 
@@ -90,6 +94,7 @@ With no usable model at any tier, every mode behaves like `wait` (exit `4` when 
   5. Same model in a fresh conversation.
 - **Exclusions**: exhausted, emergency, pay-per-use, `policy: avoid`, and unrated models stay out at every step (`SKILL.md` Step 7 gates). `preferences.ui_fallback` and `--prefer-family` govern primaries only, so reviewer selection always proceeds down the order.
 - **`select` output**: always prints a `reviewer` line with a `[note] reviewer degraded` for steps 2-5, and exits `0` when any model qualifies. With `--implementer` and no usable model (or a `high`-risk review waiting under `stage`) it prints `NO REVIEWER` and exits `4`, `3`, or `2` like the Filter rules, adding `SCHEDULE_RESUME` and a `resume` follow-up on exit `4`; quota recovery then applies (`references/harnesses.md`).
+- **Re-reviews**: after fixes, re-review as a delta (the fix commits plus their context). Continue the same reviewer's context when the harness can and its pool is usable (it stays independent of the implementer, so the fresh-context rule applies to the first review only); otherwise give a fresh reviewer from the fallback order the delta and the earlier findings.
 - **Mid-review quota exhaustion**: reviewer children follow the same switch-in-place, new-child, scheduled-resume order as implementers (`references/harnesses.md`).
 - **Shared evidence pack**: for multi-angle or cross-family reviews on large diffs, have a cheap model assemble one `path:line` evidence pack first, then hand the same pack and raw diff alone to each reviewer so judgments compare identical facts independently.
 
