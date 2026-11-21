@@ -2249,7 +2249,8 @@ class TestBelowTierStaging(unittest.TestCase):
             self.assertNotIn("NO CANDIDATE", out)
             self.assertIn("[provisional] (below_tier=proceed)", out)
             self.assertIn("implementer: antigravity / gemini-4-argon @ high (score 51", out)
-            self.assertIn("reviewer (T4, same model, fresh conversation, below tier): antigravity / gemini-4-argon @ high", out)
+            self.assertIn("high-risk work under proceed takes a reviewer meeting T4", out)
+            self.assertNotIn("same model, fresh conversation", out)
 
             fus = orch.load_file(assets_path).get("followups") or []
             self.assertEqual(len(fus), 1)
@@ -3152,6 +3153,144 @@ class TestSelectActionLine(unittest.TestCase):
             "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             implementer="gpt-6-2-sol", ref="a-rev-wait",
         )
+
+    def test_high_risk_proceed_implementer_step_holds_reviewer_and_keeps_provisional_impl(self):
+        assets = (
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: antigravity\n    status: ok\n"
+        )
+        avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,antigravity:gemini-4-hydrogen"
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, assets)
+            got, out = _run(
+                orch.select,
+                _sel(
+                    ap, avail, complexity="hard", risk="high",
+                    below_tier="proceed", now="2026-11-21T20:00:00Z", ref="sim",
+                ),
+            )
+            self.assertEqual(got, 0, out)
+            self.assertIn("implementer: antigravity / gemini-4-hydrogen @ xhigh", out)
+            self.assertIn("reviewer (T4): high-risk work under proceed takes a reviewer meeting T4", out)
+            self.assertNotIn("same model, fresh conversation", out)
+            self.assertEqual(
+                out.rstrip("\n").split("\n")[-1],
+                "action: dispatch antigravity/gemini-4-hydrogen @ xhigh now (below T4); "
+                "choose the reviewer when its step starts; mark it provisional (log --provisional)",
+            )
+
+    def test_high_risk_proceed_reviewer_step_waits_for_tier_reviewer(self):
+        assets = (
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: antigravity\n    status: ok\n"
+        )
+        avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,antigravity:gemini-4-hydrogen"
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, assets)
+            got, out = _run(
+                orch.select,
+                _sel(
+                    ap, avail, complexity="hard", risk="high",
+                    below_tier="proceed", now="2026-11-21T20:00:00Z",
+                    ref="sim", implementer="gemini-4-hydrogen",
+                ),
+            )
+            self.assertEqual(got, 4, out)
+            self.assertIn("NO REVIEWER: high-risk work under below_tier=proceed takes a reviewer meeting T4", out)
+            self.assertEqual(
+                out.rstrip("\n").split("\n")[-1],
+                "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
+            )
+            fus = orch.load_file(ap).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(fus[0]["kind"], "resume")
+            self.assertEqual(fus[0]["ref"], "sim")
+            self.assertEqual(fus[0]["needs"], "T4")
+            self.assertEqual(fus[0]["after"], "2026-11-23T08:02:00+00:00")
+
+    def test_high_risk_proceed_reviewer_step_picks_usable_rt_reviewer(self):
+        assets = (
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claude\n    status: ok\n"
+            "  - id: antigravity\n    status: ok\n"
+        )
+        avail = "claude:claude-opus-5-5,antigravity:gemini-4-hydrogen"
+        self.sel(
+            assets, avail, 0,
+            "action: dispatch reviewer claude/claude-opus-5-5 @ xhigh now",
+            complexity="hard", risk="high", below_tier="proceed",
+            now="2026-11-21T20:00:00Z", implementer="gemini-4-hydrogen",
+        )
+
+    def test_medium_risk_proceed_reviewer_step_keeps_fallback_order(self):
+        assets = (
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: antigravity\n    status: ok\n"
+        )
+        avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,antigravity:gemini-4-hydrogen"
+        self.sel(
+            assets, avail, 0,
+            "action: dispatch reviewer antigravity/gemini-4-hydrogen @ high now; state the reviewer degradation in the report",
+            complexity="hard", risk="medium", below_tier="proceed",
+            now="2026-11-21T20:00:00Z", implementer="gemini-4-hydrogen",
+        )
+
+    def test_high_risk_proceed_tier_meeting_implementer_uses_fallback_reviewer(self):
+        assets = (
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: antigravity\n    status: ok\n"
+        )
+        avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,antigravity:gemini-4-hydrogen"
+        self.sel(
+            assets, avail, 0,
+            "action: dispatch reviewer antigravity/gemini-4-hydrogen @ xhigh now; state the reviewer degradation in the report",
+            complexity="standard", risk="high", below_tier="proceed",
+            now="2026-11-21T20:00:00Z", implementer="gemini-4-hydrogen",
+        )
+
+    def test_high_risk_proceed_upgrades_followup_from_t3_to_t4_and_uses_in_place_action(self):
+        assets = (
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: antigravity\n    status: ok\n"
+        )
+        avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,antigravity:gemini-3-8-flash"
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, assets)
+            got1, out1 = _run(
+                orch.select,
+                _sel(
+                    ap, avail, complexity="standard", risk="high",
+                    below_tier="proceed", now="2026-11-21T20:00:00Z", ref="sim",
+                ),
+            )
+            self.assertEqual(got1, 0, out1)
+            self.assertIn("followup recorded: [resume] sim (needs T3, after 2026-11-23T08:02:00+00:00)", out1)
+
+            got2, out2 = _run(
+                orch.select,
+                _sel(
+                    ap, avail, complexity="standard", risk="high",
+                    below_tier="proceed", now="2026-11-21T20:00:00Z",
+                    ref="sim", implementer="gemini-3-8-flash",
+                ),
+            )
+            self.assertEqual(got2, 4, out2)
+            self.assertIn("followup updated: [resume] sim (needs T4, after 2026-11-23T08:02:00+00:00); reschedule its wakeup", out2)
+            self.assertEqual(
+                out2.rstrip("\n").split("\n")[-1],
+                "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up in place: schedule its wakeup",
+            )
+            fus = orch.load_file(ap).get("followups") or []
+            self.assertEqual(len(fus), 1)
+            self.assertEqual(fus[0]["needs"], "T4")
 
     def test_no_reviewer_exhausted_holds_the_review(self):
         self.sel(

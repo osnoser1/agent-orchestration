@@ -205,7 +205,7 @@ class OrchContract(unittest.TestCase):
             case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "proceed", "--ref", "a-proceed"), 0,
                  r"^action: dispatch \S+ @ \S+ now \(below T4\);.*provisional", "followup recorded: [resume] a-proceed"),
             case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "wait", "--ref", "a-wait"), 4,
-                 r"^action: hold until 2026-11-23T08:02:00\+00:00; follow-up recorded: schedule its wakeup$",
+                 r"^action: hold until 2026-11-23T08:02:00\+00:00; follow-up (?:recorded|in place): schedule its wakeup$",
                  "followup recorded: [resume] a-wait"),
             case(base(ui["defer"], ui_avail, "--complexity", "standard", "--risk", "low", "--ui", "--ref", "a-ui"), 3,
                  r"^action: hold until \S+ \(preferred ui-ux-review exhausted\); record a resume follow-up$"),
@@ -216,8 +216,11 @@ class OrchContract(unittest.TestCase):
             case(base(exhausted, both, "--complexity", "hard", "--risk", "medium", "--implementer", "gpt-6-2-sol"), 0,
                  r"^action: dispatch reviewer \S+ @ \S+ now; state the reviewer degradation in the report", "[note] reviewer degraded"),
             case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-wait"), 4,
-                 r"^action: hold the review until \S+; follow-up recorded: schedule its wakeup$",
+                 r"^action: hold the review until \S+; follow-up (?:recorded|in place): schedule its wakeup$",
                  "followup recorded: [resume] a-rev-wait"),
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "proceed", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-proceed-wait"), 4,
+                 r"^action: hold the review until \S+; follow-up (?:recorded|in place): schedule its wakeup$",
+                 "followup recorded: [resume] a-rev-proceed-wait"),
         ]
 
     def scope_cases(self, w):

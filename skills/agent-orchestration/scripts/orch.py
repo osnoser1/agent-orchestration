@@ -1048,9 +1048,15 @@ def _stop_action(rc, resume_iso, who="", cause="", notes=(), recorded=True):
         research = any("research-unrated" in n for n in notes)
         _action("no tier match: " + ("run references/research-unrated.md or ask the user" if research else "ask the user"))
     elif rc == 4:
+        fu_msg = (
+            "follow-up in place: schedule its wakeup"
+            if recorded == "in_place"
+            else "follow-up recorded: schedule its wakeup"
+            if recorded
+            else "no follow-up was recorded (no --ref): add one with followups --add --kind resume"
+        )
         _action(
-            f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; "
-            + ("follow-up recorded: schedule its wakeup" if recorded else "no follow-up was recorded (no --ref): add one with followups --add --kind resume")
+            f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; {fu_msg}"
         )
     elif cause == "low":
         _action(
@@ -1157,13 +1163,13 @@ def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low
     after_txt = f", after {after_iso}" if after_iso else ""
     if existing and dict(existing) == entry:
         print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
-        return True
+        return "in_place"
     record_followup(ap, entry, now=now)
     if existing:
         print(f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup")
-    else:
-        print(f"followup recorded: [resume] {ref} (needs {needs}{after_txt})")
-    return True
+        return "in_place"
+    print(f"followup recorded: [resume] {ref} (needs {needs}{after_txt})")
+    return "recorded"
 
 
 def _schedule_resume(label, earliest_dt):
@@ -1177,9 +1183,9 @@ def _schedule_resume(label, earliest_dt):
     return resume_iso
 
 
-def choose_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, risk, below_tier_mode):
-    """Return `(pick, wait)`; `wait` is `(earliest_reset, needs)` when a high-risk `stage` review waits for `rt`."""
-    if risk == "high" and below_tier_mode == "stage":
+def choose_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, risk, below_tier_mode, impl_below_tier=False):
+    """Return `(pick, wait)`; `wait` is `(earliest_reset, needs)` when a high-risk `stage` or provisional `proceed` review waits for `rt`."""
+    if risk == "high" and (below_tier_mode == "stage" or (below_tier_mode == "proceed" and impl_below_tier)):
         pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, tier_only=True)
         if pick:
             return pick, None
@@ -1199,9 +1205,13 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
     ref = _resume_ref(_opt_str(a, "ref"), assets_exists)
+    emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
+    impl_below_tier = best_effort(m, floors[tier], emerg) is None
     _detail(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
     _detail(f"implementer (given): {m['family']} / {m['id']}")
-    pick, wait = choose_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode)
+    pick, wait = choose_reviewer(
+        catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode, impl_below_tier=impl_below_tier
+    )
     if pick:
         print_reviewer(rt, pick, m, floors[rt], always=True)
         _action(
@@ -1212,7 +1222,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     if wait:
         earliest_dt, needs = wait
         _detail(
-            f"NO REVIEWER: high-risk work under below_tier=stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
+            f"NO REVIEWER: high-risk work under below_tier={below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
             "wait for one to renew"
         )
         resume_iso = _schedule_resume(f"{rt} reviewers", earliest_dt)
@@ -1383,9 +1393,16 @@ def select(a):
             if ref_val:
                 assets = load_file(ap)
             _detail(f"implementer: {fmt(impl)}")
-            pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
+            pick, wait = choose_reviewer(
+                catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low), a.risk, below_tier_mode, impl_below_tier=True
+            )
             if pick:
                 print_reviewer(rt, pick, impl["model"], floors[rt])
+            elif wait:
+                _detail(
+                    f"reviewer ({rt}): high-risk work under {below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
+                    f"wait for one to renew (needs {wait[1]})"
+                )
             _print_notes(notes)
             _print_due(catalog, assets, now, avail)
             _action(
@@ -1487,7 +1504,7 @@ def select(a):
         print_reviewer(rt, pick, impl["model"], floors[rt])
     elif wait:
         _detail(
-            f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
+            f"reviewer ({rt}): high-risk work under {below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
             f"wait for one to renew (needs {wait[1]})"
         )
     _print_notes(notes)
