@@ -42,7 +42,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
         self.assertEqual(gemini["resets_at"], "2026-11-26T15:58:04+00:00")
         self.assertEqual(
             gemini["models"],
-            ["gemini-4-neon", "gemini-4-hydrogen", "Orchestrator (Neon)", "gemini-3-8-flash"],
+            ["gemini-4-neon", "gemini-4-hydrogen", "gemini-pro-orchestrator-neon", "gemini-3-8-flash"],
         )
 
         # Claude and GPT models: weekly 0% remaining -> 100% used; 5h disabled -> skipped.
@@ -62,8 +62,8 @@ class TestAntigravityGroupQuota(unittest.TestCase):
         self.assertEqual(argon["resets_at"], "2026-11-27T21:23:09+00:00")
         self.assertEqual(argon["models"], ["gemini-4-argon"])
 
-        # Unmatched model names kept as-is and reported once.
-        self.assertEqual(result["unmatched"], ["Orchestrator (Neon)"])
+        # All fixture model names (including "Orchestrator (Neon)") map cleanly to catalog ids.
+        self.assertEqual(result["unmatched"], [])
 
     def test_disabled_5h_bucket_ignored_even_when_higher_usage(self):
         data = copy.deepcopy(self.fixture)
@@ -139,7 +139,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertIn("group Gemini Models: ok (52.6% of 7d", out)
             self.assertIn("group Claude and GPT models: exhausted (100% of 7d", out)
             self.assertIn("group Gemini 4 Argon: ok (0% of 7d", out)
-            self.assertIn("Orchestrator (Neon)", out)
+            self.assertNotIn("unmatched model names", out)
 
             # Verify persisted YAML round-trips cleanly and passes orch.py check.
             loaded = orch.load_file(assets_path)
@@ -151,7 +151,7 @@ class TestAntigravityGroupQuota(unittest.TestCase):
             self.assertEqual(by_name["Claude and GPT models"]["status"], "exhausted")
             self.assertEqual(by_name["Gemini Models"]["status"], "ok")
             self.assertEqual(by_name["Gemini 4 Argon"]["status"], "ok")
-            self.assertIn("Orchestrator (Neon)", by_name["Gemini Models"]["models"])
+            self.assertIn("gemini-pro-orchestrator-neon", by_name["Gemini Models"]["models"])
 
             check_args = mock.Mock(assets=assets_path, catalog=CATALOG_PATH)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1618,6 +1618,120 @@ class TestReviewerFallbackOrder(unittest.TestCase):
         rc, out = self._select("codex:gpt-6-2-sol", implementer="not-a-model")
         self.assertEqual(rc, 1)
         self.assertIn("not in catalog", out)
+
+
+class TestSupervisionAndCheckpointsExtensions(unittest.TestCase):
+    def setUp(self):
+        self.catalog = orch.load_file(CATALOG_PATH)
+
+    def test_catalog_includes_antigravity_orchestrator_neon_and_argon_unrated(self):
+        by_id = {m["id"]: m for m in self.catalog.get("models") or []}
+        self.assertIn("gemini-pro-orchestrator-neon", by_id)
+        self.assertIn("gemini-pro-orchestrator-g1-pro", by_id)
+
+        neon = by_id["gemini-pro-orchestrator-neon"]
+        self.assertEqual(neon["name"], "Orchestrator (Neon)")
+        self.assertEqual(neon["family"], "google")
+        self.assertEqual(neon["rating"], "unrated")
+        self.assertIn("subagents", neon.get("notes", ""))
+
+        argon = by_id["gemini-pro-orchestrator-g1-pro"]
+        self.assertEqual(argon["name"], "Orchestrator (Argon)")
+        self.assertEqual(argon["family"], "google")
+        self.assertEqual(argon["rating"], "unrated")
+        self.assertIn("subagents", argon.get("notes", ""))
+
+        name_map = orch._catalog_name_map(self.catalog)
+        self.assertEqual(name_map.get(orch.norm("Orchestrator (Neon)")), "gemini-pro-orchestrator-neon")
+        self.assertEqual(name_map.get(orch.norm("Orchestrator (Argon)")), "gemini-pro-orchestrator-g1-pro")
+
+    def test_check_validates_design_checkpoints_and_evidence_preferences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.yaml")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  design_checkpoints: auto\n"
+                    "  evidence: true\n"
+                    "providers: []\n"
+                )
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = orch.check(mock.Mock(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc, 1)
+            self.assertIn("design_checkpoints", buf.getvalue())
+            self.assertIn("evidence", buf.getvalue())
+
+            good = os.path.join(tmp, "good.yaml")
+            with open(good, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "preferences:\n"
+                    "  design_checkpoints: delegate\n"
+                    '  evidence: "red-green tests; skip recordings unless UI task"\n'
+                    "providers: []\n"
+                )
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                rc2 = orch.check(mock.Mock(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+            self.assertEqual(rc2, 0)
+
+    def test_deferred_launch_until_specific_provider_renews_via_resume_followup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_path = os.path.join(tmp, "assets.yaml")
+            with open(assets_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "version: 1\n"
+                    "providers:\n"
+                    "  - id: claude\n"
+                    "    policy: preserve\n"
+                    "    status: ok\n"
+                    "  - id: claude-extra\n"
+                    "    policy: normal\n"
+                    "    status: exhausted\n"
+                    "    exhausted_until: 2026-11-25T00:00:00+00:00\n"
+                )
+            add_args = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-20T21:00:00Z",
+                due=False,
+                add=True,
+                kind="resume",
+                ref="batch-deferred-1",
+                needs="provider:claude-extra",
+                after="2026-11-25T00:02:00+00:00",
+                done=None,
+                available=None,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orch.followups_cmd(add_args), 0)
+
+            # While claude-extra is exhausted (even though primary claude is ok), not due
+            due_before = mock.Mock(
+                assets=assets_path,
+                catalog=CATALOG_PATH,
+                now="2026-11-21T12:00:00Z",
+                due=True,
+                add=False,
+                done=None,
+                available="claude:claude-sonnet-5-5,claude-extra:claude-sonnet-5-5",
+            )
+            buf_before = io.StringIO()
+            with contextlib.redirect_stdout(buf_before):
+                self.assertEqual(orch.followups_cmd(due_before), 0)
+            self.assertEqual(buf_before.getvalue().strip(), "")
+
+            # After claude-extra renews (2026-11-25T00:05:00Z), due specifically via claude-extra
+            due_after = mock.Mock(**{**due_before.__dict__, "now": "2026-11-25T00:05:00Z"})
+            buf_after = io.StringIO()
+            with contextlib.redirect_stdout(buf_after):
+                self.assertEqual(orch.followups_cmd(due_after), 0)
+            self.assertIn(
+                "followup due: [resume] batch-deferred-1 (needs provider:claude-extra; usable via claude-extra)",
+                buf_after.getvalue(),
+            )
 
 
 if __name__ == "__main__":

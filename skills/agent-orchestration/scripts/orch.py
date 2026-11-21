@@ -36,6 +36,7 @@ DEFAULT_LOW_THRESHOLD = 85
 DEFAULT_EXHAUSTED_THRESHOLD = 98
 VALID_UI_FALLBACK = ("proceed", "defer", "ask")
 VALID_NEW_CONVERSATIONS = ("ask", "allow")
+VALID_DESIGN_CHECKPOINTS = ("ask", "delegate")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
 VALID_SURFACES = ("subagent", "conversation")
 VALID_FOLLOWUP_KINDS = ("ui-review", "preferred-review", "resume")
@@ -326,6 +327,9 @@ def model_group(p, mid, model_obj=None):
             keys.add(norm(model_obj["id"]))
         if model_obj.get("name"):
             keys.add(norm(model_obj["name"]))
+        for alias in (model_obj.get("aliases") or []):
+            if alias:
+                keys.add(norm(alias))
     for g in groups:
         if not isinstance(g, dict):
             continue
@@ -406,11 +410,15 @@ def unrated_higher_efforts(m, emerg):
     ]
 
 
-def _model_matches_need(m, need, floors=None, emerg=None):
+def _model_matches_need(m, need, floors=None, emerg=None, provider_id=None):
     if not isinstance(m, dict) or not need:
         return False
     n = str(need).strip().lower()
     if n in ("any", "*"):
+        return True
+    if n.startswith("provider:"):
+        return bool(provider_id) and norm(provider_id) == norm(n[len("provider:"):])
+    if provider_id and norm(provider_id) == norm(n):
         return True
     t_key = n[len("tier:"):].upper() if n.startswith("tier:") else n.upper()
     if t_key in FLOORS:
@@ -462,7 +470,7 @@ def find_usable_in_available(catalog, assets, now, need, available):
         m = cat.get(norm(mid))
         if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
             continue
-        if not _model_matches_need(m, need, floors=floors, emerg=emerg):
+        if not _model_matches_need(m, need, floors=floors, emerg=emerg, provider_id=prov):
             continue
         p, prov_st, _ = provider_state(assets, prov, now)
         if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st == "exhausted":
@@ -517,7 +525,7 @@ def find_usable_in_assets(catalog, assets, now, need):
                         m
                         and m.get("cost") != "emergency"
                         and m.get("rating") != "unrated"
-                        and _model_matches_need(m, need, floors=floors, emerg=emerg)
+                        and _model_matches_need(m, need, floors=floors, emerg=emerg, provider_id=pid)
                     ):
                         _add(f"{pid} ({g.get('name') or 'group'})")
                         break
@@ -529,7 +537,7 @@ def find_usable_in_assets(catalog, assets, now, need):
                         str(m.get("family") or "").lower() == fam
                         and m.get("cost") != "emergency"
                         and m.get("rating") != "unrated"
-                        and _model_matches_need(m, need, floors=floors, emerg=emerg)
+                        and _model_matches_need(m, need, floors=floors, emerg=emerg, provider_id=pid)
                     ):
                         _add(pid)
                         break
@@ -1629,6 +1637,9 @@ def _catalog_name_map(catalog):
         by_norm[norm(mid)] = mid
         if m.get("name"):
             by_norm[norm(m["name"])] = mid
+        for alias in (m.get("aliases") or []):
+            if alias:
+                by_norm[norm(alias)] = mid
     return by_norm
 
 
@@ -2285,6 +2296,22 @@ def check(a):
             if nc is not None and nc not in VALID_NEW_CONVERSATIONS:
                 errs.append(
                     f"assets preferences.new_conversations: bad value {nc} (expected {'|'.join(VALID_NEW_CONVERSATIONS)})"
+                )
+            dc = prefs.get("design_checkpoints")
+            if dc is not None and dc not in VALID_DESIGN_CHECKPOINTS:
+                errs.append(
+                    f"assets preferences.design_checkpoints: bad value {dc} "
+                    f"(expected {'|'.join(VALID_DESIGN_CHECKPOINTS)})"
+                )
+            ev = prefs.get("evidence")
+            if ev is not None and (
+                isinstance(ev, bool)
+                or not isinstance(ev, (str, list, dict))
+                or (isinstance(ev, str) and not ev.strip())
+                or (isinstance(ev, (list, dict)) and not ev)
+            ):
+                errs.append(
+                    f"assets preferences.evidence: bad value {ev} (expected non-empty string, list, or map)"
                 )
             lt = prefs.get("low_threshold")
             if lt is not None and (isinstance(lt, bool) or not isinstance(lt, (int, float)) or not (0 < lt <= 100)):

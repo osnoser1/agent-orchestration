@@ -1,0 +1,3 @@
+interface:
+  display_name: "Agent Doc Review Loop"
+  short_description: "Iterative writing-for-agents review loop until clean"
