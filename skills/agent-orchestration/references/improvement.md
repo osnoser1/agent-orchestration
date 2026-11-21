@@ -7,7 +7,7 @@ Use the local decision ledger to turn orchestration friction observed during ret
 `orch.py log` appends one JSON line per delegation to `ledger.jsonl` next to `assets.yaml` (`~/.config/agent-orchestration/ledger.jsonl`, or beside `$AGENT_ORCHESTRATION_ASSETS` / `--assets`).
 
 Log twice per delegation:
-- **At selection** (Step 3): `python3 scripts/orch.py log --event select --complexity <c> --risk <r> [--ui] [--provisional] --surface subagent|conversation --provider <p> --model <m> --effort <e> [--reviewer <r>] --repo <name>`
+- **At selection** (Step 3): `python3 scripts/orch.py log --event select --complexity <c> --risk <r> [--ui] [--provisional] --surface subagent|conversation --provider <p> --model <m> --effort <e> [--reviewer <r>] --repo <name>`; pass `--provisional` only when the work runs below its required tier (`below_tier: proceed` or `ui_fallback: proceed`), never for a tentative plan-named model
 - **At completion or failure** (Step 5 / 6): add `--event complete --outcome ok|failed|quota|stall|rework --findings <n>`, and for a failed child `--failure-class quota|infra|context-cap|tool|unknown` (`orch.py failure` prints these flags)
 
 Pass the same `--ref <item>` on every log of an item: `orch.py failure` counts retries from it, and `scripts/orch.py history [--ref <item>] [--last N]` prints one line per item (model, reviewer, outcome, findings, provisional, pending follow-ups) for which-model and which-reviewer questions.

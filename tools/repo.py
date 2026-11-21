@@ -552,6 +552,9 @@ def code_chunks(text):
             m = FENCE_CLOSE_RE.match(line)
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = None
+                if pending:  # an unfinished `\` continuation ends with its fence
+                    out.append((pending[0], pending[1]))
+                    pending = None
                 continue
             code = line.split(" #", 1)[0].rstrip()
             if pending:
@@ -575,6 +578,7 @@ def cli_mentions(text):
         hits = list(CLI_MENTION_RE.finditer(code))
         for i, m in enumerate(hits):
             tail = code[m.end(): hits[i + 1].start() if i + 1 < len(hits) else len(code)]
+            tail = re.split(r"&&|\|\||[|;]", tail)[0]  # flags after a shell operator belong to another command
             found.append((lineno, m.group(1), m.group(2), CLI_FLAG_RE.findall(tail)))
     return found
 
@@ -616,7 +620,7 @@ def md_sections(text):
 
 def check_done_when(root, report, texts):
     exempt = load_json(root, "tools/done-when-exempt.json", report, "done-when", required=False) or {}
-    if not isinstance(exempt, dict):
+    if not isinstance(exempt, dict) or not all(isinstance(v, list) for v in exempt.values()):
         report.error("done-when", "tools/done-when-exempt.json must map a file to a list of section titles")
         exempt = {}
     used = set()
@@ -636,7 +640,7 @@ def check_done_when(root, report, texts):
             if needs and not DONE_WHEN_RE.search(body):
                 report.error("done-when", "%s: section %r has no `*Done when*` line" % (rel, title))
     for rel, titles in sorted(exempt.items()):
-        for title in titles if isinstance(titles, list) else []:
+        for title in titles:
             if (rel, title) not in used:
                 report.error("done-when", "tools/done-when-exempt.json: %s has no section %r" % (rel, title))
 

@@ -427,6 +427,15 @@ class TestCliRule(unittest.TestCase):
             (7, "orch", "status", []),
         ])
 
+    def test_unfinished_continuation_does_not_leak_into_the_next_fence(self):
+        text = "```\nfoo \\\n```\n\n```\norch.py check\n--bogus\n```\n"
+        self.assertEqual(repo.cli_mentions(text), [(6, "orch", "check", [])])
+
+    def test_flags_stop_at_a_shell_operator(self):
+        for op in ("&&", "||", "|", ";"):
+            text = "`orch.py check --full %s grep --pattern`\n" % op
+            self.assertEqual(repo.cli_mentions(text), [(1, "orch", "check", ["--full"])], op)
+
     def test_one_span_with_two_mentions_splits_the_flags(self):
         self.assertEqual(repo.cli_mentions("`orch.py check --x; orch.py select --y`\n"),
                          [(1, "orch", "check", ["--x"]), (1, "orch", "select", ["--y"])])
@@ -484,6 +493,12 @@ class TestDoneWhenRule(unittest.TestCase):
         self.assertEqual(self.errors_for(self.REF, "## Rank\n1. a\n2. b\n", exempt={self.REF: ["Rank"]}), [])
         stale = self.errors_for(self.REF, "## Rank\n- a\n", exempt={self.REF: ["Gone"]})
         self.assertEqual(stale, ["done-when: tools/done-when-exempt.json: %s has no section 'Gone'" % self.REF])
+
+    def test_exemption_for_a_missing_file_or_a_non_list_is_an_error(self):
+        gone = self.errors_for(self.REF, "## S\n- a\n", exempt={"skills/agent-orchestration/references/nope.md": ["S"]})
+        self.assertEqual(gone, ["done-when: tools/done-when-exempt.json: skills/agent-orchestration/references/nope.md has no section 'S'"])
+        bad = self.errors_for(self.REF, "## S\n- a\n", exempt={self.REF: "S"})
+        self.assertEqual(bad, ["done-when: tools/done-when-exempt.json must map a file to a list of section titles"])
 
     def test_real_exemptions_name_real_sections(self):
         self.assertEqual([e for e in repo.run_checks(repo.REPO_ROOT).errors if e.startswith("done-when")], [])

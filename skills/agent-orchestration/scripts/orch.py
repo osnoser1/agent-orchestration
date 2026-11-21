@@ -2862,7 +2862,7 @@ def log_cmd(a):
 
 
 def read_ledger_refs(ledger_path):
-    """`(runs, unreferenced)` from the ledger: per ref the latest `select` and `complete` entries, the last reviewer seen, and its file position."""
+    """`(runs, unreferenced)` from the ledger: per ref the latest attempt (a `select` starts a new one, dropping the earlier completion and reviewer) and its file position."""
     runs, unreferenced = {}, 0
     try:
         with open(ledger_path, encoding="utf-8") as fh:
@@ -2874,11 +2874,14 @@ def read_ledger_refs(ledger_path):
                 if not isinstance(e, dict):
                     continue
                 ref = e.get("ref")
-                if not isinstance(ref, str) or not ref:
+                if not isinstance(ref, str) or not ref.strip():
                     unreferenced += 1
                     continue
-                r = runs.setdefault(ref, {})
+                r = runs.setdefault(_clean_ref(ref), {})
                 r["pos"] = pos
+                if e.get("event") == "select":  # a new attempt (retry, other model) starts clean
+                    r.pop("complete", None)
+                    r.pop("reviewer", None)
                 if e.get("event") in ("select", "complete"):
                     r[e["event"]] = e
                 if e.get("reviewer"):
@@ -2928,8 +2931,10 @@ def history_cmd(a):
     if last is not None:
         refs = refs[: max(last, 0)]
     lines = [history_line(r, runs[r], pending.get(r)) for r in refs]
+    shown = set(refs)  # pending follow-ups are counted for the refs listed below
     for ref in sorted(pending):  # follow-ups whose item has no ledger entry
         if ref not in runs and (not want or ref == want) and last is None:
+            shown.add(ref)
             lines.append(f"{ref}: no ledger entry; pending " + ", ".join(str(fu.get("kind", "review")) for fu in pending[ref]))
     if want and not lines:
         print(f"error: no ledger entry or follow-up for ref {want}")
@@ -2937,7 +2942,7 @@ def history_cmd(a):
         return 1
     for line in _capped(lines):
         print(line)
-    n_pending = sum(len(v) for k, v in pending.items() if not want or k == want)
+    n_pending = sum(len(v) for k, v in pending.items() if k in shown)
     tail = f"ok: {len(lines)} ref(s); {n_pending} pending follow-up(s)"
     if unreferenced and not want:
         tail += f"; {unreferenced} ledger entr{'y has' if unreferenced == 1 else 'ies have'} no ref (log with --ref to track them)"
@@ -3485,7 +3490,7 @@ def build_parser():
         p = sub.add_parser(
             n,
             usage=f"orch.py {n} [options]",  # the options below list everything; a wrapped usage block would repeat them
-            formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=50, width=110),
+            formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=50, width=154),
             epilog="example: python3 scripts/orch.py " + EXAMPLES[n],
         )
         p.add_argument("--full", action="store_true", help="print every detail line and remove the list caps")
@@ -3543,7 +3548,8 @@ def build_parser():
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
             p.add_argument("--repo")
-            p.add_argument("--provisional", action="store_true")
+            p.add_argument("--provisional", action="store_true",
+                           help="work ran below the required tier (below_tier or ui_fallback proceed); needs a tier-meeting re-review")
             p.add_argument("--ref", help="short item label (no paths); makes retries countable")
             p.add_argument("--failure-class", choices=list(VALID_FAILURE_CLASSES))
         if n == "history":

@@ -3476,6 +3476,29 @@ class TestHistoryCommand(unittest.TestCase):
         _, lines = self.history()
         self.assertEqual(lines[0], "PR-1: claude:claude-opus-5-5 @ high; reviewer none; open; provisional")
 
+    def test_a_new_select_starts_a_clean_attempt(self):
+        retry = {"event": "select", "ref": "PR-2", "provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+        self.write_ledger(self.ENTRIES + [retry])
+        _, lines = self.history(ref="PR-2")
+        self.assertEqual(lines[0], "PR-2: claude:claude-sonnet-5-5 @ low; reviewer none; open; pending resume")
+        self.write_ledger(self.ENTRIES + [dict(retry, reviewer="codex:gpt-6-2-sol")])  # a select may carry its own reviewer
+        self.assertIn("reviewer codex:gpt-6-2-sol; open", self.history(ref="PR-2")[1][0])
+
+    def test_last_counts_pending_follow_ups_only_for_the_shown_refs(self):
+        _, lines = self.history(last=1)  # PR-2 only; PR-9's follow-up is not shown
+        self.assertEqual(lines[-1], "ok: 1 ref(s); 1 pending follow-up(s); 1 ledger entry has no ref (log with --ref to track them)")
+
+    def test_ledger_refs_are_cleaned_when_read(self):
+        self.write_ledger([{"event": "select", "ref": "/home/someone/work/PR-1", "provider": "p", "model": "m", "effort": "high"}])
+        _, lines = self.history()
+        self.assertTrue(lines[0].startswith("PR-1: p:m @ high"), lines)
+        self.assertNotIn("/home", "\n".join(lines))
+
+    def test_provisional_flag_help_says_when_to_use_it(self):
+        sub = next(a for a in orch.build_parser()._actions if a.dest == "cmd").choices["log"]
+        text = next(a.help for a in sub._actions if "--provisional" in a.option_strings)
+        self.assertIn("below the required tier", text)
+
     def test_unknown_ref_is_an_error_with_an_action(self):
         rc, lines = self.history(ref="PR-404")
         self.assertEqual(rc, 1)

@@ -85,7 +85,7 @@ With no usable model at any tier, every mode behaves like `wait` (exit `4` when 
 
 ## Reviewer and review gate
 - **Tier**: equal to the implementer's tier; `high` risk bumps the reviewer one tier up (capped at T4).
-- **Chosen at step start**: models a plan names ahead of time are provisional. When each role's step starts (implementer, then reviewer), run `scripts/orch.py probe`, then `select` from the models usable at that moment. At the reviewer step pass `--implementer <model-id>` so the reviewer is ranked against the model that actually implemented.
+- **Chosen at step start**: models a plan names ahead of time are tentative. When each role's step starts (implementer, then reviewer), run `scripts/orch.py probe`, then `select` from the models usable at that moment. At the reviewer step pass `--implementer <model-id>` so the reviewer is ranked against the model that actually implemented.
 - **Fallback order** (the first step with a usable model wins and steps 2-5 are noted in the report; it never blocks, except for the `high`-risk `stage` rule in **Below-tier handling**). Capability comes before independence: a below-tier reviewer misses defects, while a same-family tier-meeting reviewer with fresh context still catches most of them.
   1. Different family meeting the reviewer tier. On a UI/UX task the primary already carries `ui-ux-review`, so this reviewer needs no `ui-ux-review`.
   2. Same family, different model, meeting the reviewer tier, with fresh context.
