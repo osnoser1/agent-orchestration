@@ -70,7 +70,7 @@ class TestRealRepo(unittest.TestCase):
     def test_self_test_fires_every_rule(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = repo.main(["check", "--self-test"])
+            rc = repo.main(["check", "--self-test", "--full"])
         self.assertEqual(rc, 0, buf.getvalue())
         for rule in ("version", "harness", "links", "budget", "leak", "model", "pinned", "skills"):
             self.assertIn("%s fired" % rule, buf.getvalue())
@@ -200,7 +200,7 @@ class TestRelease(unittest.TestCase):
             ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "dev\n"),
         }))
         self.assertEqual(rc, 1)
-        self.assertEqual(len([l for l in lines if l.startswith("error:")]), 2)
+        self.assertEqual(len([l for l in lines if l.startswith("error: release:")]), 2)
 
     def test_unreachable_origin_blocks_release(self):
         self.assertBlocked(FakeRun({("git", "fetch", "--quiet", "origin", "main"): (1, "")}), "git fetch origin main failed")

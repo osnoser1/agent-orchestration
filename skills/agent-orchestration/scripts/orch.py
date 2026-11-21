@@ -19,6 +19,7 @@
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--ledger F] [--assets F] [--now ISO]
   orch.py scope     --base REF [--max-files N] [--max-lines N] [--expect GLOB ...] [--repo DIR]
+  Every command also takes --full.
 
 Exit codes:
   0  ok
@@ -27,7 +28,10 @@ Exit codes:
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
-`select`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+`probe`, `select`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+`check` ends with `ok: ...` or `error: N problem(s); action: ...`.
+Every command is compact by default: lists stop at 10 items (`... N more (rerun with --full)`), repeated notes group by
+reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
 
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
 """
@@ -84,6 +88,75 @@ def _opt_int(a, name, default=None):
 def _opt_num(a, name, default=None):
     v = getattr(a, name, None)
     return v if (isinstance(v, (int, float)) and not isinstance(v, bool)) else default
+
+
+# ---------- output contract (tests/test_output_contract.py is the source of truth) ----------
+# Compact by default: one `action:` or `ok:` line, repeated notes grouped by reason, lists capped at CAP.
+# `--full` prints every detail line and removes the caps.
+CAP = 10
+_FULL = False
+PROVIDER_LEVEL_NOTES = (  # notes about a whole provider: group by provider; any other note names its model
+    "provider exhausted",
+    "pay-per-use/avoid, skipped",
+    "previous exhaustion expired -> treating provider as ok",
+    "provider low (blocked by pre-flight threshold)",
+)
+
+
+def _begin(a):
+    """Read `--full` once per command; helpers below read the module flag."""
+    global _FULL
+    _FULL = _opt_bool(a, "full")
+    return _FULL
+
+
+def _more(n):
+    return f"… {n} more (rerun with --full)"
+
+
+def _capped(items):
+    """`items` limited to CAP unless --full, plus a trailing `… N more` entry when some were cut."""
+    items = list(items)
+    if _FULL or len(items) <= CAP:
+        return items
+    return items[:CAP] + [_more(len(items) - CAP)]
+
+
+def _detail(text):
+    """Print a line only under --full."""
+    if _FULL:
+        print(text)
+
+
+def _note_lines(notes):
+    """`note:` lines for select's candidate notes: grouped by reason (compact) or one per candidate (--full)."""
+    if _FULL:
+        return ["  note: " + n for n in notes]
+    groups = {}
+    for n in notes:
+        pair, sep, reason = n.partition(": ")
+        if not sep:
+            pair, reason = "", n
+        label = pair.partition(":")[0] if reason in PROVIDER_LEVEL_NOTES else pair
+        counts = groups.setdefault(reason, {})
+        counts[label] = counts.get(label, 0) + 1
+    lines = []
+    for reason, counts in groups.items():
+        items = [f"{k} ({v})" if v > 1 else k for k, v in counts.items() if k]
+        lines.append(f"note: {reason}" + (": " + ", ".join(_capped(items)) if items else ""))
+    return _capped(lines)
+
+
+def _print_notes(notes):
+    for line in _note_lines(notes):
+        print(line)
+
+
+def _due_line(fu, usable):
+    return (
+        f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+        f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
+    )
 
 
 # ---------- mini YAML ----------
@@ -628,53 +701,45 @@ def pending_ready_followups(catalog, assets, now):
     return ready
 
 
+def _print_due(catalog, assets, now, available):
+    """Print the due follow-ups (capped); return how many are due."""
+    due = due_followups(catalog, assets, now, available=available)
+    for line in _capped([_due_line(fu, usable) for fu, usable in due]):
+        print(line)
+    return len(due)
+
+
+def _pending_line(fu, usable=None):
+    head = f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
+    if usable:
+        return head + f"(usable in assets via {', '.join(usable)}; pass --available to check this harness)"
+    return head + f"(after {fu.get('after') or 'next reset'})"
+
+
 def print_followups_status(catalog, assets, now, available=None, due_only=True):
+    """Print follow-up lines (capped); return how many are due for this harness (0 without `available`)."""
     all_fus = [x for x in (assets or {}).get("followups") or [] if isinstance(x, dict)]
+    lines, n_due = [], 0
     if available:
         due = due_followups(catalog, assets, now, available=available)
+        n_due = len(due)
         due_ids = {id(fu) for fu, _ in due}
-        for fu, usable in due:
-            print(
-                f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-                f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
-            )
+        lines += [_due_line(fu, usable) for fu, usable in due]
         if not due_only:
-            for fu in all_fus:
-                if id(fu) not in due_ids:
-                    after = fu.get("after") or "next reset"
-                    print(
-                        f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
-                        f"{fu.get('ref', '')} (after {after})"
-                    )
+            lines += [_pending_line(fu) for fu in all_fus if id(fu) not in due_ids]
             if not all_fus:
-                print("no followups")
-        return
-
-    ready = pending_ready_followups(catalog, assets, now)
-    ready_map = {id(fu): usable for fu, usable in ready}
-    if due_only:
-        for fu, usable in ready:
-            print(
-                f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
-                f"{fu.get('ref', '')} (usable in assets via {', '.join(usable)}; pass --available to check this harness)"
-            )
-        return
-
-    for fu in all_fus:
-        usable = ready_map.get(id(fu))
-        if usable:
-            print(
-                f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
-                f"{fu.get('ref', '')} (usable in assets via {', '.join(usable)}; pass --available to check this harness)"
-            )
+                lines.append("no followups")
+    else:
+        ready_map = {id(fu): usable for fu, usable in pending_ready_followups(catalog, assets, now)}
+        if due_only:
+            lines += [_pending_line(fu, usable) for fu in all_fus for usable in [ready_map.get(id(fu))] if usable]
         else:
-            after = fu.get("after") or "next reset"
-            print(
-                f"followup pending: needs {fu.get('needs')} — [{fu.get('kind', 'review')}] "
-                f"{fu.get('ref', '')} (after {after})"
-            )
-    if not all_fus:
-        print("no followups")
+            lines += [_pending_line(fu, ready_map.get(id(fu))) for fu in all_fus]
+            if not all_fus:
+                lines.append("no followups")
+    for line in _capped(lines):
+        print(line)
+    return n_due
 
 
 def classify_unmet_preference(catalog, assets, available, need, floor, now, fail_on_low=False):
@@ -1040,7 +1105,7 @@ def print_reviewer(rt, pick, impl_model, floor):
         4: "same family, different model, fresh context, below tier",
         5: "same model, fresh conversation",
     }
-    print(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
+    _detail(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
     if stage == 1:
         return
     if stage == 2:
@@ -1087,11 +1152,11 @@ def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low
 def _schedule_resume(label, earliest_dt):
     """Print the SCHEDULE_RESUME line; return the resume time (earliest reset + margin) or None."""
     if not earliest_dt:
-        print(f"SCHEDULE_RESUME: all usable {label} exhausted (reset time unknown).")
+        _detail(f"SCHEDULE_RESUME: all usable {label} exhausted (reset time unknown).")
         return None
     earliest_iso = earliest_dt.isoformat(timespec="seconds")
     resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
-    print(f"SCHEDULE_RESUME: all usable {label} exhausted (earliest reset: {earliest_iso}; schedule resume at {resume_iso}).")
+    _detail(f"SCHEDULE_RESUME: all usable {label} exhausted (earliest reset: {earliest_iso}; schedule resume at {resume_iso}).")
     return resume_iso
 
 
@@ -1111,14 +1176,14 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
     m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
     if not m:
-        print(f"implementer {impl_id}: not in catalog")
+        _detail(f"implementer {impl_id}: not in catalog")
         _action(f"fix the --implementer id ({impl_id} is not in the catalog) and rerun select")
         return 1
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
     ref = _resume_ref(_opt_str(a, "ref"), assets_exists)
-    print(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
-    print(f"implementer (given): {m['family']} / {m['id']}")
+    _detail(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
+    _detail(f"implementer (given): {m['family']} / {m['id']}")
     pick, wait = choose_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode)
     if pick:
         print_reviewer(rt, pick, m, floors[rt])
@@ -1129,7 +1194,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         return 0
     if wait:
         earliest_dt, needs = wait
-        print(
+        _detail(
             f"NO REVIEWER: high-risk work under below_tier=stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
             "wait for one to renew"
         )
@@ -1148,9 +1213,8 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         pick_top=True,
         task_floor=floors[rt],
     )
-    print("NO REVIEWER: no non-excluded model remains (quota recovery order in references/harnesses.md)")
-    for n in notes:
-        print("  note:", n)
+    _detail("NO REVIEWER: no non-excluded model remains (quota recovery order in references/harnesses.md)")
+    _print_notes(notes)
     if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["exhausted"] == 0):
         _stop_action(3, None, "the review", _gate_cause(reasons))
         return 3
@@ -1169,13 +1233,14 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
 
 
 def select(a):
+    _begin(a)
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
     catalog = load_catalog_with_local(DEF_CATALOG if not _opt_str(a, "catalog") else _opt_str(a, "catalog"), ap)
     assets_exists = os.path.exists(ap)
     assets = load_file(ap) if assets_exists else None
     if assets is None:
-        print(f"[note] no assets file at {ap}: defaults (all providers ok, policy normal)")
+        _detail(f"[note] no assets file at {ap}: defaults (all providers ok, policy normal)")
     prefs = (assets or {}).get("preferences") or {}
     floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     tier = TIER[a.complexity][a.risk]
@@ -1213,7 +1278,7 @@ def select(a):
         fail_on_low=bool(a.fail_on_low),
     )
     cands.sort(key=lambda c: c["key"])
-    print(f"tier {tier} (>= {floors[tier]})")
+    _detail(f"tier {tier} (>= {floors[tier]})")
     if not cands:
         below_cands, _, _ = candidates(
             catalog,
@@ -1259,12 +1324,12 @@ def select(a):
                 if target
                 else f"first usable {tier} (>= {floors[tier]}) model"
             )
-            print(
+            _detail(
                 f"STAGE (below_tier=stage): no usable candidate meets {tier} (>= {floors[tier]}); "
                 f"starting phase 1 below tier (earliest {tier} reset: {reset_txt}{resume_sched_txt})."
             )
-            print(f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}")
-            print(
+            _detail(f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}")
+            _detail(
                 f"phase 2 (risky change, destructive steps, review; requires {tier} >= {floors[tier]}): "
                 f"at the phase 1 boundary switch same child in place to {target_txt} immediately. "
                 "Send one continue message only for a verified or observed (harness, provider) pair that resumes "
@@ -1277,16 +1342,11 @@ def select(a):
             if ref_val:
                 assets = load_file(ap)
             if a.risk == "high":
-                print(f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); select it when the review step starts in phase 2")
+                _detail(f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); select it when the review step starts in phase 2")
             else:
-                print(f"reviewer ({rt}): select when the review step starts in phase 2 (fallback order)")
-            for n in notes:
-                print("  note:", n)
-            for fu, usable in due_followups(catalog, assets, now, available=avail):
-                print(
-                    f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-                    f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
-                )
+                _detail(f"reviewer ({rt}): select when the review step starts in phase 2 (fallback order)")
+            _print_notes(notes)
+            _print_due(catalog, assets, now, avail)
             _action(
                 f"stage: dispatch Phase 1 {_cand_ref(impl)} now; switch to "
                 + (_cand_ref(target) if target else f"the first usable {tier} model")
@@ -1297,7 +1357,7 @@ def select(a):
         if can_stage and below_tier_mode == "proceed":
             impl = below_cands[0]
             reset_txt = earliest_iso or "unknown"
-            print(
+            _detail(
                 f"[provisional] (below_tier=proceed): no usable candidate meets {tier} (>= {floors[tier]}, "
                 f"earliest reset: {reset_txt}); proceeding with best available below-tier model for all phases "
                 f"— tier-meeting ({tier}) re-review follow-up required"
@@ -1305,24 +1365,22 @@ def select(a):
             _record_resume(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
             if ref_val:
                 assets = load_file(ap)
-            print(f"implementer: {fmt(impl)}")
+            _detail(f"implementer: {fmt(impl)}")
             pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
             if pick:
                 print_reviewer(rt, pick, impl["model"], floors[rt])
-            for n in notes:
-                print("  note:", n)
-            for fu, usable in due_followups(catalog, assets, now, available=avail):
-                print(
-                    f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-                    f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
-                )
+            _print_notes(notes)
+            _print_due(catalog, assets, now, avail)
             _action(
                 f"dispatch {_cand_ref(impl)} now (below {tier}); choose the reviewer when its step starts; "
                 "mark it provisional (log --provisional)"
             )
             return 0
 
-        print("NO CANDIDATE:", *notes, sep="\n  ")
+        if _FULL:
+            print("NO CANDIDATE:", *notes, sep="\n  ")
+        else:
+            _print_notes(notes)
         if saw_ex_tier and reasons["threshold"] == 0:
             sched_iso = _schedule_resume(f"{tier} candidates", earliest_dt)
             _record_resume(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
@@ -1359,25 +1417,23 @@ def select(a):
         else:
             reset_txt = earliest or "unknown"
             if fallback_mode == "defer":
-                print(
+                _detail(
                     f"DEFER: preferred {pref_need} exhausted (earliest reset: {reset_txt}). "
                     "Recommend waiting for reset (non-urgent work)."
                 )
-                print(f"  fallback if urgent: {fmt(impl)}")
-                for n in notes:
-                    print("  note:", n)
+                _detail(f"  fallback if urgent: {fmt(impl)}")
+                _print_notes(notes)
                 _action(
                     f"hold until {_plus_margin(earliest) or 'the preferred model renews (time unknown)'} "
                     f"(preferred {pref_need} exhausted); record a resume follow-up"
                 )
                 return 3
             if fallback_mode == "ask":
-                print(
+                _detail(
                     f"ASK: preferred {pref_need} exhausted (earliest reset: {reset_txt}). "
                     f"Ask the user once: proceed provisionally with {fmt(impl)} (and queue follow-up review) or wait for reset?"
                 )
-                for n in notes:
-                    print("  note:", n)
+                _print_notes(notes)
                 _action(
                     f"ask the user once (preferred {pref_need} exhausted: proceed provisionally with "
                     f"{_cand_ref(impl)} and queue a follow-up review, or wait until {_plus_margin(earliest) or 'it renews'})"
@@ -1385,7 +1441,7 @@ def select(a):
                 return 3
             # proceed (default)
             provisional = True
-            print(
+            _detail(
                 f"[provisional] preferred {pref_need} exhausted (earliest reset: {reset_txt}); "
                 "proceeding with fallback model — follow-up review required"
             )
@@ -1401,9 +1457,9 @@ def select(a):
                 print(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
                 assets = load_file(ap)
             else:
-                print("[note] no assets file; skipped recording follow-up")
+                _detail("[note] no assets file; skipped recording follow-up")
 
-    print(f"implementer: {fmt(impl)}")
+    _detail(f"implementer: {fmt(impl)}")
 
     rt = reviewer_tier(tier, a.risk)
     pick, wait = choose_reviewer(
@@ -1412,17 +1468,12 @@ def select(a):
     if pick:
         print_reviewer(rt, pick, impl["model"], floors[rt])
     elif wait:
-        print(
+        _detail(
             f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
             f"wait for one to renew (needs {wait[1]})"
         )
-    for n in notes:
-        print("  note:", n)
-    for fu, usable in due_followups(catalog, assets, now, available=avail):
-        print(
-            f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
-            f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
-        )
+    _print_notes(notes)
+    _print_due(catalog, assets, now, avail)
     _action(
         f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts"
         + ("; mark it provisional (log --provisional)" if provisional else "")
@@ -1753,6 +1804,7 @@ def _find_provider_group(p, group_arg=None, model_arg=None, catalog=None):
 
 
 def exhaust(a):
+    _begin(a)
     now = get_now(_opt_str(a, "now"))
     t = parse_reset(a.message, now)
     raw_note = a.message.replace('"', "'")[:200]
@@ -1769,9 +1821,10 @@ def exhaust(a):
         if cur_groups and partitions_quota(cur_p):
             names = ", ".join(str(g.get("name")) for g in cur_groups)
             print(
-                f"{a.provider}: quota is split into groups ({names}); pass --model <id> for the model that hit "
+                f"error: {a.provider}: quota is split into groups ({names}); pass --model <id> for the model that hit "
                 "the limit (or --group <name>) so the other groups stay usable"
             )
+            _action("rerun exhaust with --model <id> (or --group <name>)")
             return 1
 
     if group_arg or model_arg:
@@ -1791,7 +1844,8 @@ def exhaust(a):
                 target_g = {"name": cid, "models": [cid]}
                 groups.append(target_g)
             if target_g is None:
-                print(f"{a.provider}: no matching quota group for {group_arg or model_arg}")
+                print(f"error: {a.provider}: no matching quota group for {group_arg or model_arg}")
+                _action("rerun exhaust with a --group name or --model id listed in the provider's groups in assets.yaml")
                 return 1
             target_g["status"] = "exhausted"
             target_g["exhausted_until"] = until
@@ -2342,10 +2396,11 @@ def _infer_probe(p):
 
 
 def probe(a):
+    _begin(a)
     ap = a.assets or def_assets()
     if os.path.exists(ap) or _opt_bool(a, "init"):
         return _probe(a, ap)
-    print(f"[note] no assets file at {ap}: probing with defaults without saving (pass --init to create it)")
+    _detail(f"[note] no assets file at {ap}: probing with defaults without saving (pass --init to create it)")
     tmp_dir = tempfile.mkdtemp(prefix="orch-probe-")
     try:
         return _probe(a, os.path.join(tmp_dir, "assets.yaml"), cache_home=ap)
@@ -2379,6 +2434,12 @@ def _probe(a, ap, cache_home=None):
     exhausted_threshold = (
         ex_arg if ex_arg is not None else prefs.get("exhausted_threshold", DEFAULT_EXHAUSTED_THRESHOLD)
     )
+
+    lines = []  # (text, shown in compact mode); compact keeps recoveries, errors and non-ok providers
+    tally = {}
+
+    def emit(text, compact=True):
+        lines.append((text, compact))
 
     # 1. Auto-clear expired exhausted entries (provider and group level) and persist them once per scope.
     for p in providers:
@@ -2433,16 +2494,16 @@ def _probe(a, ap, cache_home=None):
                     if ck not in fields:
                         p.pop(ck, None)
                 if report_p:
-                    print(f"{pid}: expired lockout cleared -> {st_after}")
+                    emit(f"{pid}: expired lockout cleared -> {st_after}")
                 for gname in cleared_names:
-                    print(f"{pid} ({gname}): expired lockout cleared -> ok")
+                    emit(f"{pid} ({gname}): expired lockout cleared -> ok")
             continue
 
         # Ungrouped account, or per-model cap groups layered on the account-level status.
         if cleared_names:
             edit_provider(ap, pid, {"groups": groups}, now=now)
             for gname in cleared_names:
-                print(f"{pid} ({gname}): expired lockout cleared -> ok")
+                emit(f"{pid} ({gname}): expired lockout cleared -> ok")
         if p_expired:
             clear = ["exhausted_until", "status_note", "unparsed"]
             p_reset = parse_time(p.get("resets_at"), now)
@@ -2453,7 +2514,7 @@ def _probe(a, ap, cache_home=None):
             for ck in clear:
                 p.pop(ck, None)
             if report_p:
-                print(f"{pid}: expired lockout cleared -> ok")
+                emit(f"{pid}: expired lockout cleared -> ok")
 
     # 2. Run probes.
     targets = [p for p in providers if (not a.provider or p.get("id") == a.provider)]
@@ -2470,7 +2531,8 @@ def _probe(a, ap, cache_home=None):
         kind = cfg.get("kind")
         fn = probers.get(kind)
         if not fn:
-            print(f"{pid}: unverified (unknown probe kind {kind})")
+            emit(f"{pid}: unverified (unknown probe kind {kind})")
+            tally["unverified"] = tally.get("unverified", 0) + 1
             continue
         if kind == "claude":
             ttl = prefs.get("usage_cache_ttl_seconds")
@@ -2479,7 +2541,8 @@ def _probe(a, ap, cache_home=None):
             cfg = {**cfg, "_cache_dir": cache_dir, "_fresh": _opt_bool(a, "fresh"), "_cache_ttl": ttl}
         result, err = fn(cfg, now, catalog) if kind == "antigravity" else fn(cfg, now)
         if err:
-            print(f"{pid}: {err}")
+            emit(f"{pid}: {err}")
+            tally["error"] = tally.get("error", 0) + 1
             continue
 
         if "groups" in result:
@@ -2589,15 +2652,16 @@ def _probe(a, ap, cache_home=None):
             usable = sum(1 for g in persisted_groups if g["status"] != "exhausted")
             eff_reset = p["exhausted_until"] if keep_prov_err else r_at
             reset_msg = f", resets {eff_reset}" if (st == "exhausted" and eff_reset) else ""
-            print(f"{pid}: {st} ({usable}/{len(persisted_groups)} groups usable{reset_msg})")
+            emit(f"{pid}: {st} ({usable}/{len(persisted_groups)} groups usable{reset_msg})", st != "ok")
+            tally[st] = tally.get(st, 0) + 1
             for g in persisted_groups:
                 g_eff_reset = g.get("exhausted_until") or g.get("resets_at")
                 gr = f", resets {g_eff_reset}" if g_eff_reset else ""
                 ms = ", ".join(g.get("models") or [])
-                print(f"  group {g['name']}: {g['status']} ({g['used_percent']}% of {g['window']}{gr}) [{ms}]")
+                emit(f"  group {g['name']}: {g['status']} ({g['used_percent']}% of {g['window']}{gr}) [{ms}]", False)
             unmatched = result.get("unmatched") or []
             if unmatched:
-                print(f"  note: unmatched model names kept as-is: {', '.join(unmatched)}")
+                emit(f"  note: unmatched model names kept as-is: {', '.join(unmatched)}", False)
             continue
 
         pct = result["used_percent"]
@@ -2629,17 +2693,27 @@ def _probe(a, ap, cache_home=None):
         edit_provider(ap, pid, fields, now=now, clear_keys=clear)
         eff_reset = p["exhausted_until"] if keep_err else r_at
         reset_msg = f", resets {eff_reset}" if eff_reset else ""
-        print(f"{pid}: {st} ({pct}% of {win}{reset_msg})")
+        emit(f"{pid}: {st} ({pct}% of {win}{reset_msg})", st != "ok")
+        tally[st] = tally.get(st, 0) + 1
 
+    for text in _capped([t for t, compact in lines if _FULL or compact]):
+        print(text)
     updated_assets = load_file(ap) or {}
     avail_str = _opt_str(a, "available")
     avail = [x.strip() for x in avail_str.split(",") if x.strip()] if avail_str else None
-    print_followups_status(catalog, updated_assets, now, available=avail, due_only=True)
+    n_due = print_followups_status(catalog, updated_assets, now, available=avail, due_only=True)
+    total = sum(tally.values())
+    summary = ", ".join(f"{tally[k]} {k}" for k in ("ok", "low", "exhausted", "unverified", "error") if tally.get(k))
+    _action(
+        (f"probed {total} provider(s) ({summary}); " if total else "no provider was probed; ")
+        + "run select to apply them" + (f"; {n_due} follow-up(s) due above" if n_due else "")
+    )
 
     return worst
 
 
 def followups_cmd(a):
+    _begin(a)
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
     catalog_path = _opt_str(a, "catalog") or DEF_CATALOG
@@ -2663,12 +2737,14 @@ def followups_cmd(a):
     if _opt_bool(a, "add"):
         kind = _opt_str(a, "kind") or "ui-review"
         if kind not in VALID_FOLLOWUP_KINDS:
-            print(f"invalid followup kind: {kind} (expected {'|'.join(VALID_FOLLOWUP_KINDS)})")
+            print(f"error: invalid followup kind: {kind} (expected {'|'.join(VALID_FOLLOWUP_KINDS)})")
+            _action("rerun followups --add with a valid --kind")
             return 1
         ref_val = _opt_str(a, "ref")
         needs = _opt_str(a, "needs") or ("any" if kind == "resume" else "ui-ux-review")
         if not ref_val:
-            print("followups --add requires --ref")
+            print("error: followups --add requires --ref")
+            _action("rerun followups --add with --ref <item>")
             return 1
         after = _opt_str(a, "after")
         if kind == "resume":
@@ -2684,7 +2760,11 @@ def followups_cmd(a):
         return 0
 
     assets = load_file(ap) if os.path.exists(ap) else {}
-    print_followups_status(catalog, assets, now, available=avail, due_only=_opt_bool(a, "due"))
+    n_due = print_followups_status(catalog, assets, now, available=avail, due_only=_opt_bool(a, "due"))
+    _action(
+        f"run the {n_due} due follow-up(s) above, then clear each with followups --done <ref>"
+        if n_due else "no follow-up is due" + ("" if avail else "; pass --available to check this harness")
+    )
     return 0
 
 
@@ -2697,6 +2777,7 @@ def _clean_ref(ref):
 
 
 def log_cmd(a):
+    _begin(a)
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
     ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
@@ -2704,14 +2785,17 @@ def log_cmd(a):
     outcome = _opt_str(a, "outcome")
     event = _opt_str(a, "event") or ("complete" if outcome else "select")
     if event not in ("select", "complete"):
-        print(f"invalid event: {event}")
+        print(f"error: invalid event: {event}")
+        _action("rerun log with a valid --event select|complete")
         return 1
     if outcome is not None and outcome not in VALID_OUTCOMES:
-        print(f"invalid outcome: {outcome}")
+        print(f"error: invalid outcome: {outcome}")
+        _action("rerun log with --outcome " + "|".join(VALID_OUTCOMES))
         return 1
     surface = _opt_str(a, "surface") or "subagent"
     if surface not in VALID_SURFACES:
-        print(f"invalid surface: {surface}")
+        print(f"error: invalid surface: {surface}")
+        _action("rerun log with a valid --surface subagent|conversation")
         return 1
 
     raw_repo = _opt_str(a, "repo") or os.getcwd()
@@ -2740,7 +2824,8 @@ def log_cmd(a):
     fclass = _opt_str(a, "failure_class")
     if fclass:
         if fclass not in VALID_FAILURE_CLASSES:
-            print(f"invalid failure class: {fclass}")
+            print(f"error: invalid failure class: {fclass}")
+            _action("rerun log with --failure-class " + "|".join(VALID_FAILURE_CLASSES))
             return 1
         entry["failure_class"] = fclass
 
@@ -2830,11 +2915,12 @@ def prior_failures(ledger_path, ref):
 
 
 def failure_cmd(a):
+    _begin(a)
     now = get_now(_opt_str(a, "now"))
     text = " ".join((_opt_str(a, "message") or "").split())
     if not _opt_str(a, "ref"):
         print("error: --ref <item> is required (a short label, no paths)")
-        print("action: rerun failure with --ref <item>")
+        _action("rerun failure with --ref <item>")
         return 1
     ref = _clean_ref(_opt_str(a, "ref"))
     try:
@@ -2848,15 +2934,15 @@ def failure_cmd(a):
     cls, hit, reset = classify_failure(text, now, known)
     seen = prior_failures(ledger_path, ref)
     n = len(seen)
-    print(f"class: {cls}")
-    print(f"retries: {n}/{MAX_RETRIES}")
+    _detail(f"class: {cls}")
+    _detail(f"retries: {n}/{MAX_RETRIES}")
     tag = f" --ref {ref}"
     if hit:
-        print(f"known: {hit[1]}")
+        _detail(f"known: {hit[1]}")
         _failure_log_hint("<ok|failed>", cls, tag)
         print(f"action: {hit[2]}")
     elif cls == "quota":
-        print("resets: " + (reset.isoformat(timespec="seconds") if reset else "unknown"))
+        _detail("resets: " + (reset.isoformat(timespec="seconds") if reset else "unknown"))
         _failure_log_hint("quota", cls, tag)
         print(
             "action: if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
@@ -2928,11 +3014,12 @@ def _git(root, *argv):
 
 def _scope_fail(msg):
     print(f"error: {msg}")
-    print("action: fix the --base or --repo argument and rerun scope")
+    _action("fix the --base or --repo argument and rerun scope")
     return 1
 
 
 def scope_cmd(a):
+    _begin(a)
     root = _opt_str(a, "repo") or os.getcwd()
     base = _opt_str(a, "base")
     max_files, max_lines = _opt_int(a, "max_files"), _opt_int(a, "max_lines")
@@ -2945,7 +3032,7 @@ def scope_cmd(a):
     rc, mb = _git(root, "merge-base", base, "HEAD")
     mb = mb.strip()
     if rc != 0 or not mb:
-        return _scope_fail(f"cannot find a merge-base with {base} (fetch it, e.g. `git fetch origin`, and use full history)")
+        return _scope_fail(f"cannot find a merge-base with {base} (run: git fetch origin; on a shallow clone run: git fetch --unshallow)")
     rc, num = _git(root, "diff", "--numstat", "-z", "-M", mb)
     if rc != 0:
         return _scope_fail(f"git diff against merge-base {mb[:7]} failed: {num.strip() or 'no output'}")
@@ -2978,13 +3065,13 @@ def scope_cmd(a):
         p for p in changed
         if any(fnmatch.fnmatchcase(os.path.basename(p), g) for g in STRAY_GLOBS) or set(p.split("/")[:-1]) & set(STRAY_DIRS)
     )
-    print(f"base: {mb[:7]} (merge-base of {base} and HEAD)")
-    print(f"files: {files}" + (f"/{max_files}" if max_files is not None else ""))
-    print(f"lines: {lines}" + (f"/{max_lines}" if max_lines is not None else ""))
-    print("manifests/lockfiles: " + (", ".join(manifests) or "none"))
+    _detail(f"base: {mb[:7]} (merge-base of {base} and HEAD)")
+    _detail(f"files: {files}" + (f"/{max_files}" if max_files is not None else ""))
+    _detail(f"lines: {lines}" + (f"/{max_lines}" if max_lines is not None else ""))
+    _detail("manifests/lockfiles: " + (", ".join(manifests) or "none"))
     if patterns:
-        print("outside --expect: " + (", ".join(outside) or "none"))
-    print("stray: " + (", ".join(stray) or "none"))
+        _detail("outside --expect: " + (", ".join(outside) or "none"))
+    _detail("stray: " + (", ".join(stray) or "none"))
     over = []
     if max_files is not None and files > max_files:
         over.append(f"files {files}>{max_files}")
@@ -2994,10 +3081,10 @@ def scope_cmd(a):
     if over and not flagged:
         flagged = sorted(changed, key=lambda p: (-changed[p], p))[:STRAY_TOP]
     if not flagged and not over:
-        print("action: ok")
+        _action("ok")
         return 0
-    print(
-        "action: trim: ask the implementer to justify or drop: " + ", ".join(flagged)
+    _action(
+        "trim: ask the implementer to justify or drop: " + ", ".join(_capped(flagged))
         + (f"; over budget: {', '.join(over)}" if over else "")
     )
     return 0
@@ -3033,15 +3120,16 @@ def check_install_staleness(now, lockfile_override=None):
             except OSError:
                 continue
         if (now - ts) > timedelta(days=STALE_INSTALL_DAYS):
-            notes.append(
+            text = (
                 f"[note] installed agent-orchestration ({scope_name}) last updated {ts.date().isoformat()} "
                 f"(>{STALE_INSTALL_DAYS}d ago); run: npx skills check {flag} && npx skills update agent-orchestration {flag}"
             )
+            notes.append((text, "", text))
     return notes
 
 
 def check_available_notes(catalog, assets_path, loaded_assets, available):
-    """[note] lines for assets, local-catalog, and followup entries the harness's discovery does not offer."""
+    """`(reason, item, "[note] ...")` for assets, local-catalog, and followup entries the harness's discovery does not offer."""
     names = _catalog_name_map(catalog)
 
     def canon(x):
@@ -3052,18 +3140,18 @@ def check_available_notes(catalog, assets_path, loaded_assets, available):
     for pair in (x.strip() for x in available.split(",") if x.strip()):
         prov, sep, mid = pair.partition(":")
         if not sep or not prov.strip() or not mid.strip():
-            notes.append(f"[note] --available entry {pair} is not provider:model; ignored")
+            notes.append(("--available entry is not provider:model; ignored", pair, f"[note] --available entry {pair} is not provider:model; ignored"))
             continue
         avail_models.setdefault(norm(prov), set()).add(canon(mid))
     all_models = set().union(*avail_models.values()) if avail_models else set()
     for p in (loaded_assets or {}).get("providers") or []:
         if isinstance(p, dict) and p.get("id") and norm(p["id"]) not in avail_models:
-            notes.append(f"[note] assets provider {p['id']} has no available model in --available")
+            notes.append(("assets provider has no available model in --available", p["id"], f"[note] assets provider {p['id']} has no available model in --available"))
     local_path = os.path.join(os.path.dirname(os.path.abspath(assets_path)), "catalog.local.yaml")
     loc = load_file(local_path) if os.path.exists(local_path) else None
     for m in (loc.get("models") or []) if isinstance(loc, dict) else []:
         if isinstance(m, dict) and m.get("id") and canon(m["id"]) not in all_models:
-            notes.append(f"[note] catalog.local.yaml model {m['id']} is not in the available list")
+            notes.append(("catalog.local.yaml model is not in the available list", m["id"], f"[note] catalog.local.yaml model {m['id']} is not in the available list"))
     for fu in (loaded_assets or {}).get("followups") or []:
         if not isinstance(fu, dict) or not fu.get("needs"):
             continue
@@ -3077,11 +3165,28 @@ def check_available_notes(catalog, assets_path, loaded_assets, available):
         else:
             missing = norm(need) in names and canon(need) not in all_models
         if missing:
-            notes.append(f"[note] followup {fu.get('ref', '')} needs {need}, which is not available")
+            notes.append(("followup needs a model that is not available", f"{fu.get('ref', '')} (needs {need})", f"[note] followup {fu.get('ref', '')} needs {need}, which is not available"))
     return notes
 
 
+def _check_note_lines(items):
+    """Lines for check's `(reason, item, text)` notes: grouped by reason (compact) or the original text (--full)."""
+    if _FULL:
+        return [text for _, _, text in items]
+    groups = {}
+    for reason, item, text in items:
+        groups.setdefault(reason, []).append(item)
+    lines = []
+    for reason, members in groups.items():
+        if members == [""]:  # a note that carries its own advice: keep its text
+            lines.append(next(t for r, _, t in items if r == reason))
+        else:
+            lines.append(f"note: {reason}: " + ", ".join(_capped(members)))
+    return _capped(lines)
+
+
 def check(a):
+    _begin(a)
     now = get_now(_opt_str(a, "now"))
     errs = []
     ap = _opt_str(a, "assets") or def_assets()
@@ -3114,8 +3219,9 @@ def check(a):
         ):
             errs.append(f"{m.get('id')}: aliases must be a non-empty list of strings")
     loaded_assets = {}
-    if not os.path.exists(ap):
-        print(f"[note] no assets file at {ap}: defaults apply (all discovered providers ok, policy normal)")
+    no_assets = not os.path.exists(ap)
+    if no_assets:
+        _detail(f"[note] no assets file at {ap}: defaults apply (all discovered providers ok, policy normal)")
     else:
         loaded_assets = load_file(ap) or {}
         prefs = loaded_assets.get("preferences") or {}
@@ -3217,18 +3323,24 @@ def check(a):
                                 f"assets followups[{idx}].needs: bad value {needs_val} "
                                 "(expected provider:<id>/<tier|model> or provider:<id>/<group>/<tier>)"
                             )
-    print("OK" if not errs else "\n".join(errs))
-    if not errs:
-        avail_str = _opt_str(a, "available")
-        if avail_str:
-            for note in check_available_notes(c, ap, loaded_assets, avail_str):
-                print(note)
-        for note in check_install_staleness(now, lockfile_override=_opt_str(a, "lockfile")):
-            print(note)
-    return 1 if errs else 0
+    if errs:
+        for line in _capped(["error: " + e for e in errs]):
+            print(line)
+        print(f"error: {len(errs)} problem(s); action: fix the entries above in catalog.yaml or assets.yaml and rerun check")
+        return 1
+    items = []
+    avail_str = _opt_str(a, "available")
+    if avail_str:
+        items += check_available_notes(c, ap, loaded_assets, avail_str)
+    items += check_install_staleness(now, lockfile_override=_opt_str(a, "lockfile"))
+    for line in _check_note_lines(items):
+        print(line)
+    print("ok: catalog and assets valid" + (" (no assets file: defaults apply)" if no_assets else ""))
+    return 0
 
 
 def status_cmd(a):
+    _begin(a)
     now = get_now(a.now)
     ap = a.assets or def_assets()
     clear = ("exhausted_until", "status_note", "unparsed") if a.state == "ok" else ()
@@ -3237,11 +3349,30 @@ def status_cmd(a):
     return 0
 
 
-def main():
+EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --help`
+    "check": "check --available claude:claude-opus-5-5",
+    "probe": "probe --available claude:claude-opus-5-5",
+    "select": "select --complexity standard --risk low --available claude:claude-opus-5-5,codex:gpt-6-2-sol",
+    "followups": "followups --due --available claude:claude-opus-5-5",
+    "log": "log --complexity standard --risk low --provider claude --model claude-opus-5-5 --effort high",
+    "exhaust": 'exhaust claude "You\'ve hit your weekly limit · resets Nov 23, 3am"',
+    "status": "status claude low",
+    "failure": 'failure "context length exceeded" --ref item-1',
+    "scope": "scope --base origin/main --max-files 20 --expect 'src/**'",
+}
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     for n in ("check", "probe", "select", "followups", "log", "exhaust", "status", "failure", "scope"):
-        p = sub.add_parser(n)
+        p = sub.add_parser(
+            n,
+            usage=f"orch.py {n} [options]",  # the options below list everything; a wrapped usage block would repeat them
+            formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=50, width=110),
+            epilog="example: python3 scripts/orch.py " + EXAMPLES[n],
+        )
+        p.add_argument("--full", action="store_true", help="print every detail line and remove the list caps")
         if n != "scope":
             p.add_argument("--assets")
             p.add_argument("--now")
@@ -3318,7 +3449,14 @@ def main():
             p.add_argument("--model")
         if n == "status":
             p.add_argument("state", choices=["ok", "low"])
-    a = ap.parse_args()
+        for act in p._actions:
+            if act.option_strings and act.required:
+                act.help = "(required) " + (act.help or "")
+    return ap
+
+
+def main():
+    a = build_parser().parse_args()
     return {
         "check": check,
         "probe": probe,
