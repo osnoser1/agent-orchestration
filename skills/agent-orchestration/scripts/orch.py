@@ -1876,7 +1876,8 @@ def _read_claude_token(config_dir):
     if not os.path.isfile(cred_path):
         return None
     try:
-        data = json.loads(open(cred_path, encoding="utf-8").read())
+        with open(cred_path, encoding="utf-8") as fh:
+            data = json.load(fh)
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -1891,10 +1892,7 @@ def _read_claude_token(config_dir):
 
 USAGE_CACHE_TTL = 300
 USAGE_BACKOFF = 600
-
-
-def _usage_cache_path(ap):
-    return os.path.join(os.path.dirname(os.path.abspath(ap)), "usage-cache.json")
+USAGE_BACKOFF_MAX = 86400
 
 
 def _usage_cache_read(path):
@@ -1906,28 +1904,34 @@ def _usage_cache_read(path):
         return {}
 
 
-def _usage_cache_write(path, key, entry):
-    """Merge one entry into the shared cache atomically; holds only parsed results and timestamps."""
-    data = _usage_cache_read(path)
-    data[key] = entry
+def _usage_cache_write(path, entry):
+    """Atomically replace one config dir's file (no read-merge, so concurrent sessions never drop another's entry).
+
+    Holds only parsed results and timestamps, never the token.
+    """
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".usage-cache-")
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
+            json.dump(entry, fh)
         os.replace(tmp, path)
     except OSError:
         pass
 
 
 def _retry_after_seconds(value, now):
+    """Seconds or HTTP-date form; unparseable falls back to USAGE_BACKOFF, capped at one day."""
     text = str(value or "").strip()
-    if text.isdigit():
-        return int(text)
     try:
-        return max(0, int(parsedate_to_datetime(text).timestamp() - now.timestamp()))
+        if text.isascii() and text.isdigit():
+            secs = int(text)
+        else:
+            dt = parsedate_to_datetime(text)
+            dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # "-0000" parses naive but means UTC
+            secs = max(0, int(dt.timestamp() - now.timestamp()))
     except Exception:
-        return USAGE_BACKOFF
+        secs = USAGE_BACKOFF
+    return min(secs, USAGE_BACKOFF_MAX)
 
 
 def _hhmmz(ts):
@@ -1946,13 +1950,15 @@ def probe_claude(cfg, now):
     if not token:
         return None, f"unverified (no OAuth credentials in {config_dir})"
 
-    cpath = cfg.get("_cache_path")
-    key = hashlib.sha256(config_dir.encode("utf-8")).hexdigest()[:16]
-    entry = (_usage_cache_read(cpath).get(key) if cpath else None) or {}
+    cache_dir = cfg.get("_cache_dir")
+    key = hashlib.sha256(os.path.abspath(config_dir).encode("utf-8")).hexdigest()[:16]
+    cpath = os.path.join(cache_dir, f"claude-{key}.json") if cache_dir else None
+    entry = _usage_cache_read(cpath) if cpath else {}
     ts = now.timestamp()
     res, fetched = entry.get("result"), entry.get("fetched_at")
     if not (isinstance(res, dict) and isinstance(fetched, (int, float))):
         res = fetched = None
+    reset = parse_time(res.get("resets_at"), now) if res else None
     backoff = entry.get("backoff_until")
     backoff = backoff if isinstance(backoff, (int, float)) else 0
 
@@ -1965,7 +1971,7 @@ def probe_claude(cfg, now):
         )
 
     ttl = cfg.get("_cache_ttl", USAGE_CACHE_TTL)
-    if res is not None and not cfg.get("_fresh") and 0 <= ts - fetched < ttl:
+    if res is not None and not cfg.get("_fresh") and 0 <= ts - fetched < ttl and not (reset and reset <= now):
         return dict(res), None
     if ts < backoff:
         return stale(f"HTTP 429, backing off until {_hhmmz(backoff)}")
@@ -1985,7 +1991,7 @@ def probe_claude(cfg, now):
         if e.code == 429:
             until = ts + _retry_after_seconds((e.headers or {}).get("Retry-After"), now)
             if cpath:
-                _usage_cache_write(cpath, key, {**entry, "backoff_until": until})
+                _usage_cache_write(cpath, {**entry, "backoff_until": until})
             return stale(f"HTTP 429, backing off until {_hhmmz(until)}")
         return stale(f"HTTP {e.code}")
     except Exception:
@@ -2019,7 +2025,7 @@ def probe_claude(cfg, now):
         "resets_at": chosen["resets_at"],
     }
     if cpath:
-        _usage_cache_write(cpath, key, {"result": result, "fetched_at": ts, "backoff_until": 0})
+        _usage_cache_write(cpath, {"result": result, "fetched_at": ts, "backoff_until": 0})
     return result, None
 
 
@@ -2259,12 +2265,12 @@ def probe(a):
     print(f"[note] no assets file at {ap}: probing with defaults without saving (pass --init to create it)")
     tmp_dir = tempfile.mkdtemp(prefix="orch-probe-")
     try:
-        return _probe(a, os.path.join(tmp_dir, "assets.yaml"))
+        return _probe(a, os.path.join(tmp_dir, "assets.yaml"), cache_home=ap)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _probe(a, ap):
+def _probe(a, ap, cache_home=None):
     now = get_now(a.now)
     catalog_path = a.catalog or DEF_CATALOG
     catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
@@ -2386,7 +2392,8 @@ def _probe(a, ap):
         if kind == "claude":
             ttl = prefs.get("usage_cache_ttl_seconds")
             ttl = ttl if isinstance(ttl, (int, float)) and not isinstance(ttl, bool) and ttl >= 0 else USAGE_CACHE_TTL
-            cfg = {**cfg, "_cache_path": _usage_cache_path(ap), "_fresh": _opt_bool(a, "fresh"), "_cache_ttl": ttl}
+            cache_dir = os.path.join(os.path.dirname(os.path.abspath(cache_home or ap)), "usage-cache")
+            cfg = {**cfg, "_cache_dir": cache_dir, "_fresh": _opt_bool(a, "fresh"), "_cache_ttl": ttl}
         result, err = fn(cfg, now, catalog) if kind == "antigravity" else fn(cfg, now)
         if err:
             print(f"{pid}: {err}")
@@ -2751,6 +2758,9 @@ def check(a):
                 errs.append(
                     f"assets preferences.evidence: bad value {ev} (expected non-empty string, list, or map)"
                 )
+            uct = prefs.get("usage_cache_ttl_seconds")
+            if uct is not None and (isinstance(uct, bool) or not isinstance(uct, (int, float)) or uct < 0):
+                errs.append(f"assets preferences.usage_cache_ttl_seconds: bad value {uct} (expected number >= 0)")
             lt = prefs.get("low_threshold")
             if lt is not None and (isinstance(lt, bool) or not isinstance(lt, (int, float)) or not (0 < lt <= 100)):
                 errs.append(f"assets preferences.low_threshold: bad value {lt} (expected number in (0, 100])")
