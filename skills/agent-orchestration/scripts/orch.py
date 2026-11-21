@@ -27,7 +27,7 @@ Exit codes:
 
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
 """
-import argparse, glob, json, os, re, shutil, subprocess, sys, urllib.error, urllib.request
+import argparse, glob, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone, date
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +37,7 @@ DEFAULT_LOW_THRESHOLD = 85
 DEFAULT_EXHAUSTED_THRESHOLD = 98
 VALID_UI_FALLBACK = ("proceed", "defer", "ask")
 VALID_BELOW_TIER = ("stage", "wait", "proceed")
+VALID_PAY_PER_USE = ("never", "ask")
 VALID_NEW_CONVERSATIONS = ("ask", "allow")
 VALID_DESIGN_CHECKPOINTS = ("ask", "delegate")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
@@ -319,6 +320,15 @@ def provider_state(assets, pid, now):
     return p, st, expired
 
 
+def partitions_quota(p):
+    """True when the provider's groups split one account into separate pools (Antigravity probe groups).
+
+    Other providers' groups are per-model caps layered on the account-level status
+    (seeded by `exhaust --model`), so provider status stays independent of them.
+    """
+    return ((_infer_probe(p or {}) or {}).get("kind")) == "antigravity"
+
+
 def model_group(p, mid, model_obj=None):
     groups = (p or {}).get("groups")
     if not isinstance(groups, list) or not groups:
@@ -522,7 +532,7 @@ def find_usable_in_assets(catalog, assets, now, need):
         if prov_st == "exhausted":
             continue
         groups = p.get("groups")
-        if isinstance(groups, list) and groups:
+        if isinstance(groups, list) and groups and partitions_quota(p):
             for g in groups:
                 if not isinstance(g, dict):
                     continue
@@ -545,6 +555,9 @@ def find_usable_in_assets(catalog, assets, now, need):
             fam = _provider_inferred_family(p)
             if fam:
                 for m in (catalog or {}).get("models") or []:
+                    cap = model_group(p, m["id"], m)
+                    if cap is not None and group_state(cap, now)[0] == "exhausted":
+                        continue
                     if (
                         str(m.get("family") or "").lower() == fam
                         and m.get("cost") != "emergency"
@@ -557,12 +570,20 @@ def find_usable_in_assets(catalog, assets, now, need):
     return usable
 
 
+def _resume_not_yet(fu, now):
+    """A `kind: resume` entry waits for its `after` time (the scheduled wakeup) even when a match is usable."""
+    if fu.get("kind") != "resume" or not fu.get("after"):
+        return False
+    after = parse_time(fu.get("after"), now)
+    return bool(after and after > now)
+
+
 def due_followups(catalog, assets, now, available=None):
     if not available:
         return []
     due = []
     for fu in (assets or {}).get("followups") or []:
-        if not isinstance(fu, dict):
+        if not isinstance(fu, dict) or _resume_not_yet(fu, now):
             continue
         usable = find_usable_in_available(catalog, assets, now, fu.get("needs"), available)
         if usable:
@@ -573,7 +594,7 @@ def due_followups(catalog, assets, now, available=None):
 def pending_ready_followups(catalog, assets, now):
     ready = []
     for fu in (assets or {}).get("followups") or []:
-        if not isinstance(fu, dict):
+        if not isinstance(fu, dict) or _resume_not_yet(fu, now):
             continue
         usable = find_usable_in_assets(catalog, assets, now, fu.get("needs"))
         if usable:
@@ -656,6 +677,8 @@ def classify_unmet_preference(catalog, assets, available, need, floor, now, fail
             continue
         g = model_group(p, mid, m)
         st = group_state(g, now)[0] if g is not None else prov_st
+        if prov_st == "exhausted":
+            st = "exhausted"
         if st == "exhausted" or (fail_on_low and st == "low"):
             offered_exhausted = True
             if g is not None and group_state(g, now)[0] == "exhausted":
@@ -747,8 +770,8 @@ def exhausted_tier_candidates(
     ex_cands.sort(key=lambda c: c["key"])
     dts_all = [c["reset_dt"] for c in ex_cands if c["reset_dt"] is not None]
     earliest_dt = min(dts_all) if dts_all else None
-    ex_provs = {c["provider"] for c in ex_cands}
-    if ex_cands and len(ex_provs) == 1 and ex_cands[0]["group"]:
+    ex_scopes = {(c["provider"], c["group"]) for c in ex_cands}
+    if ex_cands and len(ex_scopes) == 1 and ex_cands[0]["group"]:
         resume_needs = f"provider:{ex_cands[0]['provider']}/{ex_cands[0]['group']}/{tier}"
     else:
         resume_needs = tier
@@ -894,7 +917,7 @@ def reviewer_tier(tier, risk):
     return tier if risk != "high" else "T" + str(min(4, int(tier[1]) + 1))
 
 
-def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low):
+def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, tier_only=False):
     """Return `(stage, candidate, below_tier)` for the first usable reviewer, or None.
 
     Capability before independence (references/selection.md): different family meeting `rt` ->
@@ -919,14 +942,17 @@ def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_l
     diff = lambda c: c["model"]["family"] != fam
     same_fam = lambda c: c["model"]["family"] == fam and c["model"]["id"] != mid
     same_model = lambda c: c["model"]["id"] == mid
-    for stage, pool, pred in (
+    order = (
         (1, meet, diff),
         (2, meet, same_fam),
         (3, anyc, diff),
         (4, anyc, same_fam),
         (5, meet, same_model),
         (5, anyc, same_model),
-    ):
+    )
+    if tier_only:
+        order = tuple(step for step in order if step[1] is meet)
+    for stage, pool, pred in order:
         hit = [c for c in pool if pred(c)]
         if hit:
             return stage, hit[0], hit[0]["score"] < floors[rt]
@@ -959,7 +985,54 @@ def print_reviewer(rt, pick, impl_model, floor):
     print(f"[note] reviewer degraded: {why}. State this in the report.")
 
 
-def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage"):
+def _resume_ref(ref_arg, assets_exists):
+    return ref_arg or ("current-task" if assets_exists else None)
+
+
+def _record_resume(ap, ref, needs, after_iso, now):
+    """Record one `kind: resume` entry per ref; refresh it when its needs or due time changed."""
+    if not ref:
+        print("[note] no assets file and no --ref; pass --ref to record the resume follow-up")
+        return
+    existing = find_existing_followup(ap, "resume", ref)
+    after_txt = f", after {after_iso}" if after_iso else ""
+    if existing and existing.get("needs") == needs and (existing.get("after") or None) == (after_iso or None):
+        print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
+        return
+    entry = {"kind": "resume", "ref": ref, "needs": needs}
+    if after_iso:
+        entry["after"] = after_iso
+    record_followup(ap, entry, now=now)
+    if existing:
+        print(f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup")
+    else:
+        print(f"followup recorded: [resume] {ref} (needs {needs}{after_txt})")
+
+
+def _schedule_resume(label, earliest_dt):
+    """Print the SCHEDULE_RESUME line; return the resume time (earliest reset + margin) or None."""
+    if not earliest_dt:
+        print(f"SCHEDULE_RESUME: all usable {label} exhausted (reset time unknown).")
+        return None
+    earliest_iso = earliest_dt.isoformat(timespec="seconds")
+    resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
+    print(f"SCHEDULE_RESUME: all usable {label} exhausted (earliest reset: {earliest_iso}; schedule resume at {resume_iso}).")
+    return resume_iso
+
+
+def choose_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, risk, below_tier_mode):
+    """Return `(pick, wait)`; `wait` is `(earliest_reset, needs)` when a high-risk `stage` review waits for `rt`."""
+    if risk == "high" and below_tier_mode == "stage":
+        pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, tier_only=True)
+        if pick:
+            return pick, None
+        saw, earliest_dt, needs, _ = exhausted_tier_candidates(catalog, assets, avail, rt, floors[rt], now)
+        if saw:
+            return None, (earliest_dt, needs)
+    return pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low), None
+
+
+def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage", assets_exists=False):
     """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
     m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
     if not m:
@@ -967,46 +1040,21 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         return 1
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
-    ref_arg = _opt_str(a, "ref")
+    ref = _resume_ref(_opt_str(a, "ref"), assets_exists)
     print(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
     print(f"implementer (given): {m['family']} / {m['id']}")
-    pick = pick_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low)
+    pick, wait = choose_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode)
     if pick:
-        _, _, below = pick
-        saw_ex_rt, earliest_dt, rt_needs = False, None, rt
-        if below and a.risk == "high" and below_tier_mode == "stage":
-            saw_ex_rt, earliest_dt, rt_needs, _ = exhausted_tier_candidates(
-                catalog, assets, avail, rt, floors[rt], now
-            )
-        # Under stage, a high-risk review waits for an exhausted reviewer-tier model instead of degrading
-        # below tier; with nothing to wait for, the never-blocking fallback order still applies.
-        if saw_ex_rt:
-            print(
-                f"NO REVIEWER: below-tier reviewer not allowed for high-risk work under below_tier=stage; "
-                f"wait for {rt} (>= {floors[rt]})"
-            )
-            if not earliest_dt:
-                print(f"SCHEDULE_RESUME: all usable {rt} reviewers exhausted (reset time unknown).")
-                return 4
-            earliest_iso = earliest_dt.isoformat(timespec="seconds")
-            resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
-            print(
-                f"SCHEDULE_RESUME: all usable {rt} reviewers exhausted "
-                f"(earliest reset: {earliest_iso}; schedule resume at {resume_iso})."
-            )
-            if ref_arg:
-                existing_resume = find_existing_followup(ap, "resume", ref_arg) if os.path.exists(ap) else None
-                if existing_resume:
-                    print(
-                        f"followup already scheduled: [resume] {ref_arg} "
-                        f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso})"
-                    )
-                else:
-                    record_followup(ap, {"kind": "resume", "ref": ref_arg, "needs": rt_needs, "after": resume_iso}, now=now)
-                    print(f"followup recorded: [resume] {ref_arg} (needs {rt_needs}, after {resume_iso})")
-            return 4
         print_reviewer(rt, pick, m, floors[rt])
         return 0
+    if wait:
+        earliest_dt, needs = wait
+        print(
+            f"NO REVIEWER: high-risk work under below_tier=stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
+            "wait for one to renew"
+        )
+        _record_resume(ap, ref, needs, _schedule_resume(f"{rt} reviewers", earliest_dt), now)
+        return 4
     _, notes, reasons = candidates(
         catalog,
         assets,
@@ -1023,7 +1071,15 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         print("  note:", n)
     if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["exhausted"] == 0):
         return 3
-    return 4 if reasons["exhausted"] > 0 else 2
+    if reasons["exhausted"] > 0:
+        saw, earliest_dt, needs, _ = exhausted_tier_candidates(catalog, assets, avail, rt, floors[rt], now)
+        label = f"{rt} reviewers"
+        if not saw:
+            _, earliest_dt, _, _ = exhausted_tier_candidates(catalog, assets, avail, "any", 0, now)
+            needs, label = "any", "reviewers"
+        _record_resume(ap, ref, needs, _schedule_resume(label, earliest_dt), now)
+        return 4
+    return 2
 
 
 def select(a):
@@ -1056,6 +1112,7 @@ def select(a):
             now,
             ap=ap,
             below_tier_mode=below_tier_mode,
+            assets_exists=assets_exists,
         )
 
     cands, notes, reasons = candidates(
@@ -1101,13 +1158,14 @@ def select(a):
 
         # Staging/proceeding below tier only makes sense while a tier-meeting model waits on quota renewal.
         can_stage = bool(below_cands) and saw_ex_tier
+        ref_val = _resume_ref(ref_arg, assets_exists)
+        earliest_iso = earliest_dt.isoformat(timespec="seconds") if earliest_dt else None
+        resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds") if earliest_dt else None
         if can_stage and below_tier_mode == "stage":
             impl = below_cands[0]
             target = ex_cands[0] if ex_cands else None
-            earliest_iso = earliest_dt.isoformat(timespec="seconds") if earliest_dt else None
-            resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds") if earliest_dt else None
-            ref_val = ref_arg or "current-task"
             reset_txt = earliest_iso or "unknown"
+            resume_txt = resume_iso or "reset + 2m"
             resume_sched_txt = f"; schedule phase 2 resume at {resume_iso}" if resume_iso else ""
             target_txt = (
                 f"{target['provider']} / {target['model']['id']} @ {target['effort']} "
@@ -1119,42 +1177,21 @@ def select(a):
                 f"STAGE (below_tier=stage): no usable candidate meets {tier} (>= {floors[tier]}); "
                 f"starting phase 1 below tier (earliest {tier} reset: {reset_txt}{resume_sched_txt})."
             )
-            print(
-                f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}"
-            )
+            print(f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}")
             print(
                 f"phase 2 (risky change, destructive steps, review; requires {tier} >= {floors[tier]}): "
-                f"at the phase 1 boundary switch same child in place to {target_txt} immediately; "
-                "send one continue message only if the harness auto-resumes own-provider quota stops "
-                "(references/harnesses.md), and keep the scheduled resume at "
-                f"{resume_iso or 'reset + 2m'} as an idempotent double check that acts only if the child is idle"
+                f"at the phase 1 boundary switch same child in place to {target_txt} immediately. "
+                "Send one continue message only for a verified or observed (harness, provider) pair that resumes "
+                f"own-provider quota stops (references/harnesses.md); otherwise wait for the scheduled resume at {resume_txt}, "
+                "a double check that re-reads the child and acts only while it is idle. "
+                f"A harness that cannot switch in place should defer the new Phase 2 child until {resume_txt}; "
+                f"on a harness without a scheduler, report the reset time ({reset_txt}) to the user."
             )
-            if assets_exists or ref_arg:
-                existing_resume = find_existing_followup(ap, "resume", ref_val) if os.path.exists(ap) else None
-                if existing_resume:
-                    print(
-                        f"followup already scheduled: [resume] {ref_val} "
-                        f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso or 'next reset'})"
-                    )
-                else:
-                    fu_entry = {
-                        "kind": "resume",
-                        "ref": ref_val,
-                        "needs": resume_needs,
-                    }
-                    if resume_iso:
-                        fu_entry["after"] = resume_iso
-                    record_followup(ap, fu_entry, now=now)
-                    after_txt = f", after {resume_iso}" if resume_iso else ""
-                    print(f"followup recorded: [resume] {ref_val} (needs {resume_needs}{after_txt})")
-                    assets = load_file(ap)
-            else:
-                print("[note] no assets file; skipped recording follow-up")
+            _record_resume(ap, ref_val, resume_needs, resume_iso, now)
+            if ref_val:
+                assets = load_file(ap)
             if a.risk == "high":
-                print(
-                    f"reviewer ({rt}): wait for {rt} (>= {floors[rt]}); "
-                    "below-tier reviewer not allowed for high-risk work under stage"
-                )
+                print(f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); select it when the review step starts in phase 2")
             else:
                 print(f"reviewer ({rt}): select when the review step starts in phase 2 (fallback order)")
             for n in notes:
@@ -1168,47 +1205,17 @@ def select(a):
 
         if can_stage and below_tier_mode == "proceed":
             impl = below_cands[0]
-            earliest_iso = earliest_dt.isoformat(timespec="seconds") if earliest_dt else None
-            resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds") if earliest_dt else None
             reset_txt = earliest_iso or "unknown"
             print(
                 f"[provisional] (below_tier=proceed): no usable candidate meets {tier} (>= {floors[tier]}, "
                 f"earliest reset: {reset_txt}); proceeding with best available below-tier model for all phases "
                 f"— tier-meeting ({tier}) re-review follow-up required"
             )
-            if assets_exists or ref_arg:
-                ref_val = ref_arg or "current-task"
-                existing_resume = find_existing_followup(ap, "resume", ref_val) if os.path.exists(ap) else None
-                if existing_resume:
-                    print(
-                        f"followup already scheduled: [resume] {ref_val} "
-                        f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso or 'next reset'})"
-                    )
-                else:
-                    fu_entry = {
-                        "kind": "resume",
-                        "ref": ref_val,
-                        "needs": resume_needs,
-                    }
-                    if resume_iso:
-                        fu_entry["after"] = resume_iso
-                    record_followup(ap, fu_entry, now=now)
-                    after_txt = f", after {resume_iso}" if resume_iso else ""
-                    print(f"followup recorded: [resume] {ref_val} (tier-meeting re-review; needs {resume_needs}{after_txt})")
-                    assets = load_file(ap)
-            else:
-                print("[note] no assets file; skipped recording follow-up")
+            _record_resume(ap, ref_val, resume_needs, resume_iso, now)
+            if ref_val:
+                assets = load_file(ap)
             print(f"implementer: {fmt(impl)}")
-            pick = pick_reviewer(
-                catalog,
-                assets,
-                avail,
-                floors,
-                rt,
-                now,
-                impl["model"],
-                bool(a.fail_on_low),
-            )
+            pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
             if pick:
                 print_reviewer(rt, pick, impl["model"], floors[rt])
             for n in notes:
@@ -1224,31 +1231,7 @@ def select(a):
         if (saw_ex_tier and reasons["threshold"] == 0) or (
             reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0
         ):
-            if earliest_dt:
-                earliest_iso = earliest_dt.isoformat(timespec="seconds")
-                resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
-                print(
-                    f"SCHEDULE_RESUME: all usable {tier} candidates exhausted "
-                    f"(earliest reset: {earliest_iso}; schedule resume at {resume_iso})."
-                )
-                if ref_arg:
-                    existing_resume = find_existing_followup(ap, "resume", ref_arg) if os.path.exists(ap) else None
-                    if existing_resume:
-                        print(
-                            f"followup already scheduled: [resume] {ref_arg} "
-                            f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or resume_iso})"
-                        )
-                    else:
-                        fu_entry = {
-                            "kind": "resume",
-                            "ref": ref_arg,
-                            "needs": resume_needs,
-                            "after": resume_iso,
-                        }
-                        record_followup(ap, fu_entry, now=now)
-                        print(f"followup recorded: [resume] {ref_arg} (needs {resume_needs}, after {resume_iso})")
-            else:
-                print(f"SCHEDULE_RESUME: all usable {tier} candidates exhausted (reset time unknown).")
+            _record_resume(ap, ref_val, resume_needs, _schedule_resume(f"{tier} candidates", earliest_dt), now)
             return 4
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
             return 3
@@ -1318,22 +1301,16 @@ def select(a):
     print(f"implementer: {fmt(impl)}")
 
     rt = reviewer_tier(tier, a.risk)
-    pick = pick_reviewer(catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low))
+    pick, wait = choose_reviewer(
+        catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low), a.risk, below_tier_mode
+    )
     if pick:
-        _, _, below = pick
-        if below and a.risk == "high" and below_tier_mode == "stage":
-            saw_ex_rt, _, rt_needs, _ = exhausted_tier_candidates(
-                catalog, assets, avail, rt, floors[rt], now
-            )
-            if saw_ex_rt:
-                print(
-                    f"reviewer ({rt}): wait for {rt} (>= {floors[rt]}) renewal (needs {rt_needs}) "
-                    "— below-tier reviewer not allowed for high-risk work under stage"
-                )
-            else:
-                print_reviewer(rt, pick, impl["model"], floors[rt])
-        else:
-            print_reviewer(rt, pick, impl["model"], floors[rt])
+        print_reviewer(rt, pick, impl["model"], floors[rt])
+    elif wait:
+        print(
+            f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
+            f"wait for one to renew (needs {wait[1]})"
+        )
     for n in notes:
         print("  note:", n)
     for fu, usable in due_followups(catalog, assets, now, available=avail):
@@ -1676,6 +1653,18 @@ def exhaust(a):
     group_arg = _opt_str(a, "group")
     model_arg = _opt_str(a, "model")
 
+    if not group_arg and not model_arg and os.path.exists(ap):
+        cur = load_file(ap) or {}
+        cur_p = next((x for x in (cur.get("providers") or []) if isinstance(x, dict) and x.get("id") == a.provider), None)
+        cur_groups = [g for g in ((cur_p or {}).get("groups") or []) if isinstance(g, dict)]
+        if cur_groups and partitions_quota(cur_p):
+            names = ", ".join(str(g.get("name")) for g in cur_groups)
+            print(
+                f"{a.provider}: quota is split into groups ({names}); pass --model <id> for the model that hit "
+                "the limit (or --group <name>) so the other groups stay usable"
+            )
+            return 1
+
     if group_arg or model_arg:
         ensure_assets(ap, now)
         assets = load_file(ap) or {}
@@ -1685,6 +1674,13 @@ def exhaust(a):
         groups = [g for g in ((p or {}).get("groups") or []) if isinstance(g, dict)]
         if groups:
             target_g = _find_provider_group(p, group_arg=group_arg, model_arg=model_arg, catalog=catalog)
+            if target_g is None and model_arg and not group_arg and not partitions_quota(p):
+                # Another per-model cap on an ungrouped account: add its own one-model group.
+                name_map = _catalog_name_map(catalog)
+                raw_mid = model_arg.partition(":")[2] if ":" in model_arg else model_arg
+                cid = name_map.get(norm(raw_mid)) or raw_mid
+                target_g = {"name": cid, "models": [cid]}
+                groups.append(target_g)
             if target_g is None:
                 print(f"{a.provider}: no matching quota group for {group_arg or model_arg}")
                 return 1
@@ -1695,16 +1691,19 @@ def exhaust(a):
                 target_g["unparsed"] = True
             else:
                 target_g.pop("unparsed", None)
-            best = _summarize_groups(groups, now)
-            st = best.get("status", "ok")
-            fields = {"status": st, "groups": groups}
-            clear = []
-            if st == "exhausted":
-                fields["exhausted_until"] = best.get("exhausted_until") or best.get("resets_at") or until
-                clear.extend(["status_note", "unparsed"])
+            if partitions_quota(p):
+                best = _summarize_groups(groups, now)
+                st = best.get("status", "ok")
+                fields = {"status": st, "groups": groups}
+                clear = []
+                if st == "exhausted":
+                    fields["exhausted_until"] = best.get("exhausted_until") or best.get("resets_at") or until
+                    clear.extend(["status_note", "unparsed"])
+                else:
+                    clear.extend(["exhausted_until", "status_note", "unparsed"])
+                edit_provider(ap, a.provider, fields, now=now, clear_keys=clear)
             else:
-                clear.extend(["exhausted_until", "status_note", "unparsed"])
-            edit_provider(ap, a.provider, fields, now=now, clear_keys=clear)
+                edit_provider(ap, a.provider, {"groups": groups}, now=now)
             print(
                 f"{a.provider} ({target_g.get('name')}): exhausted until {until}"
                 + ("" if t else " (unparsed, +1h default)")
@@ -2147,8 +2146,19 @@ def _infer_probe(p):
 
 
 def probe(a):
-    now = get_now(a.now)
     ap = a.assets or def_assets()
+    if os.path.exists(ap) or _opt_bool(a, "init"):
+        return _probe(a, ap)
+    print(f"[note] no assets file at {ap}: probing with defaults without saving (pass --init to create it)")
+    tmp_dir = tempfile.mkdtemp(prefix="orch-probe-")
+    try:
+        return _probe(a, os.path.join(tmp_dir, "assets.yaml"))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _probe(a, ap):
+    now = get_now(a.now)
     catalog_path = a.catalog or DEF_CATALOG
     catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
     existed = os.path.exists(ap)
@@ -2180,58 +2190,73 @@ def probe(a):
         if not pid:
             continue
         groups = p.get("groups")
-        if isinstance(groups, list) and groups:
-            cleared_names = []
-            for g in groups:
-                if not isinstance(g, dict) or g.get("status") != "exhausted":
-                    continue
-                g_until = parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
-                if g_until and g_until <= now:
-                    g["status"] = "ok"
-                    g.pop("exhausted_until", None)
-                    g.pop("status_note", None)
-                    g.pop("unparsed", None)
-                    g_reset = parse_time(g.get("resets_at"), now)
-                    if g_reset and g_reset <= now:
-                        g.pop("resets_at", None)
-                    cleared_names.append(g.get("name") or "group")
+        has_groups = isinstance(groups, list) and bool(groups)
+        cleared_names = []
+        for g in (groups if has_groups else []):
+            if not isinstance(g, dict) or g.get("status") != "exhausted":
+                continue
+            g_until = parse_time(g.get("exhausted_until") or g.get("resets_at"), now)
+            if g_until and g_until <= now:
+                g["status"] = "ok"
+                g.pop("exhausted_until", None)
+                g.pop("status_note", None)
+                g.pop("unparsed", None)
+                g_reset = parse_time(g.get("resets_at"), now)
+                if g_reset and g_reset <= now:
+                    g.pop("resets_at", None)
+                cleared_names.append(g.get("name") or "group")
 
-            p_until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
-            p_expired = p.get("status") == "exhausted" and p_until is not None and p_until <= now
-            had_own_lockout = bool(p.get("status_note") or p.get("unparsed"))
-
+        p_until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
+        p_expired = p.get("status") == "exhausted" and p_until is not None and p_until <= now
+        # A provider lock that only mirrored an expiring group needs no separate recovery line.
+        report_p = p_expired and (bool(p.get("status_note") or p.get("unparsed")) or not cleared_names)
+        if has_groups and partitions_quota(p):
+            # Provider status summarizes its groups; a live provider-level error lockout is kept until it expires.
             if cleared_names or p_expired:
                 best = _summarize_groups([g for g in groups if isinstance(g, dict)], now)
-                keep_p_err = (
-                    _is_error_exhaustion(p)
-                    and not p_expired
-                    and (parse_time(p.get("exhausted_until"), now) or now) > now
-                )
-                st_after = "exhausted" if keep_p_err else best.get("status", "ok")
-                fields = {"status": st_after, "groups": groups}
-                clear = ["exhausted_until", "status_note", "unparsed"] if st_after != "exhausted" else []
+                keep_p_err = _is_error_exhaustion(p) and not p_expired
+                fields = {"groups": groups}
+                clear = []
+                if keep_p_err:
+                    st_after = "exhausted"
+                else:
+                    st_after = best.get("status", "ok")
+                    clear.extend(["status_note", "unparsed"])
+                    best_until = best.get("exhausted_until") or best.get("resets_at")
+                    if st_after == "exhausted" and best_until:
+                        fields["exhausted_until"] = best_until
+                    else:
+                        clear.append("exhausted_until")
+                fields["status"] = st_after
                 p_reset = parse_time(p.get("resets_at"), now)
                 if p_reset and p_reset <= now:
                     clear.append("resets_at")
                 edit_provider(ap, pid, fields, now=now, clear_keys=clear)
-                p["status"] = st_after
+                p.update(fields)
                 for ck in clear:
-                    p.pop(ck, None)
-                if p_expired and (had_own_lockout or not cleared_names):
-                    print(f"{pid}: expired lockout cleared -> ok")
+                    if ck not in fields:
+                        p.pop(ck, None)
+                if report_p:
+                    print(f"{pid}: expired lockout cleared -> {st_after}")
                 for gname in cleared_names:
                     print(f"{pid} ({gname}): expired lockout cleared -> ok")
-        elif p.get("status") == "exhausted":
-            until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
-            if until and until <= now:
-                clear = ["exhausted_until", "status_note", "unparsed"]
-                p_reset = parse_time(p.get("resets_at"), now)
-                if p_reset and p_reset <= now:
-                    clear.append("resets_at")
-                edit_provider(ap, pid, {"status": "ok"}, now=now, clear_keys=clear)
-                p["status"] = "ok"
-                for ck in clear:
-                    p.pop(ck, None)
+            continue
+
+        # Ungrouped account, or per-model cap groups layered on the account-level status.
+        if cleared_names:
+            edit_provider(ap, pid, {"groups": groups}, now=now)
+            for gname in cleared_names:
+                print(f"{pid} ({gname}): expired lockout cleared -> ok")
+        if p_expired:
+            clear = ["exhausted_until", "status_note", "unparsed"]
+            p_reset = parse_time(p.get("resets_at"), now)
+            if p_reset and p_reset <= now:
+                clear.append("resets_at")
+            edit_provider(ap, pid, {"status": "ok"}, now=now, clear_keys=clear)
+            p["status"] = "ok"
+            for ck in clear:
+                p.pop(ck, None)
+            if report_p:
                 print(f"{pid}: expired lockout cleared -> ok")
 
     # 2. Run probes.
@@ -2321,7 +2346,6 @@ def probe(a):
                     )
                     any_group_recovered = (
                         bool(prev_by_name)
-                        and all(g["status"] != "exhausted" for g in persisted_groups)
                         and any(
                             _scope_recovered_in_probe(
                                 prev_by_name[norm(g["name"])],
@@ -2574,6 +2598,12 @@ def check(a):
             m.get("scores") and m.get("source") in (c.get("index_versions") or {})
         ):
             errs.append(f"{m['id']}: rated needs scores + known source")
+        if m.get("rating") == "estimated":
+            sc = m.get("scores")
+            if not isinstance(sc, dict) or not sc or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) for v in sc.values()
+            ):
+                errs.append(f"{m.get('id')}: estimated needs numeric scores (references/research-unrated.md)")
         aliases = m.get("aliases")
         if aliases is not None and (
             not isinstance(aliases, list)
@@ -2581,13 +2611,18 @@ def check(a):
             or any(not isinstance(x, str) or not x.strip() for x in aliases)
         ):
             errs.append(f"{m.get('id')}: aliases must be a non-empty list of strings")
-    if _opt_str(a, "assets") or os.path.exists(ap):
+    if not os.path.exists(ap):
+        print(f"[note] no assets file at {ap}: defaults apply (all discovered providers ok, policy normal)")
+    else:
         loaded_assets = load_file(ap) or {}
         prefs = loaded_assets.get("preferences") or {}
         if isinstance(prefs, dict):
             uif = prefs.get("ui_fallback")
             if uif is not None and uif not in VALID_UI_FALLBACK:
                 errs.append(f"assets preferences.ui_fallback: bad value {uif} (expected {'|'.join(VALID_UI_FALLBACK)})")
+            ppu = prefs.get("pay_per_use")
+            if ppu is not None and ppu not in VALID_PAY_PER_USE:
+                errs.append(f"assets preferences.pay_per_use: bad value {ppu} (expected {'|'.join(VALID_PAY_PER_USE)})")
             bt = prefs.get("below_tier")
             if bt is not None and bt not in VALID_BELOW_TIER:
                 errs.append(f"assets preferences.below_tier: bad value {bt} (expected {'|'.join(VALID_BELOW_TIER)})")
@@ -2701,6 +2736,7 @@ def main():
         if n == "check":
             p.add_argument("--lockfile")
         if n == "probe":
+            p.add_argument("--init", action="store_true", help="create assets.yaml when it is missing")
             p.add_argument("--provider")
             p.add_argument("--low-threshold", type=float)
             p.add_argument("--exhausted-threshold", type=float)
