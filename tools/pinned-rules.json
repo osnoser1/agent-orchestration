@@ -13,5 +13,9 @@
   {"file": "skills/agent-orchestration/references/selection.md", "phrase": "Different family meeting the reviewer tier", "source": "#6 (unversioned): cross-family reviewer is the first fallback step"},
   {"file": "skills/agent-orchestration/SKILL.md", "phrase": "**Red→green evidence**: require failing repro/test output before the fix and passing output after", "source": "#1 (unversioned): red→green evidence gate"},
   {"file": "skills/agent-orchestration/SKILL.md", "phrase": "Waiting for a preferred model to renew is not by itself a reason to hold or to ask", "source": "#18 v0.8.0: waiting for a preferred model to renew is not by itself a hold"},
-  {"file": "skills/agent-orchestration/references/supervision.md", "phrase": "After two failed retries of the same item, stop retrying it and report it to the user with the evidence", "source": "#18 v0.8.0: retry limit then report"}
+  {"file": "skills/agent-orchestration/references/supervision.md", "phrase": "After two failed retries of the same item, stop retrying it and report it to the user with the evidence", "source": "#18 v0.8.0: retry limit then report"},
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "follow its final `action:` line", "source": "#20 v0.9.0: select's action line replaces reading exit codes"},
+  {"file": "skills/agent-orchestration/references/supervision.md", "phrase": "and follow its `action:` line", "source": "#20 v0.9.0: failure classifies and counts retries in a script"},
+  {"file": "skills/agent-orchestration/references/verification.md", "phrase": "and follow its `action:` line", "source": "#20 v0.9.0: scope check runs as a script"},
+  {"file": "AGENTS.md", "phrase": "say \"run X and follow its `action:` line\"", "source": "#20 v0.9.0: deterministic work lives in tested scripts, docs point to the command"}
 ]

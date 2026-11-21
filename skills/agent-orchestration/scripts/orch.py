@@ -13,10 +13,12 @@
   orch.py log       --complexity C --risk R --provider P --model M --effort E
                     [--ui] [--reviewer R] [--surface subagent|conversation]
                     [--event select|complete] [--outcome ok|failed|quota|stall|rework]
-                    [--findings N] [--repo NAME] [--provisional]
+                    [--findings N] [--repo NAME] [--provisional] [--ref ITEM] [--failure-class C]
                     [--assets F] [--ledger F] [--now ISO]
   orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
+  orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--ledger F] [--assets F] [--now ISO]
+  orch.py scope     --base REF [--max-files N] [--max-lines N] [--expect GLOB ...] [--repo DIR]
 
 Exit codes:
   0  ok
@@ -25,9 +27,11 @@ Exit codes:
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
+`select`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
 """
-import argparse, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
+import argparse, fnmatch, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.error, urllib.request
 from datetime import datetime, timedelta, timezone, date
 from email.utils import parsedate_to_datetime
 
@@ -43,6 +47,9 @@ VALID_NEW_CONVERSATIONS = ("ask", "allow")
 VALID_DESIGN_CHECKPOINTS = ("ask", "delegate")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
 VALID_SURFACES = ("subagent", "conversation")
+VALID_FAILURE_CLASSES = ("quota", "infra", "context-cap", "tool", "unknown")
+RETRY_CLASSES = ("context-cap", "tool", "unknown")  # the only classes that count toward the retry limit
+MAX_RETRIES = 2
 VALID_FOLLOWUP_KINDS = ("ui-review", "preferred-review", "resume")
 RESUME_MARGIN = timedelta(minutes=2)
 STALE_INSTALL_DAYS = 7
@@ -819,7 +826,7 @@ def candidates(
     cat = {norm(m["id"]): m for m in catalog["models"]}
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     out, notes = [], []
-    reasons = {"exhausted": 0, "threshold": 0, "gated": 0, "tier": 0}
+    reasons = {"exhausted": 0, "threshold": 0, "gated": 0, "tier": 0, "low_resets": []}
     t3_floor = floors.get("T3", FLOORS["T3"])
     eff_floor = task_floor if task_floor is not None else floor
     pref_fam = prefer_family.strip().lower() if prefer_family else None
@@ -854,12 +861,14 @@ def candidates(
             if fail_on_low and st == "low":
                 notes.append(f"{pair}: group {gname} low (blocked by pre-flight threshold)")
                 reasons["threshold"] += 1
+                reasons["low_resets"].append(candidate_next_reset(p, g, now))
                 continue
         else:
             st = prov_st
             if fail_on_low and st == "low":
                 notes.append(f"{pair}: provider low (blocked by pre-flight threshold)")
                 reasons["threshold"] += 1
+                reasons["low_resets"].append(candidate_next_reset(p, g, now))
                 continue
 
         if not m:
@@ -930,6 +939,44 @@ def _fmt_cand(c):
         + (f", status {c['status']}" if c["status"] != "ok" else "")
         + ")"
     )
+
+
+def _cand_ref(c):
+    return f"{c['provider']}/{c['model']['id']} @ {c['effort']}"
+
+
+def _action(text):
+    """Print the final `action:` line: the one next step for the outcome `select` just decided (SKILL.md Step 3)."""
+    print("action: " + text)
+
+
+def _plus_margin(when):
+    """ISO text for `when` (datetime or ISO string) plus the resume margin; None when unknown or unparseable."""
+    if isinstance(when, str):
+        try:
+            when = datetime.fromisoformat(when)
+        except ValueError:
+            return None
+    return (when + RESUME_MARGIN).isoformat(timespec="seconds") if when else None
+
+
+def _stop_action(rc, resume_iso, who="", ask_why=None):
+    """`action:` line for a `select` exit that dispatches nothing (2, 3 or 4); `who` names a held step such as the review."""
+    hold = "hold " + (who + " " if who else "")
+    if rc == 2:
+        _action("no tier match: run references/research-unrated.md or ask the user")
+    elif rc == 4:
+        _action(f"{hold}until {resume_iso or 'the earliest reset (time unknown)'}; record a resume follow-up")
+    elif ask_why:
+        _action(f"ask the user once ({ask_why})")
+    else:
+        _action(
+            f"{hold}until {resume_iso or 'the low pool renews (time unknown)'} (--fail-on-low blocked a low pool); "
+            "record a resume follow-up"
+        )
+
+
+GATED_WHY = "only emergency, pay-per-use, or avoid-policy models remain"
 
 
 def reviewer_tier(tier, risk):
@@ -1060,6 +1107,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
     if not m:
         print(f"implementer {impl_id}: not in catalog")
+        _action(f"fix the --implementer id ({impl_id} is not in the catalog) and rerun select")
         return 1
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
@@ -1069,6 +1117,10 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     pick, wait = choose_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode)
     if pick:
         print_reviewer(rt, pick, m, floors[rt])
+        _action(
+            f"dispatch reviewer {_cand_ref(pick[1])} now"
+            + ("" if pick[0] == 1 else "; state the reviewer degradation in the report")
+        )
         return 0
     if wait:
         earliest_dt, needs = wait
@@ -1076,7 +1128,9 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
             f"NO REVIEWER: high-risk work under below_tier=stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
             "wait for one to renew"
         )
-        _record_resume(ap, ref, needs, _schedule_resume(f"{rt} reviewers", earliest_dt), now, fail_on_low=fail_on_low)
+        resume_iso = _schedule_resume(f"{rt} reviewers", earliest_dt)
+        _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
+        _stop_action(4, resume_iso, "the review")
         return 4
     _, notes, reasons = candidates(
         catalog,
@@ -1093,6 +1147,8 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     for n in notes:
         print("  note:", n)
     if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["exhausted"] == 0):
+        low = [t for t in reasons["low_resets"] if t]
+        _stop_action(3, _plus_margin(min(low)) if low else None, "the review", None if reasons["threshold"] else GATED_WHY)
         return 3
     if reasons["exhausted"] > 0:
         saw, earliest_dt, needs, _ = exhausted_tier_candidates(catalog, assets, avail, rt, floors[rt], now)
@@ -1100,8 +1156,11 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         if not saw:
             _, earliest_dt, _, _ = exhausted_tier_candidates(catalog, assets, avail, "any", 0, now)
             needs, label = "any", "reviewers"
-        _record_resume(ap, ref, needs, _schedule_resume(label, earliest_dt), now, fail_on_low=fail_on_low)
+        resume_iso = _schedule_resume(label, earliest_dt)
+        _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
+        _stop_action(4, resume_iso, "the review")
         return 4
+    _stop_action(2, None)
     return 2
 
 
@@ -1224,6 +1283,11 @@ def select(a):
                     f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
                     f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
                 )
+            _action(
+                f"stage: dispatch Phase 1 {_cand_ref(impl)} now; switch to "
+                + (_cand_ref(target) if target else f"the first usable {tier} model")
+                + f" at the Phase 1 boundary, with a resume double check at {resume_iso or 'reset + 2m'}"
+            )
             return 0
 
         if can_stage and below_tier_mode == "proceed":
@@ -1248,21 +1312,28 @@ def select(a):
                     f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
                     f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
                 )
+            _action(
+                f"dispatch {_cand_ref(impl)} now (provisional, below {tier}); "
+                "choose the reviewer when its step starts"
+            )
             return 0
 
         print("NO CANDIDATE:", *notes, sep="\n  ")
         if (saw_ex_tier and reasons["threshold"] == 0) or (
             reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0
         ):
-            _record_resume(
-                ap, ref_val, resume_needs, _schedule_resume(f"{tier} candidates", earliest_dt), now,
-                fail_on_low=bool(a.fail_on_low),
-            )
+            sched_iso = _schedule_resume(f"{tier} candidates", earliest_dt)
+            _record_resume(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
+            _stop_action(4, sched_iso)
             return 4
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
+            low = [t for t in reasons["low_resets"] if t]
+            _stop_action(3, _plus_margin(min(low)) if low else None, "", None if reasons["threshold"] else GATED_WHY)
             return 3
         if reasons["exhausted"] > 0:
+            _stop_action(4, resume_iso)
             return 4
+        _stop_action(2, None)
         return 2
 
     impl = cands[0]
@@ -1296,6 +1367,10 @@ def select(a):
                 print(f"  fallback if urgent: {fmt(impl)}")
                 for n in notes:
                     print("  note:", n)
+                _action(
+                    f"hold until {_plus_margin(earliest) or 'the preferred model renews (time unknown)'} "
+                    f"(preferred {pref_need} exhausted); record a resume follow-up"
+                )
                 return 3
             if fallback_mode == "ask":
                 print(
@@ -1304,6 +1379,10 @@ def select(a):
                 )
                 for n in notes:
                     print("  note:", n)
+                _action(
+                    f"ask the user once (preferred {pref_need} exhausted: proceed provisionally with "
+                    f"{_cand_ref(impl)} and queue a follow-up review, or wait until {_plus_margin(earliest) or 'it renews'})"
+                )
                 return 3
             # proceed (default)
             print(
@@ -1344,6 +1423,7 @@ def select(a):
             f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
             f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
         )
+    _action(f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts")
     return 0
 
 
@@ -2605,6 +2685,12 @@ def followups_cmd(a):
     return 0
 
 
+def _clean_ref(ref):
+    """Ledger label for an item: a short slug, never a path (references/improvement.md)."""
+    label = os.path.basename(ref.strip().rstrip("/\\")) or "item"
+    return re.sub(r"[^A-Za-z0-9._#:-]+", "-", label).strip("-")[:64] or "item"
+
+
 def log_cmd(a):
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
@@ -2643,6 +2729,15 @@ def log_cmd(a):
     }
     if _opt_bool(a, "provisional"):
         entry["provisional"] = True
+    ref = _opt_str(a, "ref")
+    if ref:
+        entry["ref"] = _clean_ref(ref)
+    fclass = _opt_str(a, "failure_class")
+    if fclass:
+        if fclass not in VALID_FAILURE_CLASSES:
+            print(f"invalid failure class: {fclass}")
+            return 1
+        entry["failure_class"] = fclass
 
     parent = os.path.dirname(os.path.abspath(ledger_path))
     if parent:
@@ -2650,6 +2745,233 @@ def log_cmd(a):
     with open(ledger_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
     print(f"logged {event} ({repo}) -> {ledger_path}")
+    return 0
+
+
+_I = re.IGNORECASE
+QUOTA_RE = re.compile(
+    r"hit your (?:weekly|usage|daily|monthly|session)\b|(?:weekly|usage|daily|monthly|session) limit"
+    r"|quota (?:reached|exceeded|limit)|rate[ _-]?limit|too many requests|try again (?:at|in)|resource[_ ]exhausted",
+    _I,
+)
+INFRA_RE = re.compile(
+    r"ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|TLS handshake timeout"
+    r"|connection (?:reset|refused|timed out)|network is unreachable|\b50[234]\b|bad gateway|service unavailable"
+    r"|gateway time-?out|runner (?:lost|preempted|shut ?down)|lost (?:communication|connection) with (?:the )?(?:server|runner)",
+    _I,
+)
+CONTEXT_RE = re.compile(
+    r"context[ _-]?(?:length|window|limit)|prompt is too long|maximum context|exceeds? the (?:maximum )?context"
+    r"|max(?:imum)?[ _-]?turns|turn limit|too many tokens|token limit",
+    _I,
+)
+TOOL_RE = re.compile(
+    r"InputValidationError|tool[ _-]?use[ _-]?error|tool (?:error|call failed|execution failed)|invalid tool|unknown tool"
+    r"|spawn\b.{0,80}\bENOENT|harness error",
+    _I,
+)
+
+
+def _parse_known(items):
+    """`REGEX=>ACTION` strings -> [(compiled, regex_text, action)]; raises ValueError on a bad entry."""
+    out = []
+    for item in items or []:
+        rx, sep, act = item.partition("=>")
+        if not sep or not rx.strip() or not act.strip():
+            raise ValueError(f"--known needs REGEX=>ACTION, got: {item}")
+        try:
+            out.append((re.compile(rx.strip(), _I), rx.strip(), " ".join(act.split())))
+        except re.error as exc:
+            raise ValueError(f"--known regex {rx.strip()!r}: {exc}")
+    return out
+
+
+def classify_failure(text, now, known=()):
+    """Return `(cls, known_hit, reset)`: class in VALID_FAILURE_CLASSES, the matching `--known` entry or None, reset datetime or None."""
+    for entry in known:
+        if entry[0].search(text):
+            return "infra", entry, None
+    reset = parse_reset(text, now) if re.search(r"\bresets?\b", text, _I) else None
+    if reset or QUOTA_RE.search(text):
+        return "quota", None, reset or parse_reset(text, now)
+    for cls, rx in (("infra", INFRA_RE), ("context-cap", CONTEXT_RE), ("tool", TOOL_RE)):
+        if rx.search(text):
+            return cls, None, None
+    return "unknown", None, None
+
+
+def prior_retries(ledger_path, ref):
+    """Failures already logged for `ref` in a retry-counting class (references/supervision.md); 0 without a ledger."""
+    n = 0
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and e.get("ref") == ref and e.get("failure_class") in RETRY_CLASSES:
+                    n += 1
+    except OSError:
+        pass
+    return n
+
+
+def failure_cmd(a):
+    now = get_now(_opt_str(a, "now"))
+    text = " ".join((_opt_str(a, "message") or "").split())
+    ref = _clean_ref(_opt_str(a, "ref") or "") if _opt_str(a, "ref") else None
+    try:
+        known = _parse_known([k for k in (getattr(a, "known", None) or []) if isinstance(k, str)])
+    except ValueError as exc:
+        print(str(exc))
+        print("action: fix the --known pattern (REGEX=>ACTION) and rerun failure")
+        return 1
+    ap = _opt_str(a, "assets") or def_assets()
+    ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
+    cls, hit, reset = classify_failure(text, now, known)
+    n = prior_retries(ledger_path, ref) if ref else 0
+    print(f"class: {cls}")
+    print(f"retries: {n}/{MAX_RETRIES}" + ("" if ref else " (pass --ref to count retries)"))
+    tag = f" --ref {ref}" if ref else ""
+    if hit:
+        print(f"known: {hit[1]}")
+        _failure_log_hint("failed", cls, tag)
+        print(f"action: {hit[2]}")
+    elif cls == "quota":
+        print("resets: " + (reset.isoformat(timespec="seconds") if reset else "unknown"))
+        _failure_log_hint("quota", cls, tag)
+        print(
+            'action: run orch.py exhaust <provider> "<error text>" (add --model or --group per references/quota-errors.md), '
+            "then follow the quota order in references/harnesses.md"
+        )
+    elif cls == "infra":
+        _failure_log_hint("<ok|failed>", cls, tag)
+        print("action: rerun the failed job or command once (references/verification.md); if it fails again, diagnose it as a real failure")
+    else:
+        _failure_log_hint("failed", cls, tag)
+        if n >= MAX_RETRIES:
+            print(
+                f"action: stop retrying {ref or 'this item'} and report it to the user with the evidence "
+                "(error text, last messages, ledger lines)"
+            )
+        elif cls == "context-cap":
+            print(
+                "action: confirm the old child stopped (references/supervision.md), then start a replacement with the partial "
+                "results (branch, commit, last completed step) and a narrower scope covering only the remaining work"
+            )
+        elif cls == "tool" and n >= 1:
+            print("action: rerun select with the failing model removed from --available and dispatch its candidate")
+        elif cls == "tool":
+            print("action: retry once on the same model")
+        else:
+            print("action: retry once")
+    return 0
+
+
+def _failure_log_hint(outcome, cls, tag):
+    print(f"log: --event complete --outcome {outcome} --failure-class {cls}{tag}")
+
+
+MANIFEST_GLOBS = (
+    "package.json", "bun.lock*", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "pyproject.toml",
+    "requirements*.txt", "uv.lock", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Gemfile*", "composer.*",
+)
+STRAY_GLOBS = ("*.orig", "*.rej", "*.log", ".DS_Store", "*.tmp", "*.bak")
+STRAY_DIRS = ("scratch", "tmp")
+STRAY_TOP = 5  # largest files named when only the size budget is exceeded
+
+
+def _glob_re(glob):
+    """`*` and `?` stay inside one directory, `**` crosses them, a trailing `/` means the whole directory."""
+    if glob.endswith("/"):
+        glob += "**"
+    out, i = [], 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        else:
+            c = glob[i]
+            out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _git(root, *argv):
+    try:
+        p = subprocess.run(["git", *argv], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    except OSError as exc:
+        return 127, str(exc)
+    return p.returncode, p.stdout if p.returncode == 0 else p.stdout + p.stderr
+
+
+def _scope_fail(msg):
+    print(f"scope: {msg}")
+    print("action: fix the --base or --repo argument and rerun scope")
+    return 1
+
+
+def scope_cmd(a):
+    root = _opt_str(a, "repo") or os.getcwd()
+    base = _opt_str(a, "base")
+    max_files, max_lines = _opt_int(a, "max_files"), _opt_int(a, "max_lines")
+    expect = [e for e in (getattr(a, "expect", None) or []) if isinstance(e, str)]
+    rc, mb = _git(root, "merge-base", base, "HEAD")
+    mb = mb.strip()
+    if rc != 0 or not mb:
+        return _scope_fail(f"cannot find a merge-base with {base} (fetch it, e.g. `git fetch origin`, and use full history)")
+    rc, num = _git(root, "diff", "--numstat", "-z", "--no-renames", mb)
+    if rc != 0:
+        return _scope_fail(f"git diff against merge-base {mb[:7]} failed: {num.strip() or 'no output'}")
+    rc, new = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    if rc != 0:
+        return _scope_fail(f"git ls-files failed: {new.strip() or 'no output'}")
+    changed = {}  # path -> changed lines
+    for rec in (r for r in num.split("\0") if r):
+        added, _, rest = rec.partition("\t")
+        deleted, _, path = rest.partition("\t")
+        changed[path] = (int(added) + int(deleted)) if added.isdigit() and deleted.isdigit() else 0  # binary: 0 lines
+    for path in (r for r in new.split("\0") if r):
+        try:
+            with open(os.path.join(root, path), "rb") as fh:
+                data = fh.read()
+            changed[path] = 0 if b"\0" in data else data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+        except OSError:
+            changed[path] = 0
+    files, lines = len(changed), sum(changed.values())
+    manifests = sorted(p for p in changed if any(fnmatch.fnmatchcase(os.path.basename(p), g) for g in MANIFEST_GLOBS))
+    patterns = [_glob_re(g) for g in expect]
+    outside = sorted(p for p in changed if patterns and not any(r.match(p) for r in patterns))
+    stray = sorted(
+        p for p in changed
+        if any(fnmatch.fnmatchcase(os.path.basename(p), g) for g in STRAY_GLOBS) or set(p.split("/")[:-1]) & set(STRAY_DIRS)
+    )
+    print(f"base: {mb[:7]} (merge-base of {base} and HEAD)")
+    print(f"files: {files}" + (f"/{max_files}" if max_files is not None else ""))
+    print(f"lines: {lines}" + (f"/{max_lines}" if max_lines is not None else ""))
+    print("manifests/lockfiles: " + (", ".join(manifests) or "none"))
+    if patterns:
+        print("outside --expect: " + (", ".join(outside) or "none"))
+    print("stray: " + (", ".join(stray) or "none"))
+    over = []
+    if max_files is not None and files > max_files:
+        over.append(f"files {files}>{max_files}")
+    if max_lines is not None and lines > max_lines:
+        over.append(f"lines {lines}>{max_lines}")
+    flagged = sorted(set(manifests) | set(outside) | set(stray))
+    if over and not flagged:
+        flagged = sorted(changed, key=lambda p: (-changed[p], p))[:STRAY_TOP]
+    if not flagged and not over:
+        print("action: ok")
+        return 0
+    print(
+        "action: trim: ask the implementer to justify or drop: " + ", ".join(flagged)
+        + (f"; over budget: {', '.join(over)}" if over else "")
+    )
     return 0
 
 
@@ -2890,12 +3212,13 @@ def status_cmd(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "select", "followups", "log", "exhaust", "status"):
+    for n in ("check", "probe", "select", "followups", "log", "exhaust", "status", "failure", "scope"):
         p = sub.add_parser(n)
-        p.add_argument("--assets")
-        if n != "log":
+        if n != "scope":
+            p.add_argument("--assets")
+            p.add_argument("--now")
+        if n not in ("log", "failure", "scope"):
             p.add_argument("--catalog")
-        p.add_argument("--now")
         if n == "check":
             p.add_argument("--lockfile")
             p.add_argument("--available")
@@ -2946,6 +3269,19 @@ def main():
             p.add_argument("--findings", type=int)
             p.add_argument("--repo")
             p.add_argument("--provisional", action="store_true")
+            p.add_argument("--ref", help="short item label (no paths); makes retries countable")
+            p.add_argument("--failure-class", choices=list(VALID_FAILURE_CLASSES))
+        if n == "scope":
+            p.add_argument("--base", required=True, help="git ref to diff against (the merge-base with HEAD is used)")
+            p.add_argument("--max-files", type=int)
+            p.add_argument("--max-lines", type=int)
+            p.add_argument("--expect", action="extend", nargs="+", metavar="GLOB", help="paths the task should touch")
+            p.add_argument("--repo", help="repository directory (default: the current directory)")
+        if n == "failure":
+            p.add_argument("message", help="the child's error text")
+            p.add_argument("--ref", required=True, help="short item label (no paths)")
+            p.add_argument("--known", action="append", metavar="REGEX=>ACTION", help="repo `Known failures:` pattern, checked first")
+            p.add_argument("--ledger")
         if n in ("exhaust", "status"):
             p.add_argument("provider")
         if n == "exhaust":
@@ -2963,6 +3299,8 @@ def main():
         "log": log_cmd,
         "exhaust": exhaust,
         "status": status_cmd,
+        "failure": failure_cmd,
+        "scope": scope_cmd,
     }[a.cmd](a)
 
 

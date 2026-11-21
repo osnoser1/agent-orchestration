@@ -2977,5 +2977,455 @@ class TestClaudeUsageCache(unittest.TestCase):
                 self.assertNotIn("sk-secret-token", fh.read())
 
 
+CLAUDE_EXHAUSTED = (
+    "version: 1\nproviders:\n"
+    "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+    "  - id: codex\n    status: ok\n"
+)
+CLAUDE_LOW_API = (
+    "version: 1\nproviders:\n"
+    "  - id: claude\n    status: low\n    used_percent: 90\n    resets: 2026-11-22T00:00:00+00:00\n"
+    "  - id: api\n    pay_per_use: true\n"
+)
+
+
+class TestSelectActionLine(unittest.TestCase):
+    """Every `select` outcome ends in one `action:` line (SKILL.md Steps 3 and 7); exit codes are unchanged."""
+
+    def sel(self, assets_text, available, rc_expected, action, **kw):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, assets_text)
+            rc, out = _run(orch.select, _sel(ap, available, **kw))
+        self.assertEqual(rc, rc_expected, out)
+        lines = out.rstrip("\n").split("\n")
+        self.assertEqual(lines[-1], action, out)
+        self.assertEqual(sum(1 for x in lines if x.startswith("action: ")), 1, out)
+
+    def test_exit0_dispatches_now(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
+            "action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts",
+            complexity="hard", risk="medium",
+        )
+
+    def test_exit0_low_pool_still_dispatches(self):
+        self.sel(
+            CLAUDE_LOW_API, "claude:claude-opus-5-5", 0,
+            "action: dispatch claude/claude-opus-5-5 @ high now; choose the reviewer when its step starts",
+            complexity="hard", risk="medium",
+        )
+
+    def test_stage_plan(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
+            "action: stage: dispatch Phase 1 codex/gpt-6-2-sol @ xhigh now; switch to claude/claude-opus-5-5 @ xhigh "
+            "at the Phase 1 boundary, with a resume double check at 2026-11-23T08:02:00+00:00",
+            ref="a-stage",
+        )
+
+    def test_proceed_below_tier_is_provisional(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
+            "action: dispatch codex/gpt-6-2-sol @ xhigh now (provisional, below T4); "
+            "choose the reviewer when its step starts",
+            below_tier="proceed", ref="a-proceed",
+        )
+
+    def _ui(self, mode, rc, action):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            TestUiAndPreferredFallback._write_anthropic_exhausted_assets(None, ap, mode)
+            avail = "claude:claude-sonnet-5-5,antigravity:claude-sonnet-5-5,antigravity:gemini-4-neon,codex:gpt-6-2-sol"
+            got, out = _run(orch.select, _sel(ap, avail, complexity="standard", risk="low", ui=True, ref="a-ui"))
+        self.assertEqual(got, rc, out)
+        self.assertEqual(out.rstrip("\n").split("\n")[-1], action, out)
+
+    def test_ui_fallback_defer_holds(self):
+        self._ui(
+            "defer", 3,
+            "action: hold until 2026-11-23T08:02:00+00:00 (preferred ui-ux-review exhausted); "
+            "record a resume follow-up",
+        )
+
+    def test_ui_fallback_ask_asks_once(self):
+        self._ui(
+            "ask", 3,
+            "action: ask the user once (preferred ui-ux-review exhausted: proceed provisionally with "
+            "antigravity/gemini-4-neon @ low and queue a follow-up review, or wait until 2026-11-23T08:02:00+00:00)",
+        )
+
+    def test_ui_fallback_proceed_dispatches(self):
+        self._ui(
+            "proceed", 0,
+            "action: dispatch antigravity/gemini-4-neon @ low now; choose the reviewer when its step starts",
+        )
+
+    def test_exit3_fail_on_low_holds_until_the_low_pool_renews(self):
+        self.sel(
+            CLAUDE_LOW_API, "claude:claude-opus-5-5", 3,
+            "action: hold until 2026-11-22T00:02:00+00:00 (--fail-on-low blocked a low pool); "
+            "record a resume follow-up",
+            complexity="hard", risk="medium", fail_on_low=True,
+        )
+
+    def test_exit3_gated_models_ask_the_user(self):
+        self.sel(
+            CLAUDE_LOW_API, "api:claude-opus-5-5", 3,
+            "action: ask the user once (only emergency, pay-per-use, or avoid-policy models remain)",
+            complexity="hard", risk="medium",
+        )
+
+    def test_exit4_all_tier_models_exhausted_holds_until_reset_plus_margin(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5", 4,
+            "action: hold until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            ref="a-hold",
+        )
+
+    def test_exit2_no_tier_match(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "codex:gpt-6-2-sol", 2,
+            "action: no tier match: run references/research-unrated.md or ask the user",
+            ref="a-none",
+        )
+
+    def test_reviewer_dispatches_now(self):
+        self.sel(
+            CLAUDE_EXHAUSTED.replace("exhausted", "ok"), "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
+            "action: dispatch reviewer codex/gpt-6-2-sol @ medium now",
+            complexity="hard", risk="medium", implementer="claude-opus-5-5",
+        )
+
+    def test_degraded_reviewer_is_reported(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
+            "action: dispatch reviewer codex/gpt-6-2-sol @ medium now; state the reviewer degradation in the report",
+            complexity="hard", risk="medium", implementer="gpt-6-2-sol",
+        )
+
+    def test_high_risk_no_reviewer_waits_for_the_tier(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 4,
+            "action: hold the review until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            implementer="gpt-6-2-sol", ref="a-rev-wait",
+        )
+
+    def test_no_reviewer_exhausted_holds_the_review(self):
+        self.sel(
+            CLAUDE_EXHAUSTED, "claude:claude-opus-5-5", 4,
+            "action: hold the review until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            complexity="hard", risk="medium", implementer="claude-opus-5-5", ref="a-rev-none",
+        )
+
+    def test_no_reviewer_low_pool_holds_the_review(self):
+        self.sel(
+            CLAUDE_LOW_API, "claude:claude-opus-5-5", 3,
+            "action: hold the review until 2026-11-22T00:02:00+00:00 (--fail-on-low blocked a low pool); "
+            "record a resume follow-up",
+            complexity="hard", risk="medium", implementer="claude-opus-5-5", fail_on_low=True,
+        )
+
+    def test_no_reviewer_gated_asks_the_user(self):
+        self.sel(
+            CLAUDE_LOW_API, "api:claude-opus-5-5", 3,
+            "action: ask the user once (only emergency, pay-per-use, or avoid-policy models remain)",
+            complexity="hard", risk="medium", implementer="claude-opus-5-5",
+        )
+
+    def test_no_reviewer_no_tier_match(self):
+        self.sel(
+            CLAUDE_LOW_API, "foo:x", 2,
+            "action: no tier match: run references/research-unrated.md or ask the user",
+            complexity="hard", risk="medium", implementer="claude-opus-5-5",
+        )
+
+    def test_unknown_implementer_asks_for_a_fix(self):
+        self.sel(
+            CLAUDE_LOW_API, "codex:gpt-6-2-sol", 1,
+            "action: fix the --implementer id (nope is not in the catalog) and rerun select",
+            implementer="nope",
+        )
+
+
+def _fail(message, ref="item-1", ledger=None, known=None, assets=None):
+    return mock.Mock(
+        message=message, ref=ref, ledger=ledger, known=known, assets=assets, now="2026-11-20T21:00:00Z"
+    )
+
+
+def _log_failure(ledger, ref, fclass):
+    return mock.Mock(
+        assets=None, ledger=ledger, now="2026-11-20T21:00:00Z", event="complete", complexity="hard", risk="low",
+        ui=False, surface="subagent", provider="codex", model="gpt-6-2-sol", effort="high", reviewer=None,
+        outcome="failed", findings=None, repo="demo", provisional=False, ref=ref, failure_class=fclass,
+    )
+
+
+class TestFailureCommand(unittest.TestCase):
+    """`orch.py failure` maps a child's error text to class, retries and one action (references/supervision.md)."""
+
+    def run_failure(self, args):
+        rc, out = _run(orch.failure_cmd, args)
+        lines = out.rstrip("\n").split("\n")
+        self.assertTrue(lines[-1].startswith("action: "), out)
+        return rc, {k: v for k, _, v in (ln.partition(": ") for ln in lines)}, out
+
+    def ledger(self, tmp, entries):
+        path = os.path.join(tmp, "ledger.jsonl")
+        for ref, fclass in entries:
+            _run(orch.log_cmd, _log_failure(path, ref, fclass))
+        return path
+
+    def test_quota_parses_reset_and_points_to_exhaust(self):
+        rc, f, _ = self.run_failure(_fail("You've hit your weekly limit \u00b7 resets Nov 23, 3am (America/New_York)"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(f["class"], "quota")
+        self.assertEqual(f["resets"], "2026-11-23T03:00:00-05:00")
+        self.assertEqual(f["retries"], "0/2")
+        self.assertEqual(f["log"], "--event complete --outcome quota --failure-class quota --ref item-1")
+        self.assertEqual(
+            f["action"],
+            'run orch.py exhaust <provider> "<error text>" (add --model or --group per references/quota-errors.md), '
+            "then follow the quota order in references/harnesses.md",
+        )
+
+    def test_quota_without_a_reset_time(self):
+        _, f, _ = self.run_failure(_fail("429 Too Many Requests: rate limit exceeded"))
+        self.assertEqual((f["class"], f["resets"]), ("quota", "unknown"))
+
+    def test_infra_signatures_get_one_rerun(self):
+        for text in (
+            "fetch failed: ETIMEDOUT 10.0.0.1:443", "read ECONNRESET", "HTTP 502 Bad Gateway", "503 Service Unavailable",
+            "504 gateway timeout", "The runner lost communication with the server",
+        ):
+            _, f, _ = self.run_failure(_fail(text))
+            self.assertEqual(f["class"], "infra", text)
+            self.assertEqual(
+                f["action"],
+                "rerun the failed job or command once (references/verification.md); "
+                "if it fails again, diagnose it as a real failure",
+            )
+
+    def test_context_cap_starts_a_narrower_replacement(self):
+        for text in ("prompt is too long: 250001 tokens", "context length exceeded", "Reached maximum context", "stopped: max turns reached"):
+            _, f, _ = self.run_failure(_fail(text))
+            self.assertEqual(f["class"], "context-cap", text)
+        self.assertEqual(f["log"], "--event complete --outcome failed --failure-class context-cap --ref item-1")
+        self.assertEqual(
+            f["action"],
+            "confirm the old child stopped (references/supervision.md), then start a replacement with the partial "
+            "results (branch, commit, last completed step) and a narrower scope covering only the remaining work",
+        )
+
+    def test_tool_error_retries_once_then_switches_model(self):
+        for text in ("InputValidationError: missing field", "tool error: Edit failed", "spawn git ENOENT"):
+            _, f, _ = self.run_failure(_fail(text))
+            self.assertEqual((f["class"], f["action"]), ("tool", "retry once on the same model"), text)
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "tool")])
+            _, f, _ = self.run_failure(_fail("tool error: boom", ledger=led))
+            self.assertEqual(f["retries"], "1/2")
+            self.assertEqual(
+                f["action"], "rerun select with the failing model removed from --available and dispatch its candidate"
+            )
+
+    def test_unknown_retries_once(self):
+        _, f, _ = self.run_failure(_fail("something odd happened"))
+        self.assertEqual((f["class"], f["retries"], f["action"]), ("unknown", "0/2", "retry once"))
+        self.assertEqual(f["log"], "--event complete --outcome failed --failure-class unknown --ref item-1")
+
+    def test_two_failed_retries_stop_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "unknown")])
+            for text, cls in (("weird", "unknown"), ("tool error: x", "tool"), ("context length exceeded", "context-cap")):
+                _, f, _ = self.run_failure(_fail(text, ledger=led))
+                self.assertEqual((f["class"], f["retries"]), (cls, "2/2"))
+                self.assertEqual(
+                    f["action"],
+                    "stop retrying item-1 and report it to the user with the evidence "
+                    "(error text, last messages, ledger lines)",
+                )
+
+    def test_only_retry_classes_for_the_same_ref_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(
+                tmp,
+                [("item-1", "quota"), ("item-1", "infra"), ("item-1", None), ("other", "tool"), ("other", "tool"), ("item-1", "unknown")],
+            )
+            _, f, _ = self.run_failure(_fail("weird", ledger=led))
+            self.assertEqual((f["retries"], f["action"]), ("1/2", "retry once"))
+            _, f, _ = self.run_failure(_fail("ETIMEDOUT", ledger=led))
+            self.assertEqual(f["retries"], "1/2")
+            self.assertTrue(f["action"].startswith("rerun the failed job"))
+
+    def test_quota_and_infra_never_stop_at_the_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "tool")])
+            _, f, _ = self.run_failure(_fail("rate limit reached, try again in 2h", ledger=led))
+            self.assertEqual((f["class"], f["retries"]), ("quota", "2/2"))
+            self.assertTrue(f["action"].startswith("run orch.py exhaust"))
+
+    def test_known_failures_win_over_every_class(self):
+        known = ["eslint exploded=>run npm ci once, then rerun", "ETIMEDOUT=>never reached"]
+        _, f, _ = self.run_failure(_fail("prompt is too long; eslint exploded", known=known))
+        self.assertEqual((f["class"], f["known"], f["action"]), ("infra", "eslint exploded", "run npm ci once, then rerun"))
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "tool")])
+            _, f, _ = self.run_failure(_fail("eslint exploded", ledger=led, known=known))
+            self.assertEqual(f["action"], "run npm ci once, then rerun")
+
+    def test_known_pattern_must_be_regex_arrow_action(self):
+        rc, out = _run(orch.failure_cmd, _fail("x", known=["no arrow"]))
+        self.assertEqual(rc, 1)
+        self.assertTrue(out.rstrip("\n").split("\n")[-1].startswith("action: fix the --known pattern"))
+        rc, _ = _run(orch.failure_cmd, _fail("x", known=["(unclosed=>do it"]))
+        self.assertEqual(rc, 1)
+
+    def test_log_records_ref_and_class_without_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = os.path.join(tmp, "ledger.jsonl")
+            rc, _ = _run(orch.log_cmd, _log_failure(led, "/home/me/private/repo/item-9", "tool"))
+            self.assertEqual(rc, 0)
+            with open(led, encoding="utf-8") as fh:
+                entry = json.loads(fh.read())
+            self.assertEqual((entry["ref"], entry["failure_class"]), ("item-9", "tool"))
+            self.assertNotIn("/home/me", json.dumps(entry))
+            rc, out = _run(orch.log_cmd, _log_failure(led, "x", "bogus"))
+            self.assertEqual(rc, 1)
+            self.assertIn("invalid failure class", out)
+
+
+GIT_CFG = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=T", "-c", "user.email=t@example.com"]
+
+
+def _git(root, *argv):
+    p = subprocess.run(["git", *GIT_CFG, *argv], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    assert p.returncode == 0, p.stdout
+    return p.stdout
+
+
+def _scope(root, **kw):
+    base = dict(repo=root, base="main", max_files=None, max_lines=None, expect=None)
+    base.update(kw)
+    rc, out = _run(orch.scope_cmd, mock.Mock(**base))
+    lines = out.rstrip("\n").split("\n")
+    return rc, {k: v for k, _, v in (ln.partition(": ") for ln in lines)}, lines
+
+
+class TestScopeCommand(unittest.TestCase):
+    """`orch.py scope` compares the diff to the brief's budget and flags manifests and strays."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        _git(self.root, "init", "-q", "-b", "main")
+        self.put("src/app.py", "print(1)\n")
+        self.put(".gitignore", "ignored/\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "base")
+        _git(self.root, "checkout", "-q", "-b", "feature")
+
+    def put(self, rel, text):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_clean_diff_within_budget_is_ok(self):
+        self.put("src/app.py", "print(1)\nprint(2)\n")
+        self.put("src/new.py", "a\nb\nc\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "work")
+        rc, f, lines = _scope(self.root, max_files=3, max_lines=10, expect=["src/**"])
+        self.assertEqual(rc, 0)
+        self.assertEqual((f["files"], f["lines"]), ("2/3", "4/10"))
+        self.assertEqual((f["manifests/lockfiles"], f["outside --expect"], f["stray"]), ("none", "none", "none"))
+        self.assertEqual(lines[-1], "action: ok")
+
+    def test_counts_committed_staged_unstaged_and_untracked_but_not_ignored(self):
+        self.put("src/c.py", "1\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "w")
+        self.put("src/s.py", "1\n2\n")
+        _git(self.root, "add", "src/s.py")
+        self.put("src/app.py", "print(1)\nprint(3)\n")
+        self.put("src/u.py", "x\ny\nz")
+        self.put("ignored/skip.py", "nope\n")
+        _, f, _ = _scope(self.root)
+        self.assertEqual((f["files"], f["lines"]), ("4", "7"))
+
+    def test_manifests_and_lockfiles_are_listed_and_trimmed(self):
+        for rel in ("package.json", "web/bun.lock", "bun.lockb", "requirements-dev.txt", "go.sum", "Gemfile.lock", "composer.json", "Cargo.toml"):
+            self.put(rel, "{}\n")
+        self.put("src/ok.py", "1\n")
+        _, f, lines = _scope(self.root)
+        self.assertEqual(
+            f["manifests/lockfiles"],
+            "Cargo.toml, Gemfile.lock, bun.lockb, composer.json, go.sum, package.json, requirements-dev.txt, web/bun.lock",
+        )
+        self.assertEqual(
+            lines[-1],
+            "action: trim: ask the implementer to justify or drop: Cargo.toml, Gemfile.lock, bun.lockb, composer.json, "
+            "go.sum, package.json, requirements-dev.txt, web/bun.lock",
+        )
+
+    def test_files_outside_expect_globs_are_flagged(self):
+        self.put("src/app.py", "print(2)\n")
+        self.put("src/deep/x.py", "1\n")
+        self.put("docs/readme.md", "1\n")
+        self.put("top.py", "1\n")
+        _, f, lines = _scope(self.root, expect=["src/*.py", "docs/"])
+        self.assertEqual(f["outside --expect"], "src/deep/x.py, top.py")
+        self.assertEqual(lines[-1], "action: trim: ask the implementer to justify or drop: src/deep/x.py, top.py")
+        _, f, lines = _scope(self.root, expect=["src/**", "docs/**", "*.py"])
+        self.assertEqual((f["outside --expect"], lines[-1]), ("none", "action: ok"))
+
+    def test_stray_files_are_flagged(self):
+        for rel in ("a.orig", "b.rej", "run.log", ".DS_Store", "c.tmp", "scratch/n.py", "pkg/tmp/m.py", "d.bak"):
+            self.put(rel, "1\n")
+        self.put("src/keep.py", "1\n")
+        _, f, lines = _scope(self.root)
+        self.assertEqual(f["stray"], ".DS_Store, a.orig, b.rej, c.tmp, d.bak, pkg/tmp/m.py, run.log, scratch/n.py")
+        self.assertNotIn("keep.py", lines[-1])
+        self.assertTrue(lines[-1].startswith("action: trim: ask the implementer to justify or drop: .DS_Store, a.orig"))
+
+    def test_over_budget_names_the_largest_files(self):
+        self.put("src/big.py", "x\n" * 50)
+        self.put("src/mid.py", "x\n" * 5)
+        self.put("src/small.py", "x\n")
+        _, f, lines = _scope(self.root, max_files=2, max_lines=40)
+        self.assertEqual((f["files"], f["lines"]), ("3/2", "56/40"))
+        self.assertEqual(
+            lines[-1],
+            "action: trim: ask the implementer to justify or drop: src/big.py, src/mid.py, src/small.py; "
+            "over budget: files 3>2, lines 56>40",
+        )
+
+    def test_binary_files_count_as_a_file_with_no_lines(self):
+        with open(os.path.join(self.root, "img.png"), "wb") as fh:
+            fh.write(b"\x89PNG\0\0data\n\n")
+        _, f, _ = _scope(self.root)
+        self.assertEqual((f["files"], f["lines"]), ("1", "0"))
+
+    def test_deleted_and_renamed_files_list_both_paths(self):
+        _git(self.root, "mv", "src/app.py", "src/main.py")
+        _, f, _ = _scope(self.root)
+        self.assertEqual(f["files"], "2")
+
+    def test_missing_base_errors_with_an_action(self):
+        rc, f, lines = _scope(self.root, base="origin/nope")
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot find a merge-base with origin/nope", f["scope"])
+        self.assertEqual(lines[-1], "action: fix the --base or --repo argument and rerun scope")
+
+    def test_not_a_repository_errors(self):
+        with tempfile.TemporaryDirectory() as plain:
+            rc, _, lines = _scope(plain)
+        self.assertEqual(rc, 1)
+        self.assertEqual(lines[-1], "action: fix the --base or --repo argument and rerun scope")
+
+
 if __name__ == "__main__":
     unittest.main()
