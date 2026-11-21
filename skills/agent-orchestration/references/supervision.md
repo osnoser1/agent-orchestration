@@ -46,7 +46,7 @@ On each check:
 
 1. **Read cheaply**: inspect each open non-notifying child with a small read limit (recent messages/run state only).
 2. **Classify and act**:
-   - **Healthy**: active run in progress, or waiting on an awaited task/subagent → leave running.
+   - **Healthy**: active run in progress, or waiting on an awaited task/subagent → leave running, and run the scope check on its working diff (`references/verification.md`).
    - **Staged Phase 1 done**: apply the phase-boundary switch in `references/selection.md`.
    - **Stopped by quota**: run the quota-recovery decision order in `references/harnesses.md`.
    - **Idle with pending work**: diagnose why it stopped and send one continuation message. When a Gemini child exhibits the `"ended turn while waiting"` quirk (`catalog.yaml`, `references/harnesses.md`), resend and instruct it to block in one foreground command.
