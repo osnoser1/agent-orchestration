@@ -25,7 +25,19 @@ an effort suffix (`-high`, ...) on a catalog id needs no entry.
 
 Output: one line per problem, `error: <rule>: <message>` (fails the run);
 `note:` lines (information only) appear with --full. Rules: version, version-git
-(git could not answer for --base), harness, links, budget, leak, model, pinned, skills.
+(git could not answer for --base), harness, links, budget, leak, model, pinned, skills, cli, done-when.
+
+Rule `cli` (docs <-> CLI): imports `build_parser()` from skills/agent-orchestration/scripts/orch.py and
+tools/repo.py under the checked root, then reads every checked markdown file (the `links` set, README.md and
+AGENTS.md included). Only code is scanned: inline code spans and fenced lines (a trailing `\\` joins the next
+line; ` # comment` tails are dropped). Each `orch.py <sub>` / `repo.py <sub>` mention must name a real subcommand,
+and the `--flags` after it, up to the next mention in the same span, must belong to that subcommand (or be --help).
+Every subcommand of either script must also be mentioned in README.md.
+
+Rule `done-when`: every `## N.` step of skills/*/SKILL.md, and every `##` section of skills/*/references/*.md that
+holds an ordered list (two or more items starting at column 0), needs a line starting `*Done when*` before the next
+`##` heading. Lookup lists (rankings, fallback orders) are exempt through tools/done-when-exempt.json, which maps a
+file to its exempt section titles; an entry naming a missing section is an error.
 """
 import argparse
 import glob
@@ -56,6 +68,8 @@ RULE_FIX = {  # one fix hint per rule, joined into the closing `error: N problem
     "model": "use a catalog id or alias, or add the token to tools/model-id-allowlist.json",
     "pinned": "restore the pinned phrase, or change it together with its tools/pinned-rules.json entry",
     "skills": "restore skills/*/SKILL.md",
+    "cli": "fix the doc to match `--help`, or add the missing subcommand mention to README.md",
+    "done-when": "add a `*Done when*: <checkable bound>` line to the section, or list a lookup section in tools/done-when-exempt.json",
 }
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 EFFORT_SUFFIX = re.compile(r"^(.+)-(none|low|medium|high|xhigh|max|ultra)$")
@@ -73,6 +87,13 @@ ANCHOR_TAG_RE = re.compile(r"<a\s[^>]*?\b(?:id|name)=[\"']([^\"']+)[\"']", re.I)
 FENCE_OPEN_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 FENCE_CLOSE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})\s*$")  # a closing fence carries no info string
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+CLI_SCRIPTS = (("orch", "skills/agent-orchestration/scripts/orch.py"), ("repo", "tools/repo.py"))
+CLI_MENTION_RE = re.compile(r"\b(orch|repo)\.py[ \t]+([a-z][a-z-]*)\b")
+CLI_FLAG_RE = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]*)")
+INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+DONE_WHEN_RE = re.compile(r"^\*Done when\*", re.M)
+ORDERED_ITEM_RE = re.compile(r"^\d+[.)][ \t]", re.M)
+STEP_HEADING_RE = re.compile(r"^##\s+\d+\.")
 
 
 # ---------- plumbing ----------
@@ -503,6 +524,127 @@ def check_pinned(root, report):
             report.error("pinned", "%s lost a pinned rule from %s: %r" % (f, r["source"], r["phrase"][:70]))
 
 
+# ---------- rule: cli ----------
+def load_cli_parsers(root, report):
+    """{name: {subcommand: set of option strings}} from each script's build_parser() under `root`."""
+    parsers = {}
+    for name, rel in CLI_SCRIPTS:
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            report.error("cli", "%s is missing" % rel)
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("cli_rule_" + name, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            choices = next(a for a in mod.build_parser()._actions if a.dest == "cmd").choices
+            parsers[name] = {sub: set(p._option_string_actions) | {"-h", "--help"} for sub, p in choices.items()}
+        except Exception as exc:  # noqa: BLE001 - any loader failure is a rule error
+            report.error("cli", "cannot read the parser of %s (%s)" % (rel, exc))
+    return parsers
+
+
+def code_chunks(text):
+    """(lineno, code) for inline code spans and fenced lines; a trailing backslash joins the next fenced line."""
+    out, fence, pending = [], None, None
+    for lineno, line in enumerate(text.split("\n"), 1):
+        if fence:
+            m = FENCE_CLOSE_RE.match(line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+                if pending:  # an unfinished `\` continuation ends with its fence
+                    out.append((pending[0], pending[1]))
+                    pending = None
+                continue
+            code = line.split(" #", 1)[0].rstrip()
+            if pending:
+                code, lineno = pending[1] + " " + code, pending[0]
+                pending = None
+            if code.endswith("\\"):
+                pending = (lineno, code[:-1])
+            else:
+                out.append((lineno, code))
+        elif FENCE_OPEN_RE.match(line):
+            fence = FENCE_OPEN_RE.match(line).group(1)
+        else:
+            out += [(lineno, m) for m in INLINE_CODE_RE.findall(line)]
+    return out
+
+
+def cli_mentions(text):
+    """(lineno, script, subcommand, [flags]) for each `orch.py <sub>` / `repo.py <sub>` mention in code."""
+    found = []
+    for lineno, code in code_chunks(text):
+        hits = list(CLI_MENTION_RE.finditer(code))
+        for i, m in enumerate(hits):
+            tail = code[m.end(): hits[i + 1].start() if i + 1 < len(hits) else len(code)]
+            tail = re.split(r"&&|\|\||[|;]", tail)[0]  # flags after a shell operator belong to another command
+            found.append((lineno, m.group(1), m.group(2), CLI_FLAG_RE.findall(tail)))
+    return found
+
+
+def check_cli(root, report, md_files, texts):
+    parsers = load_cli_parsers(root, report)
+    mentioned = set()
+    for rel in md_files:
+        for lineno, script, sub, flags in cli_mentions(texts[rel]):
+            subs = parsers.get(script)
+            if subs is None:
+                continue
+            if rel == "README.md":
+                mentioned.add((script, sub))
+            if sub not in subs:
+                report.error("cli", "%s:%d: %s.py has no subcommand %r (has: %s)" % (rel, lineno, script, sub, ", ".join(sorted(subs))))
+                continue
+            for flag in dict.fromkeys(flags):
+                if flag not in subs[sub]:
+                    report.error("cli", "%s:%d: %s.py %s has no flag %s" % (rel, lineno, script, sub, flag))
+    for script, subs in sorted(parsers.items()):
+        for sub in sorted(subs):
+            if (script, sub) not in mentioned:
+                report.error("cli", "README.md never mentions `%s.py %s`" % (script, sub))
+
+
+# ---------- rule: done-when ----------
+def md_sections(text):
+    """[(heading line, lineno, body)] for each `##` section, skipping headings inside code fences."""
+    sections, cur = [], None
+    for lineno, line in enumerate(blank_code(text, inline=False).split("\n"), 1):
+        if re.match(r"^##\s", line):
+            cur = [line.strip(), lineno, []]
+            sections.append(cur)
+        elif cur is not None:
+            cur[2].append(line)
+    return [(h, n, "\n".join(b)) for h, n, b in sections]
+
+
+def check_done_when(root, report, texts):
+    exempt = load_json(root, "tools/done-when-exempt.json", report, "done-when", required=False) or {}
+    if not isinstance(exempt, dict) or not all(isinstance(v, list) for v in exempt.values()):
+        report.error("done-when", "tools/done-when-exempt.json must map a file to a list of section titles")
+        exempt = {}
+    used = set()
+    for rel in sorted(texts):
+        is_skill = re.match(r"^skills/[^/]+/SKILL\.md$", rel)
+        if not is_skill and not re.match(r"^skills/[^/]+/references/[^/]+\.md$", rel):
+            continue
+        for heading, lineno, body in md_sections(split_frontmatter(texts[rel])[1] if is_skill else texts[rel]):
+            title = heading.lstrip("#").strip()
+            if is_skill:
+                needs = bool(STEP_HEADING_RE.match(heading))
+            else:
+                needs = len(ORDERED_ITEM_RE.findall(body)) >= 2
+            if title in (exempt.get(rel) or []):
+                used.add((rel, title))
+                continue
+            if needs and not DONE_WHEN_RE.search(body):
+                report.error("done-when", "%s: section %r has no `*Done when*` line" % (rel, title))
+    for rel, titles in sorted(exempt.items()):
+        for title in titles:
+            if (rel, title) not in used:
+                report.error("done-when", "tools/done-when-exempt.json: %s has no section %r" % (rel, title))
+
+
 # ---------- check ----------
 def run_checks(root, base=None, run=sh):
     report = Report()
@@ -520,6 +662,8 @@ def run_checks(root, base=None, run=sh):
     check_leaks(report, md_files, texts)
     check_models(root, report, md_files, texts)
     check_pinned(root, report)
+    check_cli(root, report, md_files, texts)
+    check_done_when(root, report, texts)
     return report
 
 
@@ -545,13 +689,26 @@ See [the matrix](references/harnesses.md#harnesses) and [self](#demo).
 Uses claude-sonnet-9. Pinned phrase stays here.
 """
 FIX_TABLE = "## Harnesses\n\n| Harness | Notes |\n|---|---|\n| Alpha | a |\n| Beta | b |\n"
+FIX_ORCH = """import argparse
+
+
+def build_parser():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("check", "select"):
+        sub.add_parser(name).add_argument("--full")
+    return ap
+"""
+FIX_REPO = FIX_ORCH.replace('("check", "select")', '("check",)')
 FIX_FILES = {
-    "README.md": "# Readme\n\n| Harness | Path |\n|---|---|\n| Alpha | a |\n| Beta | b |\n| Others via `skills` | x |\n",
+    "README.md": "# Readme\n\nRun `orch.py check`, `orch.py select --full` and `repo.py check`.\n\n| Harness | Path |\n|---|---|\n| Alpha | a |\n| Beta | b |\n| Others via `skills` | x |\n",
     "AGENTS.md": "# AGENTS.md\n\n- Be brief.\n",
     ".claude-plugin/plugin.json": '{\n  "name": "demo",\n  "version": "1.0.0"\n}\n',
     "skills/agent-orchestration/SKILL.md": FIX_SKILL,
     "skills/agent-orchestration/references/harnesses.md": "# Harnesses\n\n" + FIX_TABLE,
     "skills/agent-orchestration/catalog.yaml": "version: 1\nmodels:\n  - id: claude-sonnet-9\n    name: Sonnet\n    family: anthropic\n",
+    "skills/agent-orchestration/scripts/orch.py": FIX_ORCH,
+    "tools/repo.py": FIX_REPO,
     "tools/harnesses.json": '["Alpha", "Beta"]\n',
     "tools/model-id-allowlist.json": "[]\n",
     "tools/versions.json": json.dumps({
@@ -580,6 +737,11 @@ def _edit(root, rel, old, new):
     assert old in text, "fixture edit %r not found in %s" % (old, rel)
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(text.replace(old, new, 1))
+
+
+def _write(root, rel, text):
+    with open(os.path.join(root, rel), "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
 
 
 def _append(root, rel, extra):
@@ -638,6 +800,27 @@ def self_test_cases():
                     _edit(r, "tools/model-id-allowlist.json", "[]", '["claude-opus-9-9"]')), None),
         ("pinned phrase removed", "pinned", lambda r: _edit(r, "skills/agent-orchestration/SKILL.md", "Pinned phrase stays here.", "Gone."), None),
         ("pinned file missing", "pinned", lambda r: os.remove(os.path.join(r, "skills/agent-orchestration/SKILL.md")), None),
+        ("doc names an unknown subcommand", "cli", lambda r: _append(r, "AGENTS.md", "\nRun `orch.py nope`.\n"), None),
+        ("doc names an unknown flag", "cli", lambda r: _append(r, "AGENTS.md", "\nRun `orch.py check --bogus`.\n"), None),
+        ("fenced command with an unknown flag", "cli",
+         lambda r: _append(r, "AGENTS.md", "\n```bash\npython3 tools/repo.py check \\\n  --bogus\n```\n"), None),
+        ("flags are checked per mention", None,
+         lambda r: _append(r, "AGENTS.md", "\nRun `orch.py check --full`, then `orch.py select --full`; `--bogus` outside a mention is ignored.\n"), None),
+        ("subcommand missing from README", "cli",
+         lambda r: _edit(r, "README.md", ", `orch.py select --full`", ""), None),
+        ("step without a Done when", "done-when",
+         lambda r: _append(r, "skills/agent-orchestration/SKILL.md", "\n## 1. Step\nDo it.\n"), None),
+        ("step with a Done when", None,
+         lambda r: _append(r, "skills/agent-orchestration/SKILL.md", "\n## 1. Step\nDo it.\n\n*Done when*: done.\n"), None),
+        ("reference procedure without a Done when", "done-when",
+         lambda r: _append(r, "skills/agent-orchestration/references/harnesses.md", "\n## Steps\n1. One.\n2. Two.\n"), None),
+        ("reference procedure with a Done when", None,
+         lambda r: _append(r, "skills/agent-orchestration/references/harnesses.md", "\n## Steps\n1. One.\n2. Two.\n\n*Done when*: done.\n"), None),
+        ("exempt lookup list passes", None,
+         lambda r: (_append(r, "skills/agent-orchestration/references/harnesses.md", "\n## Ranking\n1. One.\n2. Two.\n"),
+                    _write(r, "tools/done-when-exempt.json", '{"skills/agent-orchestration/references/harnesses.md": ["Ranking"]}')), None),
+        ("stale done-when exemption", "done-when",
+         lambda r: _write(r, "tools/done-when-exempt.json", '{"skills/agent-orchestration/references/harnesses.md": ["Gone"]}'), None),
         ("no skills at all", "skills", lambda r: os.remove(os.path.join(r, "skills/agent-orchestration/SKILL.md")), None),
     ]
 

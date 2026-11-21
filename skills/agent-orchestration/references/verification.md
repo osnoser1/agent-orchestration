@@ -10,6 +10,8 @@ Scale verification effort and evidence collection to task risk and what the user
 2. **Scale and prune**: require the evidence the user and repo prioritize (such as red→green unit/integration output, or browser/device screenshots on visible changes), and drop evidence classes the user explicitly deprioritized (such as video recordings or secondary-platform captures on non-visual work) unless the task is specifically about that deprioritized area.
 3. **Forward into briefs**: list the exact commands and required evidence in each child's `VERIFICATION` block (`references/brief-template.md`).
 
+*Done when*: each child's `VERIFICATION` block names the required evidence commands and omits the deprioritized classes.
+
 ## Scope check before review
 
 When the implementer reports, and before the review pass, run `python3 scripts/orch.py scope --base <base-ref> --max-files <N> --max-lines <N> --expect <GLOB>...` (budget and globs from the brief) and follow its `action:` line. The line names manifest and lockfile changes, files outside the expected globs, and stray scratch files (first 10 files; `--full` lists all with the counts). When the diff outgrows the size budget or the acceptance criteria (`action: trim`), send the implementing child a trim request first: name what the acceptance criteria require and ask for a one-line justification per production file. Review the trimmed diff. For a non-notifying child, run the same check from the supervision loop (`references/supervision.md`) while it works. Without Python, compare `git diff --stat` and any manifest or lockfile changes against the brief's size budget and the acceptance criteria.
@@ -41,6 +43,8 @@ After cross-family review findings are resolved and before landing, verify five 
 5. **Maintainability**: confirm clean module boundaries and proportionate tests; `orch.py scope` lists stray scratch files (check debug leftovers yourself).
 
 Send any follow-up fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
+
+*Done when*: all five items are verified or marked not applicable, and follow-up fixes are sent to the implementing child.
 
 ## Known infrastructure failures and unstarted PR checks
 

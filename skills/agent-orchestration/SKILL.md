@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.10.0"
+  version: "0.11.0"
 ---
 
 # Agent orchestration
@@ -26,7 +26,7 @@ Assign complexity (`trivial|standard|hard|frontier`), risk (`low|medium|high`, a
 *Done when*: complexity, risk, tier, strength/family, tools, surface, and batch order are stated before model selection.
 
 ## 3. Choose model + effort
-Run `python3 scripts/orch.py select` (arguments in `references/selection.md`) and follow its final `action:` line (it replaces exit codes; output is compact, `--full` adds detail). Without Python, apply the filter, tie-break, effort knee, `preferences.ui_fallback`, and `preferences.below_tier` rules in `references/selection.md`. When the user holds a batch until a specific provider renews, or `select` stages or holds work until a tier-meeting model renews, record a `resume` follow-up and schedule its wakeup (`references/selection.md`, `references/supervision.md`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs, opening a new top-level conversation, or proceeding under `preferences.ui_fallback: ask`. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). Models a plan names ahead are provisional: repeat this step for each role when its step starts, after a fresh `probe`.
+Run `python3 scripts/orch.py select` (arguments in `references/selection.md`) and follow its final `action:` line (it replaces exit codes; output is compact, `--full` adds detail). Without Python, apply the filter, tie-break, effort knee, `preferences.ui_fallback`, and `preferences.below_tier` rules in `references/selection.md`. When the user holds a batch until a specific provider renews, or `select` stages or holds work until a tier-meeting model renews, record a `resume` follow-up and schedule its wakeup (`references/selection.md`, `references/supervision.md`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs, opening a new top-level conversation, or proceeding under `preferences.ui_fallback: ask`. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). Models a plan names ahead are tentative: repeat this step for each role when its step starts, after a fresh `probe`.
 
 *Done when*: a primary `provider / model @ effort` (or a staged Phase 1 model plus Phase 2 target under `preferences.below_tier: stage`), delegation surface, and (for reviewed work) a reviewer from `references/selection.md` are selected at their step starts (held only when `select` says to hold or ask, or the user holds the work) with quirks noted and logged.
 
@@ -57,7 +57,7 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`) us
 ## 7. Decide, ask, report
 Execute routine orchestration choices (including in-place model switches, staged Phase 1 launches and phase-boundary switches under `below_tier: stage`, same-conversation scheduled resumes, supervision checks over non-notifying children, single reruns of known infrastructure failures, delegated design checkpoints when `preferences.design_checkpoints: delegate`, and dispatching a `select` candidate from a `low` or `preserve` pool). Waiting for a preferred model to renew is not by itself a reason to hold or to ask: dispatch what its `action:` line names now and choose the reviewer when its step starts. On model availability, only a `select` `action:` line that says hold, ask, or stage, or the user's instruction holds work (`references/harnesses.md` steps 4–5). Ask the user once before destructive or irreversible actions, publishing, spending emergency models/efforts, spending pay-per-use APIs under `preferences.pay_per_use: ask` (under `never`, keep them excluded), opening a new top-level conversation when `preferences.new_conversations: ask`, proceeding when `preferences.ui_fallback: ask`, approving a taste checkpoint when `preferences.design_checkpoints: ask` (default), or resolving ambiguity that changes the outcome.
 
-**Reporting to the user**: one line per event: what finished, what is next, what the user must decide. Model, effort, quota, reviewer choice, and tables only when asked or when a decision depends on them; reviewer degradation and model details go in the PR body or report. Answer which-model, which-reviewer, and why questions from the ledger (`orch.py log` entries) and plan file, not memory.
+**Reporting to the user**: one line per event: what finished, what is next, what the user must decide. Model, effort, quota, reviewer choice, and tables only when asked or when a decision depends on them; reviewer degradation and model details go in the PR body or report. Answer which-model, which-reviewer, and why questions from `orch.py history` and the plan file, not memory.
 
 *Done when*: routine decisions are reported one line each and every listed high-impact or taste gate waits for one explicit approval.
 

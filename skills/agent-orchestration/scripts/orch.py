@@ -15,6 +15,7 @@
                     [--event select|complete] [--outcome ok|failed|quota|stall|rework]
                     [--findings N] [--repo NAME] [--provisional] [--ref ITEM] [--failure-class C]
                     [--assets F] [--ledger F] [--now ISO]
+  orch.py history   [--ref ITEM] [--last N] [--ledger F] [--assets F]
   orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--ledger F] [--assets F] [--now ISO]
@@ -2860,6 +2861,95 @@ def log_cmd(a):
     return 0
 
 
+def read_ledger_refs(ledger_path):
+    """`(runs, unreferenced)` from the ledger: per ref the latest attempt (a `select` starts a new one, dropping the earlier completion and reviewer) and its file position."""
+    runs, unreferenced = {}, 0
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            for pos, line in enumerate(fh):
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                ref = e.get("ref")
+                if not isinstance(ref, str) or not ref.strip():
+                    unreferenced += 1
+                    continue
+                r = runs.setdefault(_clean_ref(ref), {})
+                r["pos"] = pos
+                if e.get("event") == "select":  # a new attempt (retry, other model) starts clean
+                    r.pop("complete", None)
+                    r.pop("reviewer", None)
+                if e.get("event") in ("select", "complete"):
+                    r[e["event"]] = e
+                if e.get("reviewer"):
+                    r["reviewer"] = e["reviewer"]
+    except OSError:
+        pass
+    return runs, unreferenced
+
+
+def history_line(ref, run, followups):
+    """One line per ref: implementer, reviewer, outcome, findings, provisional flag, pending follow-up kinds."""
+    sel, done = run.get("select") or {}, run.get("complete") or {}
+    who = sel or done
+    parts = [f"{who.get('provider')}:{who.get('model')} @ {who.get('effort')}" if who else "no select logged"]
+    parts.append(f"reviewer {run.get('reviewer') or 'none'}")
+    outcome = done.get("outcome") or "open"
+    if done.get("failure_class"):
+        outcome += f" ({done['failure_class']})"
+    if done.get("findings") is not None:
+        outcome += f", {done['findings']} finding(s)"
+    parts.append(outcome)
+    if sel.get("provisional"):
+        parts.append("provisional")
+    if followups:
+        parts.append("pending " + ", ".join(str(fu.get("kind", "review")) for fu in followups))
+    return f"{ref}: " + "; ".join(parts)
+
+
+def history_cmd(a):
+    _begin(a)
+    ap = _opt_str(a, "assets") or def_assets()
+    ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
+    want = _clean_ref(_opt_str(a, "ref")) if _opt_str(a, "ref") else None
+    last = _opt_int(a, "last")
+    runs, unreferenced = read_ledger_refs(ledger_path)
+    try:
+        assets = load_file(ap) if os.path.exists(ap) else {}
+    except (OSError, ValueError):
+        assets = {}
+    pending = {}  # cleaned ref -> that ref's follow-ups still in assets
+    for fu in (assets or {}).get("followups") or []:
+        if isinstance(fu, dict) and fu.get("ref") is not None:
+            pending.setdefault(_clean_ref(str(fu["ref"])), []).append(fu)
+    refs = sorted(runs, key=lambda r: runs[r]["pos"], reverse=True)  # most recent first
+    if want:
+        refs = [r for r in refs if r == want]
+    if last is not None:
+        refs = refs[: max(last, 0)]
+    lines = [history_line(r, runs[r], pending.get(r)) for r in refs]
+    shown = set(refs)  # pending follow-ups are counted for the refs listed below
+    for ref in sorted(pending):  # follow-ups whose item has no ledger entry
+        if ref not in runs and (not want or ref == want) and last is None:
+            shown.add(ref)
+            lines.append(f"{ref}: no ledger entry; pending " + ", ".join(str(fu.get("kind", "review")) for fu in pending[ref]))
+    if want and not lines:
+        print(f"error: no ledger entry or follow-up for ref {want}")
+        print("error: 1 problem(s); action: rerun history without --ref to list the refs")
+        return 1
+    for line in _capped(lines):
+        print(line)
+    n_pending = sum(len(v) for k, v in pending.items() if k in shown)
+    tail = f"ok: {len(lines)} ref(s); {n_pending} pending follow-up(s)"
+    if unreferenced and not want:
+        tail += f"; {unreferenced} ledger entr{'y has' if unreferenced == 1 else 'ies have'} no ref (log with --ref to track them)"
+    print(tail)
+    return 0
+
+
 _I = re.IGNORECASE
 QUOTA_RE = re.compile(
     r"hit your (?:weekly|usage|daily|monthly|session)\b|(?:weekly|usage|daily|monthly|session) limit"
@@ -3385,6 +3475,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
     "select": "select --complexity standard --risk low --available claude:claude-opus-5-5,codex:gpt-6-2-sol",
     "followups": "followups --due --available claude:claude-opus-5-5",
     "log": "log --complexity standard --risk low --provider claude --model claude-opus-5-5 --effort high",
+    "history": "history --last 5",
     "exhaust": 'exhaust claude "You\'ve hit your weekly limit · resets Nov 23, 3am"',
     "status": "status claude low",
     "failure": 'failure "context length exceeded" --ref item-1',
@@ -3395,18 +3486,18 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "select", "followups", "log", "exhaust", "status", "failure", "scope"):
+    for n in ("check", "probe", "select", "followups", "log", "history", "exhaust", "status", "failure", "scope"):
         p = sub.add_parser(
             n,
             usage=f"orch.py {n} [options]",  # the options below list everything; a wrapped usage block would repeat them
-            formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=50, width=110),
+            formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=50, width=154),
             epilog="example: python3 scripts/orch.py " + EXAMPLES[n],
         )
         p.add_argument("--full", action="store_true", help="print every detail line and remove the list caps")
         if n != "scope":
             p.add_argument("--assets")
             p.add_argument("--now")
-        if n not in ("log", "failure", "scope"):
+        if n not in ("log", "history", "failure", "scope"):
             p.add_argument("--catalog")
         if n == "check":
             p.add_argument("--lockfile")
@@ -3457,9 +3548,14 @@ def build_parser():
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
             p.add_argument("--repo")
-            p.add_argument("--provisional", action="store_true")
+            p.add_argument("--provisional", action="store_true",
+                           help="work ran below the required tier (below_tier or ui_fallback proceed); needs a tier-meeting re-review")
             p.add_argument("--ref", help="short item label (no paths); makes retries countable")
             p.add_argument("--failure-class", choices=list(VALID_FAILURE_CLASSES))
+        if n == "history":
+            p.add_argument("--ledger")
+            p.add_argument("--ref", help="one item label (no paths)")
+            p.add_argument("--last", type=int, metavar="N", help="only the N most recent refs")
         if n == "scope":
             p.add_argument("--base", required=True, help="git ref to diff against (the merge-base with HEAD is used)")
             p.add_argument("--max-files", type=int)
@@ -3493,6 +3589,7 @@ def main():
         "select": select,
         "followups": followups_cmd,
         "log": log_cmd,
+        "history": history_cmd,
         "exhaust": exhaust,
         "status": status_cmd,
         "failure": failure_cmd,

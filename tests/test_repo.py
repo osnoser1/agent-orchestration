@@ -411,6 +411,98 @@ class TestMarkdownRules(unittest.TestCase):
         self.assertTrue(self.errors_for("\nUse claude-opus-9-9.\n", allowlist=["claude-opus"]))
 
 
+class TestCliRule(unittest.TestCase):
+    def test_mentions_come_from_code_only_with_flags_per_mention(self):
+        text = (
+            "Prose orch.py nope is ignored. Run `orch.py check --full` then `repo.py bump 1.0.0 --root X`.\n"
+            "```bash\n"
+            "python3 scripts/orch.py select --a 1 \\\n  --b 2   # orch.py log --c\n"
+            "```\n"
+            "~~~\nfenced orch.py status ok\n~~~\n"
+        )
+        self.assertEqual(repo.cli_mentions(text), [
+            (1, "orch", "check", ["--full"]),
+            (1, "repo", "bump", ["--root"]),
+            (3, "orch", "select", ["--a", "--b"]),
+            (7, "orch", "status", []),
+        ])
+
+    def test_unfinished_continuation_does_not_leak_into_the_next_fence(self):
+        text = "```\nfoo \\\n```\n\n```\norch.py check\n--bogus\n```\n"
+        self.assertEqual(repo.cli_mentions(text), [(6, "orch", "check", [])])
+
+    def test_flags_stop_at_a_shell_operator(self):
+        for op in ("&&", "||", "|", ";"):
+            text = "`orch.py check --full %s grep --pattern`\n" % op
+            self.assertEqual(repo.cli_mentions(text), [(1, "orch", "check", ["--full"])], op)
+
+    def test_one_span_with_two_mentions_splits_the_flags(self):
+        self.assertEqual(repo.cli_mentions("`orch.py check --x; orch.py select --y`\n"),
+                         [(1, "orch", "check", ["--x"]), (1, "orch", "select", ["--y"])])
+
+    def test_real_parsers_load_and_know_history(self):
+        report = repo.Report()
+        parsers = repo.load_cli_parsers(repo.REPO_ROOT, report)
+        self.assertEqual(report.errors, [])
+        self.assertIn("--last", parsers["orch"]["history"])
+        self.assertIn("--self-test", parsers["repo"]["check"])
+        self.assertIn("--help", parsers["repo"]["bump"])
+
+    def test_missing_script_is_an_error(self):
+        root = fixture_dir(self)
+        os.remove(os.path.join(root, "tools/repo.py"))
+        self.assertTrue(any(e.startswith("cli: tools/repo.py is missing") for e in repo.run_checks(root).errors))
+
+    def test_error_messages_name_the_file_line_and_fix(self):
+        root = fixture_dir(self)
+        write(root, "AGENTS.md", "# A\n\nRun `orch.py check --bogus`.\n")
+        errors = repo.run_checks(root).errors
+        self.assertEqual(errors, ["cli: AGENTS.md:3: orch.py check has no flag --bogus"])
+
+
+class TestDoneWhenRule(unittest.TestCase):
+    def errors_for(self, rel, text, exempt=None):
+        root = fixture_dir(self)
+        write(root, rel, text)
+        if exempt is not None:
+            write(root, "tools/done-when-exempt.json", json.dumps(exempt))
+        return [e for e in repo.run_checks(root).errors if e.startswith("done-when")]  # the overwritten fixture may trip other rules
+
+    SKILL = "---\nname: agent-orchestration\nmetadata:\n  version: \"1.0.0\"\n---\n\n# T\n\n## 1. Step\nDo.\n\n%s\n## References\n- x\n"
+    REF = "skills/agent-orchestration/references/harnesses.md"
+
+    def test_skill_step_needs_a_done_when_before_the_next_heading(self):
+        skill = "skills/agent-orchestration/SKILL.md"
+        self.assertEqual(self.errors_for(skill, self.SKILL % "*Done when*: done."), [])
+        self.assertEqual(self.errors_for(skill, self.SKILL % ""), ["done-when: %s: section '1. Step' has no `*Done when*` line" % skill])
+        # a Done when inside the next section does not count; unnumbered sections are not steps
+        self.assertEqual(len(self.errors_for(skill, self.SKILL % "" + "*Done when*: later.\n")), 1)
+
+    def test_reference_section_with_an_ordered_list_needs_one(self):
+        self.assertEqual(len(self.errors_for(self.REF, "## S\n1. a\n2. b\n")), 1)
+        self.assertEqual(self.errors_for(self.REF, "## S\n1. a\n2. b\n\n*Done when*: ok.\n"), [])
+
+    def test_single_item_nested_and_bullet_lists_are_not_procedures(self):
+        for body in ("1. only\n", "- a\n  1. x\n  2. y\n", "- a\n- b\n"):
+            self.assertEqual(self.errors_for(self.REF, "## S\n" + body), [], body)
+
+    def test_ordered_list_inside_a_fence_is_ignored(self):
+        self.assertEqual(self.errors_for(self.REF, "## S\n```\n1. a\n2. b\n```\n"), [])
+
+    def test_exemption_covers_a_lookup_and_a_stale_one_errors(self):
+        self.assertEqual(self.errors_for(self.REF, "## Rank\n1. a\n2. b\n", exempt={self.REF: ["Rank"]}), [])
+        stale = self.errors_for(self.REF, "## Rank\n- a\n", exempt={self.REF: ["Gone"]})
+        self.assertEqual(stale, ["done-when: tools/done-when-exempt.json: %s has no section 'Gone'" % self.REF])
+
+    def test_exemption_for_a_missing_file_or_a_non_list_is_an_error(self):
+        gone = self.errors_for(self.REF, "## S\n- a\n", exempt={"skills/agent-orchestration/references/nope.md": ["S"]})
+        self.assertEqual(gone, ["done-when: tools/done-when-exempt.json: skills/agent-orchestration/references/nope.md has no section 'S'"])
+        bad = self.errors_for(self.REF, "## S\n- a\n", exempt={self.REF: "S"})
+        self.assertEqual(bad, ["done-when: tools/done-when-exempt.json must map a file to a list of section titles"])
+
+    def test_real_exemptions_name_real_sections(self):
+        self.assertEqual([e for e in repo.run_checks(repo.REPO_ROOT).errors if e.startswith("done-when")], [])
+
 
 if __name__ == "__main__":
     unittest.main()
