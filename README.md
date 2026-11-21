@@ -73,6 +73,7 @@ python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk 
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py check
+python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # [note] for assets providers, local models, and follow-ups this harness does not offer
 ```
 
 Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).

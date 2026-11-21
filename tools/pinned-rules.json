@@ -11,5 +11,7 @@
   {"file": "skills/agent-orchestration/SKILL.md", "phrase": "Ask the user once before destructive or irreversible actions, publishing, spending emergency models/efforts", "source": "#8 v0.5.0: approval gates"},
   {"file": "skills/agent-orchestration/references/selection.md", "phrase": "Capability comes before independence", "source": "#6 (unversioned): reviewer fallback order"},
   {"file": "skills/agent-orchestration/references/selection.md", "phrase": "Different family meeting the reviewer tier", "source": "#6 (unversioned): cross-family reviewer is the first fallback step"},
-  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "**Red→green evidence**: require failing repro/test output before the fix and passing output after", "source": "#1 (unversioned): red→green evidence gate"}
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "**Red→green evidence**: require failing repro/test output before the fix and passing output after", "source": "#1 (unversioned): red→green evidence gate"},
+  {"file": "skills/agent-orchestration/SKILL.md", "phrase": "Waiting for a preferred implementer or reviewer to renew is never a reason to hold or to ask", "source": "PR B v0.8.0: waiting for a preferred model to renew never holds or asks"},
+  {"file": "skills/agent-orchestration/references/supervision.md", "phrase": "After two failed retries of the same item, stop retrying it and report it to the user with the evidence", "source": "PR B v0.8.0: retry limit then report"}
 ]

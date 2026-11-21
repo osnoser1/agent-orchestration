@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional, dependency-free helper for the agent-orchestration skill (Python 3.9+).
 
-  orch.py check     [--catalog F] [--assets F] [--now ISO] [--lockfile F]
+  orch.py check     [--available provider:model[,...]] [--catalog F] [--assets F] [--now ISO] [--lockfile F]
   orch.py probe     [--fresh] [--provider P] [--low-threshold N] [--exhausted-threshold N] [--available ...] [--assets F] [--now ISO]
   orch.py select    --complexity trivial|standard|hard|frontier --risk low|medium|high
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
@@ -2690,6 +2690,41 @@ def check_install_staleness(now, lockfile_override=None):
     return notes
 
 
+def check_available_notes(catalog, assets_path, loaded_assets, available):
+    """[note] lines for assets, local-catalog, and followup entries the harness's discovery does not offer."""
+    pairs = [x.strip() for x in available.split(",") if x.strip()]
+    avail_models = {}
+    for pair in pairs:
+        prov, _, mid = pair.partition(":")
+        avail_models.setdefault(norm(prov), set()).add(norm(mid))
+    all_models = set().union(*avail_models.values()) if avail_models else set()
+    notes = []
+    for p in (loaded_assets or {}).get("providers") or []:
+        if isinstance(p, dict) and p.get("id") and norm(p["id"]) not in avail_models:
+            notes.append(f"[note] assets provider {p['id']} has no available model in --available")
+    local_path = os.path.join(os.path.dirname(os.path.abspath(assets_path)), "catalog.local.yaml")
+    loc = load_file(local_path) if os.path.exists(local_path) else None
+    for m in (loc.get("models") or []) if isinstance(loc, dict) else []:
+        if isinstance(m, dict) and m.get("id") and norm(m["id"]) not in all_models:
+            notes.append(f"[note] catalog.local.yaml model {m['id']} is not in the available list")
+    known = {norm(m["id"]) for m in (catalog or {}).get("models") or []}
+    for fu in (loaded_assets or {}).get("followups") or []:
+        if not isinstance(fu, dict) or not fu.get("needs"):
+            continue
+        need = str(fu["needs"]).strip()
+        low = need.lower()
+        if low.startswith("provider:"):
+            parts = [x.strip() for x in need[len("provider:"):].split("/") if x.strip()]
+            if len(parts) not in (2, 3):
+                continue
+            models = avail_models.get(norm(parts[0]))
+            if models is None or (norm(parts[-1]) in known and norm(parts[-1]) not in models):
+                notes.append(f"[note] followup {fu.get('ref', '')} needs {need}, which is not available")
+        elif norm(need) in known and norm(need) not in all_models:
+            notes.append(f"[note] followup {fu.get('ref', '')} needs {need}, which is not available")
+    return notes
+
+
 def check(a):
     now = get_now(_opt_str(a, "now"))
     errs = []
@@ -2827,6 +2862,10 @@ def check(a):
                             )
     print("OK" if not errs else "\n".join(errs))
     if not errs:
+        avail_str = _opt_str(a, "available")
+        if avail_str and os.path.exists(ap):
+            for note in check_available_notes(c, ap, loaded_assets, avail_str):
+                print(note)
         for note in check_install_staleness(now, lockfile_override=_opt_str(a, "lockfile")):
             print(note)
     return 1 if errs else 0
@@ -2852,6 +2891,7 @@ def main():
         p.add_argument("--now")
         if n == "check":
             p.add_argument("--lockfile")
+            p.add_argument("--available")
         if n == "probe":
             p.add_argument("--init", action="store_true", help="create assets.yaml when it is missing")
             p.add_argument("--provider")

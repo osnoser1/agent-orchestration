@@ -12,6 +12,10 @@ Log twice per delegation:
 
 Recorded fields: `ts`, `event`, `repo` (basename only — paths are stripped automatically), `surface` (`subagent|conversation`), `complexity`, `risk`, `ui`, `provider`, `model`, `effort`, `reviewer`, `outcome`, `findings`, and optional `provisional`. Keep prompts, source code, secrets, full paths, and personal data out of the ledger.
 
+## Structural first
+
+Before filing a finding as a wording change, check whether `orch.py check`, a test, CI, or a pinned rule (`tools/pinned-rules.json` in this repo) can enforce it, and prefer that.
+
 ## Filing retrospective findings upstream
 
 During a consumer repo's retrospective (`retro` / `retro-dispatch`), inspect recent `ledger.jsonl` lines for that repo and file an upstream issue on `osnoser1/agent-orchestration` using `.github/ISSUE_TEMPLATE/retro-finding.md` for any of these categories:

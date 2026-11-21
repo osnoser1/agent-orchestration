@@ -1091,6 +1091,71 @@ class TestCheckExtensions(unittest.TestCase):
             self.assertNotIn("npx skills update", buf_fresh.getvalue())
 
 
+class TestCheckAvailable(unittest.TestCase):
+    ASSETS = (
+        "version: 1\n"
+        "providers:\n"
+        "  - id: claude\n"
+        "  - id: codex\n"
+        "  - id: antigravity\n"
+        "followups:\n"
+        "  - kind: resume\n"
+        '    ref: "batch-a"\n'
+        "    needs: provider:codex/hard\n"
+        "  - kind: resume\n"
+        '    ref: "batch-b"\n'
+        "    needs: provider:claude/claude-sonnet-5-5\n"
+        "  - kind: resume\n"
+        '    ref: "batch-c"\n'
+        "    needs: hard\n"
+    )
+    LOCAL = (
+        "models:\n"
+        "  - id: local-model-x\n"
+        "    name: Local X\n"
+        "    family: local\n"
+        "    cost: cheap\n"
+        "    rating: unrated\n"
+    )
+
+    def _check(self, tmp, **kw):
+        assets = os.path.join(tmp, "assets.yaml")
+        _write(assets, self.ASSETS)
+        _write(os.path.join(tmp, "catalog.local.yaml"), self.LOCAL)
+        args = mock.Mock(assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", **kw)
+        return _run(orch.check, args)
+
+    def test_notes_unavailable_providers_local_models_and_followup_needs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = self._check(tmp, available="claude:claude-opus-5-5")
+        self.assertEqual(rc, 0)
+        self.assertIn("OK", out)
+        self.assertIn("[note] assets provider codex has no available model", out)
+        self.assertIn("[note] assets provider antigravity has no available model", out)
+        self.assertNotIn("assets provider claude has no", out)
+        self.assertIn("[note] catalog.local.yaml model local-model-x is not in the available list", out)
+        self.assertIn("[note] followup batch-a needs provider:codex/hard", out)
+        self.assertIn("[note] followup batch-b needs provider:claude/claude-sonnet-5-5", out)
+        self.assertNotIn("followup batch-c", out)
+
+    def test_no_notes_when_everything_is_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = self._check(
+                tmp,
+                available="claude:claude-sonnet-5-5, codex:gpt-6-2-sol,antigravity:gemini-4-neon,x:local-model-x",
+            )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("[note] assets provider", out)
+        self.assertNotIn("catalog.local.yaml model", out)
+        self.assertNotIn("[note] followup", out)
+
+    def test_without_flag_behaviour_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = self._check(tmp)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip(), "OK")
+
+
 class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
     def setUp(self):
         with open(FIXTURE_PATH, encoding="utf-8") as fh:
