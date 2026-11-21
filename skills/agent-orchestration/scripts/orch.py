@@ -826,7 +826,8 @@ def candidates(
     cat = {norm(m["id"]): m for m in catalog["models"]}
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     out, notes = [], []
-    reasons = {"exhausted": 0, "threshold": 0, "gated": 0, "tier": 0, "low_resets": []}
+    reasons = {"exhausted": 0, "threshold": 0, "gated": 0, "askable": 0, "tier": 0}
+    ppu_ask = ((assets or {}).get("preferences") or {}).get("pay_per_use") == "ask"
     t3_floor = floors.get("T3", FLOORS["T3"])
     eff_floor = task_floor if task_floor is not None else floor
     pref_fam = prefer_family.strip().lower() if prefer_family else None
@@ -841,6 +842,7 @@ def candidates(
         if p.get("pay_per_use") or p.get("policy") == "avoid":
             notes.append(f"{pair}: pay-per-use/avoid, skipped")
             reasons["gated"] += 1
+            reasons["askable"] += bool(p.get("pay_per_use") and p.get("policy") != "avoid" and ppu_ask)
             continue
         if prov_st == "exhausted":
             notes.append(f"{pair}: provider exhausted")
@@ -861,14 +863,12 @@ def candidates(
             if fail_on_low and st == "low":
                 notes.append(f"{pair}: group {gname} low (blocked by pre-flight threshold)")
                 reasons["threshold"] += 1
-                reasons["low_resets"].append(candidate_next_reset(p, g, now))
                 continue
         else:
             st = prov_st
             if fail_on_low and st == "low":
                 notes.append(f"{pair}: provider low (blocked by pre-flight threshold)")
                 reasons["threshold"] += 1
-                reasons["low_resets"].append(candidate_next_reset(p, g, now))
                 continue
 
         if not m:
@@ -878,6 +878,7 @@ def candidates(
         if m.get("cost") == "emergency":
             notes.append(f"{pair}: emergency, skipped")
             reasons["gated"] += 1
+            reasons["askable"] += 1
             continue
         if m.get("rating") == "unrated":
             notes.append(f"{pair}: unrated -> research once (references/research-unrated.md)")
@@ -960,23 +961,27 @@ def _plus_margin(when):
     return (when + RESUME_MARGIN).isoformat(timespec="seconds") if when else None
 
 
-def _stop_action(rc, resume_iso, who="", ask_why=None):
+def _gate_cause(reasons):
+    """Why a `select` exit `3` dispatched nothing: `low` (--fail-on-low), `ask` (emergency or pay-per-use under `ask`), or `excluded`."""
+    return "low" if reasons["threshold"] > 0 else "ask" if reasons["askable"] > 0 else "excluded"
+
+
+def _stop_action(rc, resume_iso, who="", cause="", notes=()):
     """`action:` line for a `select` exit that dispatches nothing (2, 3 or 4); `who` names a held step such as the review."""
-    hold = "hold " + (who + " " if who else "")
     if rc == 2:
-        _action("no tier match: run references/research-unrated.md or ask the user")
+        research = any("research-unrated" in n for n in notes)
+        _action("no tier match: " + ("run references/research-unrated.md or ask the user" if research else "ask the user"))
     elif rc == 4:
-        _action(f"{hold}until {resume_iso or 'the earliest reset (time unknown)'}; record a resume follow-up")
-    elif ask_why:
-        _action(f"ask the user once ({ask_why})")
-    else:
+        _action(f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; record a resume follow-up")
+    elif cause == "low":
         _action(
-            f"{hold}until {resume_iso or 'the low pool renews (time unknown)'} (--fail-on-low blocked a low pool); "
-            "record a resume follow-up"
+            "rerun select without --fail-on-low and dispatch its " + ("reviewer" if who else "candidate")
+            + " (hold only if the user asked to preserve this pool)"
         )
-
-
-GATED_WHY = "only emergency, pay-per-use, or avoid-policy models remain"
+    elif cause == "ask":
+        _action("ask the user once (only emergency or pay-per-use models remain, and spending them needs approval)")
+    else:
+        _action("no usable model: report to the user (pay-per-use under `never` and `policy: avoid` stay excluded)")
 
 
 def reviewer_tier(tier, risk):
@@ -1147,8 +1152,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     for n in notes:
         print("  note:", n)
     if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["exhausted"] == 0):
-        low = [t for t in reasons["low_resets"] if t]
-        _stop_action(3, _plus_margin(min(low)) if low else None, "the review", None if reasons["threshold"] else GATED_WHY)
+        _stop_action(3, None, "the review", _gate_cause(reasons))
         return 3
     if reasons["exhausted"] > 0:
         saw, earliest_dt, needs, _ = exhausted_tier_candidates(catalog, assets, avail, rt, floors[rt], now)
@@ -1160,7 +1164,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
         _stop_action(4, resume_iso, "the review")
         return 4
-    _stop_action(2, None)
+    _stop_action(2, None, notes=notes)
     return 2
 
 
@@ -1313,27 +1317,21 @@ def select(a):
                     f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
                 )
             _action(
-                f"dispatch {_cand_ref(impl)} now (provisional, below {tier}); "
-                "choose the reviewer when its step starts"
+                f"dispatch {_cand_ref(impl)} now (below {tier}); choose the reviewer when its step starts; "
+                "mark it provisional (log --provisional)"
             )
             return 0
 
         print("NO CANDIDATE:", *notes, sep="\n  ")
-        if (saw_ex_tier and reasons["threshold"] == 0) or (
-            reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0
-        ):
+        if saw_ex_tier and reasons["threshold"] == 0:
             sched_iso = _schedule_resume(f"{tier} candidates", earliest_dt)
             _record_resume(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
             _stop_action(4, sched_iso)
             return 4
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
-            low = [t for t in reasons["low_resets"] if t]
-            _stop_action(3, _plus_margin(min(low)) if low else None, "", None if reasons["threshold"] else GATED_WHY)
+            _stop_action(3, None, "", _gate_cause(reasons))
             return 3
-        if reasons["exhausted"] > 0:
-            _stop_action(4, resume_iso)
-            return 4
-        _stop_action(2, None)
+        _stop_action(2, None, notes=notes)
         return 2
 
     impl = cands[0]
@@ -1341,6 +1339,7 @@ def select(a):
 
     pref_need = None
     pref_kind = None
+    provisional = False
     if a.ui and "ui-ux-review" not in (impl["model"].get("strengths") or []):
         pref_need = "ui-ux-review"
         pref_kind = "ui-review"
@@ -1385,6 +1384,7 @@ def select(a):
                 )
                 return 3
             # proceed (default)
+            provisional = True
             print(
                 f"[provisional] preferred {pref_need} exhausted (earliest reset: {reset_txt}); "
                 "proceeding with fallback model — follow-up review required"
@@ -1423,7 +1423,10 @@ def select(a):
             f"followup due: [{fu.get('kind', 'review')}] {fu.get('ref', '')} "
             f"(needs {fu.get('needs')}; usable via {', '.join(usable)})"
         )
-    _action(f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts")
+    _action(
+        f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts"
+        + ("; mark it provisional (log --provisional)" if provisional else "")
+    )
     return 0
 
 
@@ -2687,7 +2690,9 @@ def followups_cmd(a):
 
 def _clean_ref(ref):
     """Ledger label for an item: a short slug, never a path (references/improvement.md)."""
-    label = os.path.basename(ref.strip().rstrip("/\\")) or "item"
+    label = ref.strip()
+    if re.match(r"(?:[/~\\]|\.\.?/|[A-Za-z]:)", label):  # a filesystem path: keep only its last segment
+        label = os.path.basename(label.rstrip("/\\"))
     return re.sub(r"[^A-Za-z0-9._#:-]+", "-", label).strip("-")[:64] or "item"
 
 
@@ -2756,7 +2761,7 @@ QUOTA_RE = re.compile(
 )
 INFRA_RE = re.compile(
     r"ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|TLS handshake timeout"
-    r"|connection (?:reset|refused|timed out)|network is unreachable|\b50[234]\b|bad gateway|service unavailable"
+    r"|connection (?:reset|refused|timed out)|network is unreachable|(?:HTTP\S*|status(?: code)?|code)[ /:=]*50[234]\b|bad gateway|service unavailable"
     r"|gateway time-?out|runner (?:lost|preempted|shut ?down)|lost (?:communication|connection) with (?:the )?(?:server|runner)",
     _I,
 )
@@ -2794,15 +2799,18 @@ def classify_failure(text, now, known=()):
     reset = parse_reset(text, now) if re.search(r"\bresets?\b", text, _I) else None
     if reset or QUOTA_RE.search(text):
         return "quota", None, reset or parse_reset(text, now)
-    for cls, rx in (("infra", INFRA_RE), ("context-cap", CONTEXT_RE), ("tool", TOOL_RE)):
+    for cls, rx in (("context-cap", CONTEXT_RE), ("infra", INFRA_RE), ("tool", TOOL_RE)):
         if rx.search(text):
             return cls, None, None
     return "unknown", None, None
 
 
-def prior_retries(ledger_path, ref):
-    """Failures already logged for `ref` in a retry-counting class (references/supervision.md); 0 without a ledger."""
-    n = 0
+def prior_failures(ledger_path, ref):
+    """Retry-counting failure classes logged for `ref`, oldest first (references/supervision.md).
+
+    A completion with `outcome: ok` and no `failure_class` ends the item's cycle and restarts the count.
+    """
+    seen = []
     try:
         with open(ledger_path, encoding="utf-8") as fh:
             for line in fh:
@@ -2810,17 +2818,25 @@ def prior_retries(ledger_path, ref):
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(e, dict) and e.get("ref") == ref and e.get("failure_class") in RETRY_CLASSES:
-                    n += 1
+                if not isinstance(e, dict) or e.get("ref") != ref:
+                    continue
+                if e.get("failure_class") in RETRY_CLASSES:
+                    seen.append(e["failure_class"])
+                elif e.get("outcome") == "ok" and not e.get("failure_class"):
+                    seen = []
     except OSError:
         pass
-    return n
+    return seen
 
 
 def failure_cmd(a):
     now = get_now(_opt_str(a, "now"))
     text = " ".join((_opt_str(a, "message") or "").split())
-    ref = _clean_ref(_opt_str(a, "ref") or "") if _opt_str(a, "ref") else None
+    if not _opt_str(a, "ref"):
+        print("error: --ref <item> is required (a short label, no paths)")
+        print("action: rerun failure with --ref <item>")
+        return 1
+    ref = _clean_ref(_opt_str(a, "ref"))
     try:
         known = _parse_known([k for k in (getattr(a, "known", None) or []) if isinstance(k, str)])
     except ValueError as exc:
@@ -2830,20 +2846,22 @@ def failure_cmd(a):
     ap = _opt_str(a, "assets") or def_assets()
     ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
     cls, hit, reset = classify_failure(text, now, known)
-    n = prior_retries(ledger_path, ref) if ref else 0
+    seen = prior_failures(ledger_path, ref)
+    n = len(seen)
     print(f"class: {cls}")
-    print(f"retries: {n}/{MAX_RETRIES}" + ("" if ref else " (pass --ref to count retries)"))
-    tag = f" --ref {ref}" if ref else ""
+    print(f"retries: {n}/{MAX_RETRIES}")
+    tag = f" --ref {ref}"
     if hit:
         print(f"known: {hit[1]}")
-        _failure_log_hint("failed", cls, tag)
+        _failure_log_hint("<ok|failed>", cls, tag)
         print(f"action: {hit[2]}")
     elif cls == "quota":
         print("resets: " + (reset.isoformat(timespec="seconds") if reset else "unknown"))
         _failure_log_hint("quota", cls, tag)
         print(
-            'action: run orch.py exhaust <provider> "<error text>" (add --model or --group per references/quota-errors.md), '
-            "then follow the quota order in references/harnesses.md"
+            "action: if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
+            "(add --model or --group per references/quota-errors.md) and follow the quota order in references/harnesses.md; "
+            "otherwise treat it as infra: rerun once"
         )
     elif cls == "infra":
         _failure_log_hint("<ok|failed>", cls, tag)
@@ -2851,16 +2869,13 @@ def failure_cmd(a):
     else:
         _failure_log_hint("failed", cls, tag)
         if n >= MAX_RETRIES:
-            print(
-                f"action: stop retrying {ref or 'this item'} and report it to the user with the evidence "
-                "(error text, last messages, ledger lines)"
-            )
+            print(f"action: stop retrying {ref} and report it to the user with the evidence (error text, last messages, ledger lines)")
         elif cls == "context-cap":
             print(
                 "action: confirm the old child stopped (references/supervision.md), then start a replacement with the partial "
                 "results (branch, commit, last completed step) and a narrower scope covering only the remaining work"
             )
-        elif cls == "tool" and n >= 1:
+        elif cls == "tool" and seen[-1:] == ["tool"]:
             print("action: rerun select with the failing model removed from --available and dispatch its candidate")
         elif cls == "tool":
             print("action: retry once on the same model")
@@ -2883,9 +2898,11 @@ STRAY_TOP = 5  # largest files named when only the size budget is exceeded
 
 
 def _glob_re(glob):
-    """`*` and `?` stay inside one directory, `**` crosses them, a trailing `/` means the whole directory."""
+    """`*` and `?` stay inside one directory, `**` crosses them; a bare path or trailing `/` means that file or directory."""
     if glob.endswith("/"):
         glob += "**"
+    elif not re.search(r"[*?]", glob):
+        return re.compile(re.escape(glob) + r"(?:/.*)?\Z")
     out, i = [], 0
     while i < len(glob):
         if glob.startswith("**/", i):
@@ -2910,7 +2927,7 @@ def _git(root, *argv):
 
 
 def _scope_fail(msg):
-    print(f"scope: {msg}")
+    print(f"error: {msg}")
     print("action: fix the --base or --repo argument and rerun scope")
     return 1
 
@@ -2920,20 +2937,31 @@ def scope_cmd(a):
     base = _opt_str(a, "base")
     max_files, max_lines = _opt_int(a, "max_files"), _opt_int(a, "max_lines")
     expect = [e for e in (getattr(a, "expect", None) or []) if isinstance(e, str)]
+    rc, out = _git(root, "rev-parse", "--is-inside-work-tree")
+    if rc != 0 or out.strip() != "true":
+        print("error: not a git repository" if rc != 127 else "error: git not found")
+        print("action: run scope inside the target repo" if rc != 127 else "action: install git, then rerun scope")
+        return 1
     rc, mb = _git(root, "merge-base", base, "HEAD")
     mb = mb.strip()
     if rc != 0 or not mb:
         return _scope_fail(f"cannot find a merge-base with {base} (fetch it, e.g. `git fetch origin`, and use full history)")
-    rc, num = _git(root, "diff", "--numstat", "-z", "--no-renames", mb)
+    rc, num = _git(root, "diff", "--numstat", "-z", "-M", mb)
     if rc != 0:
         return _scope_fail(f"git diff against merge-base {mb[:7]} failed: {num.strip() or 'no output'}")
     rc, new = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
     if rc != 0:
         return _scope_fail(f"git ls-files failed: {new.strip() or 'no output'}")
     changed = {}  # path -> changed lines
-    for rec in (r for r in num.split("\0") if r):
-        added, _, rest = rec.partition("\t")
+    toks, i = num.split("\0"), 0
+    while i < len(toks):
+        added, _, rest = toks[i].partition("\t")
         deleted, _, path = rest.partition("\t")
+        i += 1
+        if not rest:
+            continue
+        if not path:  # rename record: "added<TAB>deleted<TAB>" NUL old NUL new
+            path, i = toks[i + 1], i + 2
         changed[path] = (int(added) + int(deleted)) if added.isdigit() and deleted.isdigit() else 0  # binary: 0 lines
     for path in (r for r in new.split("\0") if r):
         try:

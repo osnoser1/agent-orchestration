@@ -3027,8 +3027,8 @@ class TestSelectActionLine(unittest.TestCase):
     def test_proceed_below_tier_is_provisional(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
-            "action: dispatch codex/gpt-6-2-sol @ xhigh now (provisional, below T4); "
-            "choose the reviewer when its step starts",
+            "action: dispatch codex/gpt-6-2-sol @ xhigh now (below T4); choose the reviewer when its step starts; "
+            "mark it provisional (log --provisional)",
             below_tier="proceed", ref="a-proceed",
         )
 
@@ -3058,22 +3058,37 @@ class TestSelectActionLine(unittest.TestCase):
     def test_ui_fallback_proceed_dispatches(self):
         self._ui(
             "proceed", 0,
-            "action: dispatch antigravity/gemini-4-neon @ low now; choose the reviewer when its step starts",
+            "action: dispatch antigravity/gemini-4-neon @ low now; choose the reviewer when its step starts; "
+            "mark it provisional (log --provisional)",
         )
 
-    def test_exit3_fail_on_low_holds_until_the_low_pool_renews(self):
+    def test_exit3_fail_on_low_reruns_without_it_and_never_holds(self):
         self.sel(
             CLAUDE_LOW_API, "claude:claude-opus-5-5", 3,
-            "action: hold until 2026-11-22T00:02:00+00:00 (--fail-on-low blocked a low pool); "
-            "record a resume follow-up",
+            "action: rerun select without --fail-on-low and dispatch its candidate "
+            "(hold only if the user asked to preserve this pool)",
             complexity="hard", risk="medium", fail_on_low=True,
         )
 
-    def test_exit3_gated_models_ask_the_user(self):
+    ASK_LINE = "action: ask the user once (only emergency or pay-per-use models remain, and spending them needs approval)"
+    NONE_LINE = "action: no usable model: report to the user (pay-per-use under `never` and `policy: avoid` stay excluded)"
+
+    def test_exit3_pay_per_use_under_ask_asks_the_user(self):
         self.sel(
-            CLAUDE_LOW_API, "api:claude-opus-5-5", 3,
-            "action: ask the user once (only emergency, pay-per-use, or avoid-policy models remain)",
-            complexity="hard", risk="medium",
+            "version: 1\npreferences:\n  pay_per_use: ask\nproviders:\n  - id: api\n    pay_per_use: true\n",
+            "api:claude-opus-5-5", 3, self.ASK_LINE, complexity="hard", risk="medium",
+        )
+
+    def test_exit3_emergency_model_asks_the_user(self):
+        self.sel(CLAUDE_LOW_API, "claude:claude-fable-5-2", 3, self.ASK_LINE, complexity="hard", risk="medium")
+
+    def test_exit3_pay_per_use_under_never_stays_excluded(self):
+        self.sel(CLAUDE_LOW_API, "api:claude-opus-5-5", 3, self.NONE_LINE, complexity="hard", risk="medium")
+
+    def test_exit3_avoid_policy_stays_excluded_even_under_ask(self):
+        self.sel(
+            "version: 1\npreferences:\n  pay_per_use: ask\nproviders:\n  - id: api\n    pay_per_use: true\n    policy: avoid\n",
+            "api:claude-opus-5-5", 3, self.NONE_LINE, complexity="hard", risk="medium",
         )
 
     def test_exit4_all_tier_models_exhausted_holds_until_reset_plus_margin(self):
@@ -3083,11 +3098,25 @@ class TestSelectActionLine(unittest.TestCase):
             ref="a-hold",
         )
 
-    def test_exit2_no_tier_match(self):
+    def test_exit2_no_tier_match_without_a_research_note_asks_the_user(self):
+        self.sel(CLAUDE_EXHAUSTED, "codex:gpt-6-2-sol", 2, "action: no tier match: ask the user", ref="a-none")
+
+    def test_exit2_unrated_model_names_the_research_workflow(self):
         self.sel(
-            CLAUDE_EXHAUSTED, "codex:gpt-6-2-sol", 2,
+            CLAUDE_EXHAUSTED, "codex:gpt-6-2-sol,foo:unratedmodel", 2,
+            "action: no tier match: run references/research-unrated.md or ask the user", ref="a-none",
+        )
+
+    def test_exhausted_pool_that_cannot_meet_the_tier_is_exit2_not_an_indefinite_hold(self):
+        assets = "version: 1\nproviders:\n  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+        self.sel(
+            assets, "claude:claude-haiku-5-5,foo:unratedmodel", 2,
             "action: no tier match: run references/research-unrated.md or ask the user",
-            ref="a-none",
+            complexity="frontier", ref="a-frontier",
+        )
+        self.sel(
+            assets, "claude:claude-haiku-5-5", 2, "action: no tier match: ask the user",
+            complexity="frontier", ref="a-frontier",
         )
 
     def test_reviewer_dispatches_now(self):
@@ -3118,18 +3147,22 @@ class TestSelectActionLine(unittest.TestCase):
             complexity="hard", risk="medium", implementer="claude-opus-5-5", ref="a-rev-none",
         )
 
-    def test_no_reviewer_low_pool_holds_the_review(self):
+    def test_no_reviewer_low_pool_reruns_without_fail_on_low(self):
         self.sel(
             CLAUDE_LOW_API, "claude:claude-opus-5-5", 3,
-            "action: hold the review until 2026-11-22T00:02:00+00:00 (--fail-on-low blocked a low pool); "
-            "record a resume follow-up",
+            "action: rerun select without --fail-on-low and dispatch its reviewer "
+            "(hold only if the user asked to preserve this pool)",
             complexity="hard", risk="medium", implementer="claude-opus-5-5", fail_on_low=True,
         )
 
-    def test_no_reviewer_gated_asks_the_user(self):
+    def test_no_reviewer_gated_splits_by_cause(self):
         self.sel(
-            CLAUDE_LOW_API, "api:claude-opus-5-5", 3,
-            "action: ask the user once (only emergency, pay-per-use, or avoid-policy models remain)",
+            "version: 1\npreferences:\n  pay_per_use: ask\nproviders:\n  - id: api\n    pay_per_use: true\n",
+            "api:claude-opus-5-5", 3, self.ASK_LINE,
+            complexity="hard", risk="medium", implementer="claude-opus-5-5",
+        )
+        self.sel(
+            CLAUDE_LOW_API, "api:claude-opus-5-5", 3, self.NONE_LINE,
             complexity="hard", risk="medium", implementer="claude-opus-5-5",
         )
 
@@ -3154,11 +3187,11 @@ def _fail(message, ref="item-1", ledger=None, known=None, assets=None):
     )
 
 
-def _log_failure(ledger, ref, fclass):
+def _log_failure(ledger, ref, fclass, outcome="failed"):
     return mock.Mock(
         assets=None, ledger=ledger, now="2026-11-20T21:00:00Z", event="complete", complexity="hard", risk="low",
         ui=False, surface="subagent", provider="codex", model="gpt-6-2-sol", effort="high", reviewer=None,
-        outcome="failed", findings=None, repo="demo", provisional=False, ref=ref, failure_class=fclass,
+        outcome=outcome, findings=None, repo="demo", provisional=False, ref=ref, failure_class=fclass,
     )
 
 
@@ -3173,8 +3206,8 @@ class TestFailureCommand(unittest.TestCase):
 
     def ledger(self, tmp, entries):
         path = os.path.join(tmp, "ledger.jsonl")
-        for ref, fclass in entries:
-            _run(orch.log_cmd, _log_failure(path, ref, fclass))
+        for ref, fclass, *outcome in entries:
+            _run(orch.log_cmd, _log_failure(path, ref, fclass, *outcome))
         return path
 
     def test_quota_parses_reset_and_points_to_exhaust(self):
@@ -3186,8 +3219,9 @@ class TestFailureCommand(unittest.TestCase):
         self.assertEqual(f["log"], "--event complete --outcome quota --failure-class quota --ref item-1")
         self.assertEqual(
             f["action"],
-            'run orch.py exhaust <provider> "<error text>" (add --model or --group per references/quota-errors.md), '
-            "then follow the quota order in references/harnesses.md",
+            "if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
+            "(add --model or --group per references/quota-errors.md) and follow the quota order in references/harnesses.md; "
+            "otherwise treat it as infra: rerun once",
         )
 
     def test_quota_without_a_reset_time(self):
@@ -3264,7 +3298,7 @@ class TestFailureCommand(unittest.TestCase):
             led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "tool")])
             _, f, _ = self.run_failure(_fail("rate limit reached, try again in 2h", ledger=led))
             self.assertEqual((f["class"], f["retries"]), ("quota", "2/2"))
-            self.assertTrue(f["action"].startswith("run orch.py exhaust"))
+            self.assertTrue(f["action"].startswith("if the limit is the model provider's"))
 
     def test_known_failures_win_over_every_class(self):
         known = ["eslint exploded=>run npm ci once, then rerun", "ETIMEDOUT=>never reached"]
@@ -3274,6 +3308,57 @@ class TestFailureCommand(unittest.TestCase):
             led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "tool")])
             _, f, _ = self.run_failure(_fail("eslint exploded", ledger=led, known=known))
             self.assertEqual(f["action"], "run npm ci once, then rerun")
+
+    def test_bare_numbers_are_not_http_statuses(self):
+        for text in ("assert 1 == 2 at line 504", "expected 502 got 200", "AssertionError: 503 != 200"):
+            _, f, _ = self.run_failure(_fail(text))
+            self.assertEqual(f["class"], "unknown", text)
+        for text in ("HTTP 502", "HTTP/1.1 503 upstream", "status: 504", "status code 502", "Bad Gateway", "Service Unavailable"):
+            _, f, _ = self.run_failure(_fail(text))
+            self.assertEqual(f["class"], "infra", text)
+
+    def test_context_cap_wins_over_infra(self):
+        _, f, _ = self.run_failure(_fail("context length exceeded after HTTP 503 retries"))
+        self.assertEqual(f["class"], "context-cap")
+
+    def test_third_party_rate_limit_is_quota_with_an_infra_escape(self):
+        _, f, _ = self.run_failure(_fail("Rate limited by GitHub API"))
+        self.assertEqual(f["class"], "quota")
+        self.assertIn("otherwise treat it as infra: rerun once", f["action"])
+
+    def test_tool_switches_model_only_after_a_tool_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "unknown")])
+            _, f, _ = self.run_failure(_fail("tool error: boom", ledger=led))
+            self.assertEqual((f["retries"], f["action"][:19]), ("2/2", "stop retrying item-"))
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "unknown")])
+            _, f, _ = self.run_failure(_fail("tool error: boom", ledger=led))
+            self.assertEqual((f["retries"], f["action"]), ("1/2", "retry once on the same model"))
+
+    def test_completion_ok_restarts_the_count_for_that_ref(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "unknown"), ("item-1", None, "ok")])
+            _, f, _ = self.run_failure(_fail("weird", ledger=led))
+            self.assertEqual((f["retries"], f["action"]), ("0/2", "retry once"))
+        with tempfile.TemporaryDirectory() as tmp:  # an infra rerun that passes is not a completion
+            led = self.ledger(tmp, [("item-1", "unknown"), ("item-1", "infra", "ok"), ("item-1", "tool")])
+            self.assertEqual(self.run_failure(_fail("weird", ledger=led))[1]["retries"], "2/2")
+
+    def test_known_hit_logs_ok_or_failed_like_generic_infra(self):
+        _, f, _ = self.run_failure(_fail("eslint exploded", known=["eslint exploded=>run npm ci"]))
+        self.assertEqual(f["log"], "--event complete --outcome <ok|failed> --failure-class infra --ref item-1")
+
+    def test_ref_is_required(self):
+        rc, out = _run(orch.failure_cmd, _fail("x", ref=None))
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.rstrip("\n").split("\n")[-1], "action: rerun failure with --ref <item>")
+
+    def test_ref_slug_keeps_every_segment_of_a_relative_label_and_basenames_a_path(self):
+        self.assertEqual(orch._clean_ref("PR-42/part a"), "PR-42-part-a")
+        self.assertEqual(orch._clean_ref("/home/me/private/item-9/"), "item-9")
+        self.assertEqual(orch._clean_ref("~/work/item-9"), "item-9")
+        self.assertEqual(orch._clean_ref("../x/item-9"), "item-9")
 
     def test_known_pattern_must_be_regex_arrow_action(self):
         rc, out = _run(orch.failure_cmd, _fail("x", known=["no arrow"]))
@@ -3409,22 +3494,35 @@ class TestScopeCommand(unittest.TestCase):
         _, f, _ = _scope(self.root)
         self.assertEqual((f["files"], f["lines"]), ("1", "0"))
 
-    def test_deleted_and_renamed_files_list_both_paths(self):
+    def test_pure_rename_is_one_file_with_no_lines(self):
         _git(self.root, "mv", "src/app.py", "src/main.py")
+        _, f, lines = _scope(self.root, expect=["src/**"])
+        self.assertEqual((f["files"], f["lines"], f["outside --expect"]), ("1", "0", "none"))
+
+    def test_rename_with_an_edit_counts_only_the_edit(self):
+        _git(self.root, "mv", "src/app.py", "src/main.py")
+        self.put("src/main.py", "print(1)\nprint(2)\n")
         _, f, _ = _scope(self.root)
-        self.assertEqual(f["files"], "2")
+        self.assertEqual((f["files"], f["lines"]), ("1", "1"))
+
+    def test_bare_expect_path_means_that_file_or_directory(self):
+        self.put("src/deep/x.py", "1\n")
+        self.put("README.md", "1\n")
+        self.put("srcother/y.py", "1\n")
+        _, f, _ = _scope(self.root, expect=["src", "README.md"])
+        self.assertEqual(f["outside --expect"], "srcother/y.py")
 
     def test_missing_base_errors_with_an_action(self):
         rc, f, lines = _scope(self.root, base="origin/nope")
         self.assertEqual(rc, 1)
-        self.assertIn("cannot find a merge-base with origin/nope", f["scope"])
+        self.assertIn("cannot find a merge-base with origin/nope", f["error"])
         self.assertEqual(lines[-1], "action: fix the --base or --repo argument and rerun scope")
 
     def test_not_a_repository_errors(self):
         with tempfile.TemporaryDirectory() as plain:
             rc, _, lines = _scope(plain)
         self.assertEqual(rc, 1)
-        self.assertEqual(lines[-1], "action: fix the --base or --repo argument and rerun scope")
+        self.assertEqual(lines, ["error: not a git repository", "action: run scope inside the target repo"])
 
 
 if __name__ == "__main__":

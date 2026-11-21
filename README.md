@@ -78,7 +78,7 @@ python3 skills/agent-orchestration/scripts/orch.py check
 python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # [note] for assets providers, local models, and follow-ups this harness does not offer
 ```
 
-`select`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, plus repo `--known REGEX=>ACTION` patterns first), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files.
+`select`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, plus repo `--known REGEX=>ACTION` patterns first), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files.
 
 Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).
 
