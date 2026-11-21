@@ -13,7 +13,7 @@ Before launching items in parallel, compare each item's expected target paths, m
 
 ## Deferred launch until a provider renews
 
-When the user or batch plan holds work for a specific exhausted or renewing provider (rather than spending another provider now):
+When the user holds work for a specific exhausted or renewing provider (rather than spending another provider now):
 
 1. Record a `resume` follow-up in `assets.yaml` pairing the provider (and optional quota group) with a required tier or model (`references/selection.md`):
    `python3 scripts/orch.py followups --add --kind resume --ref "<batch-or-task-ref>" --needs "provider:<provider-id>/<tier-or-model>" --after <reset_or_renews + 2m>`
@@ -60,6 +60,29 @@ On each check:
 4. **Wind down**: shrink the check list or widen the interval as children finish; disable or delete the recurring schedule as soon as the batch completes, and state in one line that supervision is off.
 
 *Done when*: each check has classified and acted on every open non-notifying child and refreshed durable state, and the recurring schedule is removed once no such child remains.
+
+## Failure-mode retries
+
+Map how a child failed to the next action, and log the outcome with `scripts/orch.py log --event complete --outcome <outcome>`.
+
+| How the child failed | Next action | Outcome |
+|---|---|---|
+| Quota error | The quota flow in `SKILL.md` Step 6 and `references/harnesses.md`. | `quota` |
+| Context or turn cap hit | Start a replacement (confirm-stop below) with the partial results (branch, commit, last completed step) and a narrower scope covering only the remaining work. | `failed` |
+| Tool or harness error | Retry once on the same model; if it recurs, rerun `select` with the failing model removed from `--available` and use its candidate. | `failed` |
+| Transient infrastructure or CI failure | The single rerun in `references/verification.md`. | `ok` when the rerun passes, else `failed` |
+| Stall | The harness row's stall handling in `references/harnesses.md`; for non-notifying children, the supervision loop above. | `stall` |
+| Unknown | Retry once; a failed retry counts toward the two below. | `failed` |
+
+After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements made under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count.
+
+*Done when*: each failed child's next action is taken from the table, its outcome is logged, and any item past two failed retries is reported to the user with evidence.
+
+## Confirm stop before replacement
+
+Before a replacement child writes to the same paths or branch as an old child, cancel the old child and confirm it stopped as the Cancel column in `references/harnesses.md` says. This covers every replacement, including the quota flow's new child (`references/harnesses.md` step 3); a quota-stopped child the harness resumes on its own counts as running until cancelled. Launch the replacement only after that confirmation: never run two writers on one checkout.
+
+*Done when*: the Cancel column's confirming read shows the old child stopped before the replacement's first write.
 
 ## Idempotent child messages
 

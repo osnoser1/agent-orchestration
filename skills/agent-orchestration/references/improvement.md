@@ -25,6 +25,8 @@ During a consumer repo's retrospective (`retro` / `retro-dispatch`), inspect rec
 
 Include the relevant `ledger.jsonl` lines as evidence (still free of secrets, prompts, or private code).
 
+When filing an upstream finding, propose an enforceable fix (an `orch.py check` rule, a test, CI, or a pinned rule in `osnoser1/agent-orchestration`) before a wording change.
+
 ## Keeping installs current
 
 | Install scope | Check for updates | Update |
