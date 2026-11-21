@@ -326,7 +326,10 @@ def partitions_quota(p):
     Other providers' groups are per-model caps layered on the account-level status
     (seeded by `exhaust --model`), so provider status stays independent of them.
     """
-    return ((_infer_probe(p or {}) or {}).get("kind")) == "antigravity"
+    p = p or {}
+    if ((_infer_probe(p) or {}).get("kind")) == "antigravity":
+        return True
+    return any(isinstance(g, dict) and g.get("window") for g in (p.get("groups") or []))
 
 
 def model_group(p, mid, model_obj=None):
@@ -469,7 +472,7 @@ def _provider_inferred_family(p):
     return None
 
 
-def find_usable_in_available(catalog, assets, now, need, available):
+def find_usable_in_available(catalog, assets, now, need, available, fail_on_low=False):
     if not need or not available:
         return []
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
@@ -490,7 +493,8 @@ def find_usable_in_available(catalog, assets, now, need, available):
         if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
             continue
         p, prov_st, _ = provider_state(assets, prov, now)
-        if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st == "exhausted":
+        blocked = ("exhausted", "low") if fail_on_low else ("exhausted",)
+        if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st in blocked:
             continue
         g = model_group(p, mid, m)
         gname = g.get("name") if isinstance(g, dict) else None
@@ -498,7 +502,7 @@ def find_usable_in_available(catalog, assets, now, need, available):
             continue
         if g is not None:
             gst, _ = group_state(g, now)
-            if gst == "exhausted":
+            if gst in blocked:
                 continue
             _add(f"{prov} ({g.get('name') or 'group'})")
         else:
@@ -507,7 +511,7 @@ def find_usable_in_available(catalog, assets, now, need, available):
     return usable
 
 
-def find_usable_in_assets(catalog, assets, now, need):
+def find_usable_in_assets(catalog, assets, now, need, fail_on_low=False):
     if not need:
         return []
     cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
@@ -529,7 +533,8 @@ def find_usable_in_assets(catalog, assets, now, need):
             continue
         pid = p["id"]
         _, prov_st, _ = provider_state(assets, pid, now)
-        if prov_st == "exhausted":
+        blocked = ("exhausted", "low") if fail_on_low else ("exhausted",)
+        if prov_st in blocked:
             continue
         groups = p.get("groups")
         if isinstance(groups, list) and groups and partitions_quota(p):
@@ -537,7 +542,7 @@ def find_usable_in_assets(catalog, assets, now, need):
                 if not isinstance(g, dict):
                     continue
                 gst, _ = group_state(g, now)
-                if gst == "exhausted":
+                if gst in blocked:
                     continue
                 for mid in g.get("models") or []:
                     m = cat.get(norm(mid))
@@ -556,13 +561,20 @@ def find_usable_in_assets(catalog, assets, now, need):
             if fam:
                 for m in (catalog or {}).get("models") or []:
                     cap = model_group(p, m["id"], m)
-                    if cap is not None and group_state(cap, now)[0] == "exhausted":
+                    if cap is not None and group_state(cap, now)[0] in blocked:
                         continue
                     if (
                         str(m.get("family") or "").lower() == fam
                         and m.get("cost") != "emergency"
                         and m.get("rating") != "unrated"
-                        and _model_matches_need(m, need, floors=floors, emerg=emerg, provider_id=pid)
+                        and _model_matches_need(
+                            m,
+                            need,
+                            floors=floors,
+                            emerg=emerg,
+                            provider_id=pid,
+                            group_name=cap.get("name") if cap is not None else None,
+                        )
                     ):
                         _add(pid)
                         break
@@ -589,7 +601,9 @@ def due_followups(catalog, assets, now, available=None):
     for fu in (assets or {}).get("followups") or []:
         if not isinstance(fu, dict) or _resume_not_yet(fu, now):
             continue
-        usable = find_usable_in_available(catalog, assets, now, fu.get("needs"), available)
+        usable = find_usable_in_available(
+            catalog, assets, now, fu.get("needs"), available, fail_on_low=fu.get("fail_on_low") is True
+        )
         if usable:
             due.append((fu, usable))
     return due
@@ -600,7 +614,7 @@ def pending_ready_followups(catalog, assets, now):
     for fu in (assets or {}).get("followups") or []:
         if not isinstance(fu, dict) or _resume_not_yet(fu, now):
             continue
-        usable = find_usable_in_assets(catalog, assets, now, fu.get("needs"))
+        usable = find_usable_in_assets(catalog, assets, now, fu.get("needs"), fail_on_low=fu.get("fail_on_low") is True)
         if usable:
             ready.append((fu, usable))
     return ready
@@ -993,25 +1007,23 @@ def _resume_ref(ref_arg, assets_exists):
     return ref_arg or ("current-task" if assets_exists else None)
 
 
-def _record_resume(ap, ref, needs, after_iso, now):
-    """Record one `kind: resume` entry per ref; refresh it when its needs or due time changed."""
+def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low=False):
+    """Record one `kind: resume` entry per ref; refresh it when its fields changed."""
     if not ref:
         print("[note] no assets file and no --ref; pass --ref to record the resume follow-up")
-        return
-    existing = find_existing_followup(ap, "resume", ref)
-    after_txt = f", after {after_iso}" if after_iso else ""
-    if (
-        existing
-        and existing.get("needs") == needs
-        and (existing.get("after") or None) == (after_iso or None)
-        and existing.get("on_recovery") is True
-    ):
-        print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
         return
     entry = {"kind": "resume", "ref": ref, "needs": needs}
     if after_iso:
         entry["after"] = after_iso
-    entry["on_recovery"] = True
+    if on_recovery:
+        entry["on_recovery"] = True
+    if fail_on_low:
+        entry["fail_on_low"] = True
+    existing = find_existing_followup(ap, "resume", ref)
+    after_txt = f", after {after_iso}" if after_iso else ""
+    if existing and dict(existing) == entry:
+        print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
+        return
     record_followup(ap, entry, now=now)
     if existing:
         print(f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup")
@@ -1063,7 +1075,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
             f"NO REVIEWER: high-risk work under below_tier=stage takes a reviewer meeting {rt} (>= {floors[rt]}); "
             "wait for one to renew"
         )
-        _record_resume(ap, ref, needs, _schedule_resume(f"{rt} reviewers", earliest_dt), now)
+        _record_resume(ap, ref, needs, _schedule_resume(f"{rt} reviewers", earliest_dt), now, fail_on_low=fail_on_low)
         return 4
     _, notes, reasons = candidates(
         catalog,
@@ -1087,7 +1099,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         if not saw:
             _, earliest_dt, _, _ = exhausted_tier_candidates(catalog, assets, avail, "any", 0, now)
             needs, label = "any", "reviewers"
-        _record_resume(ap, ref, needs, _schedule_resume(label, earliest_dt), now)
+        _record_resume(ap, ref, needs, _schedule_resume(label, earliest_dt), now, fail_on_low=fail_on_low)
         return 4
     return 2
 
@@ -1197,7 +1209,7 @@ def select(a):
                 f"A harness that cannot switch in place should defer the new Phase 2 child until {resume_txt}; "
                 f"on a harness without a scheduler, report the reset time ({reset_txt}) to the user."
             )
-            _record_resume(ap, ref_val, resume_needs, resume_iso, now)
+            _record_resume(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
             if ref_val:
                 assets = load_file(ap)
             if a.risk == "high":
@@ -1221,7 +1233,7 @@ def select(a):
                 f"earliest reset: {reset_txt}); proceeding with best available below-tier model for all phases "
                 f"— tier-meeting ({tier}) re-review follow-up required"
             )
-            _record_resume(ap, ref_val, resume_needs, resume_iso, now)
+            _record_resume(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
             if ref_val:
                 assets = load_file(ap)
             print(f"implementer: {fmt(impl)}")
@@ -1241,7 +1253,10 @@ def select(a):
         if (saw_ex_tier and reasons["threshold"] == 0) or (
             reasons["exhausted"] > 0 and reasons["tier"] == 0 and reasons["threshold"] == 0
         ):
-            _record_resume(ap, ref_val, resume_needs, _schedule_resume(f"{tier} candidates", earliest_dt), now)
+            _record_resume(
+                ap, ref_val, resume_needs, _schedule_resume(f"{tier} candidates", earliest_dt), now,
+                fail_on_low=bool(a.fail_on_low),
+            )
             return 4
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
             return 3
@@ -2354,22 +2369,18 @@ def _probe(a, ap):
                         g["status"] != "exhausted" and (g["window"] == "reset" or float(g["used_percent"]) == 0.0)
                         for g in persisted_groups
                     )
-                    any_group_recovered = (
-                        bool(prev_by_name)
-                        and any(
-                            _scope_recovered_in_probe(
-                                prev_by_name[norm(g["name"])],
-                                g["status"],
-                                g["used_percent"],
-                                g["window"],
-                                g.get("resets_at"),
-                                now,
-                            )
-                            for g in persisted_groups
-                            if norm(g["name"]) in prev_by_name
-                            and float(prev_by_name[norm(g["name"])].get("used_percent") or 0) > 0
+                    def _group_recovered(g):
+                        prev_g = prev_by_name.get(norm(g["name"]))
+                        if prev_g is None or g["status"] == "exhausted":
+                            return False
+                        if prev_g.get("used_percent") is None:
+                            # A group locked without usage data that the probe now shows usable has recovered.
+                            return prev_g.get("status") == "exhausted"
+                        return float(prev_g.get("used_percent") or 0) > 0 and _scope_recovered_in_probe(
+                            prev_g, g["status"], g["used_percent"], g["window"], g.get("resets_at"), now
                         )
-                    )
+
+                    any_group_recovered = any(_group_recovered(g) for g in persisted_groups)
                     if not (all_zero or any_group_recovered):
                         keep_prov_err = True
                         st = "exhausted"
@@ -2485,13 +2496,8 @@ def followups_cmd(a):
             return 1
         after = _opt_str(a, "after")
         if kind == "resume":
-            existing_resume = find_existing_followup(ap, "resume", ref_val)
-            if existing_resume:
-                print(
-                    f"followup already scheduled: [resume] {ref_val} "
-                    f"(needs {existing_resume.get('needs')}, after {existing_resume.get('after') or after or 'next reset'})"
-                )
-                return 0
+            _record_resume(ap, ref_val, needs, after, now, on_recovery=_opt_bool(a, "on_recovery"))
+            return 0
         entry = {"kind": kind, "ref": ref_val, "needs": needs}
         if after:
             entry["after"] = after
@@ -2712,8 +2718,9 @@ def check(a):
                             f"assets followups[{idx}].kind: bad value {fu.get('kind')} "
                             f"(expected {'|'.join(VALID_FOLLOWUP_KINDS)})"
                         )
-                    if "on_recovery" in fu and not isinstance(fu.get("on_recovery"), bool):
-                        errs.append(f"assets followups[{idx}].on_recovery: must be true or false")
+                    for flag in ("on_recovery", "fail_on_low"):
+                        if flag in fu and not isinstance(fu.get(flag), bool):
+                            errs.append(f"assets followups[{idx}].{flag}: must be true or false")
                     needs_val = str(fu.get("needs") or "").strip()
                     if needs_val.lower().startswith("provider:"):
                         parts = [p.strip() for p in needs_val[len("provider:"):].split("/") if p.strip()]

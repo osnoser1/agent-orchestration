@@ -2598,5 +2598,95 @@ class TestAuditFollowUps(unittest.TestCase):
             self.assertIn("new-model-x: estimated needs numeric scores", out)
             self.assertTrue(cat["models"])
 
+
+class TestAuditRecheck(unittest.TestCase):
+    """Red→green repros for the second audit pass on d5ad9da."""
+
+    def setUp(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            self.fixture = json.load(fh)
+
+    def test_n1_expired_model_cap_resume_is_ready_without_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n  - id: claude\n    status: ok\n")
+            rc_ex, _ = _run(orch.exhaust, _exh(ap, "claude", "Opus limit · resets Nov 21, 2am (UTC)", model="claude-opus-5-5"))
+            self.assertEqual(rc_ex, 0)
+            rc, out = _run(orch.select, _sel(ap, "claude:claude-opus-5-5,claude:claude-sonnet-5-5", ref="t-cap"))
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(orch.load_file(ap)["followups"][0]["needs"], "provider:claude/claude-opus-5-5/T4")
+            _, pend = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T02:03:00Z", due=True))
+            self.assertIn("followup pending: needs provider:claude/claude-opus-5-5/T4", pend)
+            self.assertIn("usable in assets via claude", pend)
+
+    def test_n2_fail_on_low_stage_keeps_its_resume_pending_while_the_pool_is_low(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(
+                ap,
+                "version: 1\nproviders:\n"
+                "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: antigravity\n    status: low\n    used_percent: 90\n"
+                "  - id: codex\n    status: ok\n",
+            )
+            avail = "claude:claude-opus-5-5,antigravity:gemini-4-neon,codex:gpt-6-2-sol"
+            rc, out = _run(orch.select, _sel(ap, avail, fail_on_low=True, ref="task-low-stage"))
+            self.assertEqual(rc, 0, out)
+            self.assertIn("STAGE", out)
+            self.assertNotIn("followup due", out)
+            fu = orch.load_file(ap)["followups"][0]
+            self.assertIs(fu.get("fail_on_low"), True)
+            _, still = _run(orch.followups_cmd, _fu(ap, due=True, available=avail))
+            self.assertEqual(still.strip(), "")
+            _run(orch.status_cmd, mock.Mock(assets=ap, now="2026-11-21T00:00:00Z", provider="antigravity", state="ok"))
+            _, due = _run(orch.followups_cmd, _fu(ap, now="2026-11-21T00:05:00Z", due=True, available=avail))
+            self.assertIn("followup due: [resume] task-low-stage", due)
+
+    def test_n3_probe_derived_groups_reject_bare_exhaust_under_a_custom_provider_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders:\n" + _grouped_ag().replace("- id: antigravity", "- id: ag-work"))
+            rc, out = _run(orch.exhaust, _exh(ap, "ag-work", "Individual quota reached. Resets in 1h."))
+            self.assertEqual(rc, 1, out)
+            self.assertIn("--model", out)
+
+    def test_n3_probe_treats_exhausted_group_without_used_percent_as_recovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            extra = (
+                "    probe: {kind: antigravity}\n"
+                "    exhausted_until: 2026-11-21T03:00:00+00:00\n"
+                '    status_note: "Individual quota reached"\n'
+            )
+            text = "version: 1\nproviders:\n" + _grouped_ag(pst="exhausted", pextra=extra, gem="exhausted")
+            text = text.replace("        used_percent: 10\n", "")
+            _write(ap, text)
+            fake = subprocess.CompletedProcess(args=["agy"], returncode=0, stdout=json.dumps(self.fixture), stderr="")
+            with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch("subprocess.run", return_value=fake):
+                rc, out = _run(orch.probe, _probe(ap, now="2026-11-20T21:05:00Z", provider="antigravity"))
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(orch.load_file(ap)["providers"][0]["status"], "ok")
+
+    def test_n3_followups_add_refreshes_a_stale_resume_after(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ap = os.path.join(tmp, "assets.yaml")
+            _write(ap, "version: 1\nproviders: []\n")
+            _run(orch.followups_cmd, _fu(ap, add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T00:15:07+00:00"))
+            rc, out = _run(
+                orch.followups_cmd,
+                _fu(ap, now="2026-11-21T01:00:00Z", add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T04:32:00+00:00"),
+            )
+            self.assertEqual(rc, 0)
+            self.assertIn("followup updated", out)
+            self.assertEqual(
+                orch.load_file(ap)["followups"],
+                [{"kind": "resume", "ref": "r1", "needs": "T3", "after": "2026-11-21T04:32:00+00:00"}],
+            )
+            _, same = _run(
+                orch.followups_cmd,
+                _fu(ap, now="2026-11-21T01:00:00Z", add=True, kind="resume", ref="r1", needs="T3", after="2026-11-21T04:32:00+00:00"),
+            )
+            self.assertIn("followup already scheduled", same)
+
 if __name__ == "__main__":
     unittest.main()
