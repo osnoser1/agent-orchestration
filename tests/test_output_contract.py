@@ -4,8 +4,8 @@ The users of these commands are agents, so every output line costs tokens and lo
 truncated by harnesses. Each command, run on a LARGE fixture, must:
 
 1. be compact by default: at most BUDGET lines, no ANSI escapes;
-2. end with exactly one decision line (`action: ...`, `ok: ...`, or `error: N problem(s); action: ...`);
-3. cap every list (10 items) with `... N more (rerun with --full)`, which `--full` removes.
+2. end with exactly one decision line (`action: …`, `ok: …`, or `error: N problem(s); action: …`);
+3. cap every list (10 items) with `… N more (rerun with --full)`, which `--full` removes.
 
 A new subcommand without a case below fails `test_every_subcommand_has_a_contract_case`.
 """
@@ -30,7 +30,7 @@ ESC = "\x1b"
 
 ORCH_FINAL = re.compile(r"^action: \S")
 CHECK_FINAL = re.compile(r"^(ok: \S.*|error: \d+ problem\(s\); action: \S.*)$")
-LINE_CHARS = 700  # no compact line longer than this (a list crammed into one line is still a list)
+LINE_CHARS = 350  # no compact line longer than this (a list crammed into one line is still a list)
 HELP_LINES = 25  # per-subcommand --help
 TOP_HELP_LINES = 60
 
@@ -50,9 +50,10 @@ class Case:
     last: text that `--full` shows but the compact output must not (proves the cap); None when nothing is capped.
     """
 
-    def __init__(self, argv, budget, final, rc=0, last=None, cwd=None, env=None, shows=(), runner=None):
+    def __init__(self, argv, budget, final, rc=0, last=None, cwd=None, env=None, shows=(), runner=None, hides=()):
         self.argv, self.budget, self.final, self.rc = argv, budget, final, rc
         self.last, self.cwd, self.env, self.shows, self.runner = last, cwd, env or {}, shows, runner
+        self.hides = hides  # detail text that only --full may print
 
 
 def run(script, case):
@@ -88,6 +89,8 @@ class OrchWorld:
             "PATH": os.path.join(self.dir, "bin") + os.pathsep + os.environ.get("PATH", ""),
             "AGENT_ORCHESTRATION_ASSETS": self.assets,
             "NO_COLOR": "1",
+            "CLAUDE_CONFIG_DIR": os.path.join(self.home, ".claude"),  # never probe the real accounts
+            "CODEX_HOME": os.path.join(self.home, ".codex"),
         }
         os.makedirs(os.path.join(self.dir, "bin"))
         agy = os.path.join(self.dir, "bin", "agy")
@@ -111,13 +114,13 @@ class OrchWorld:
             lines += ["  - kind: ui-review", "    ref: item-%02d" % i, "    needs: any"]
         return self.write("\n".join(lines) + "\n", "select-assets.yaml")
 
-    def probe_assets(self, exhausted=30, ok=20):
+    def probe_assets(self, exhausted=30, ok=20, name="probe-assets.yaml"):
         lines = ["version: 1", "providers:"]
         for i in range(exhausted):  # a group filter that is 100% used: the provider reads as exhausted
             lines += ["  - id: ex%02d" % i, "    probe: {kind: antigravity, group: \"Claude and GPT models\"}"]
         for i in range(ok):
             lines += ["  - id: ok%02d" % i, "    probe: {kind: antigravity}"]
-        return self.write("\n".join(lines) + "\n", "probe-assets.yaml")
+        return self.write("\n".join(lines) + "\n", name)
 
     def common(self, assets=None):
         return ["--assets", assets or self.assets, "--now", NOW]
@@ -132,11 +135,13 @@ class OrchContract(unittest.TestCase):
         env = w.env
         sel = ["select", "--complexity", "standard", "--risk", "low", "--available", avail, *w.common(assets)]
         cases = {"select": [
-            Case(sel, 15, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("note: provider exhausted: ex00, ex01",)),
+            Case(sel, 5, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("note: provider exhausted: ex00, ex01",),
+                 hides=("reviewer degraded",)),  # the reviewer is chosen later: its degradation belongs to that step
             Case(["select", "--complexity", "standard", "--risk", "high", "--available", avail, "--implementer", "no-such-model", *w.common(assets)],
                  5, ORCH_FINAL, rc=1, env=env, cwd=w.dir),
         ]}
-        cases["followups"] = [Case(["followups", "--due", "--available", "claude:claude-opus-5-5", *w.common(assets)], 15, ORCH_FINAL,
+        cases["select"] += self.select_scenarios(w)
+        cases["followups"] = [Case(["followups", "--due", "--available", "claude:claude-opus-5-5", *w.common(assets)], 3, ORCH_FINAL,
                                    last="item-29", env=env, cwd=w.dir)]
         cases["log"] = [Case(["log", "--complexity", "standard", "--risk", "low", "--provider", "claude", "--model", "claude-opus-5-5",
                               "--effort", "high", "--ledger", os.path.join(w.dir, "ledger.jsonl"), *w.common()],
@@ -152,14 +157,59 @@ class OrchContract(unittest.TestCase):
                 fh.write(json.dumps({"ref": "item-1", "failure_class": "tool", "event": "complete", "outcome": "failed", "n": i}) + "\n")
         cases["failure"] = [
             Case(["failure", "tool error: harness error " + "x" * 2000, "--ref", "item-1", "--ledger", ledger, *w.common()],
-                 5, ORCH_FINAL, env=env, cwd=w.dir),
+                 3, ORCH_FINAL, env=env, cwd=w.dir),
             Case(["failure", "You've hit your weekly limit · resets Nov 23, 3am (America/New_York)", "--ref", "item-1", "--ledger", ledger, *w.common()],
-                 5, ORCH_FINAL, env=env, cwd=w.dir),
+                 3, ORCH_FINAL, env=env, cwd=w.dir),
         ]
         cases["scope"] = self.scope_cases(w)
         cases["check"] = self.check_cases(w)
         cases["probe"] = self.probe_cases(w)
         return cases
+
+    def select_scenarios(self, w):
+        """Every select outcome that records a follow-up or stops: compact keeps the recording line and ends on the action."""
+        exhausted = w.write(
+            "version: 1\nproviders:\n  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: codex\n    status: ok\n", "exhausted-assets.yaml")
+        ui = {}
+        for mode in ("defer", "ask", "proceed"):
+            ui[mode] = w.write(
+                "version: 1\npreferences:\n  pay_per_use: never\n  ui_fallback: %s\nproviders:\n"
+                "  - id: claude\n    policy: preserve\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+                "  - id: antigravity\n    policy: spend-first\n    status: ok\n    groups:\n"
+                "      - name: Gemini\n        models: [gemini-4-neon]\n        status: ok\n        used_percent: 30\n"
+                "        window: 7d\n        resets_at: 2026-11-26T15:58:04+00:00\n"
+                "      - name: Claude\n        models: [claude-opus-5-5, claude-sonnet-5-5]\n        status: exhausted\n"
+                "        used_percent: 100\n        window: 7d\n        resets_at: 2026-11-27T15:59:36+00:00\n"
+                "  - id: codex\n    status: ok\n" % mode, "ui-%s-assets.yaml" % mode)
+        both = "claude:claude-opus-5-5,codex:gpt-6-2-sol"
+        ui_avail = "claude:claude-sonnet-5-5,antigravity:claude-sonnet-5-5,antigravity:gemini-4-neon,codex:gpt-6-2-sol"
+        base = lambda assets, avail, *more: ["select", "--available", avail, *more, *w.common(assets)]  # noqa: E731
+
+        def case(argv, rc, final, *shows):
+            return Case(argv, 4, re.compile(final), rc=rc, shows=shows, env=w.env, cwd=w.dir)
+
+        return [
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--ref", "a-stage"), 0,
+                 r"^action: stage: dispatch Phase 1 \S+ @ \S+ now; switch to \S+ @ \S+ at the Phase 1 boundary \(earliest reset 2026-11-23T08:00:00\+00:00\)",
+                 "followup recorded: [resume] a-stage"),
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "proceed", "--ref", "a-proceed"), 0,
+                 r"^action: dispatch \S+ @ \S+ now \(below T4\);.*provisional", "followup recorded: [resume] a-proceed"),
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "wait", "--ref", "a-wait"), 4,
+                 r"^action: hold until 2026-11-23T08:02:00\+00:00; follow-up recorded: schedule its wakeup$",
+                 "followup recorded: [resume] a-wait"),
+            case(base(ui["defer"], ui_avail, "--complexity", "standard", "--risk", "low", "--ui", "--ref", "a-ui"), 3,
+                 r"^action: hold until \S+ \(preferred ui-ux-review exhausted\); record a resume follow-up$"),
+            case(base(ui["ask"], ui_avail, "--complexity", "standard", "--risk", "low", "--ui", "--ref", "a-ui"), 3,
+                 r"^action: ask the user once \(preferred ui-ux-review exhausted"),
+            case(base(ui["proceed"], ui_avail, "--complexity", "standard", "--risk", "low", "--ui", "--ref", "a-ui"), 0,
+                 r"^action: dispatch \S+ @ \S+ now; .*mark it provisional", "followup recorded: [ui-review] a-ui"),
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "medium", "--implementer", "gpt-6-2-sol"), 0,
+                 r"^action: dispatch reviewer \S+ @ \S+ now; state the reviewer degradation in the report", "[note] reviewer degraded"),
+            case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-wait"), 4,
+                 r"^action: hold the review until \S+; follow-up recorded: schedule its wakeup$",
+                 "followup recorded: [resume] a-rev-wait"),
+        ]
 
     def scope_cases(self, w):
         repo = os.path.join(w.dir, "repo")
@@ -207,7 +257,14 @@ class OrchContract(unittest.TestCase):
 
     def probe_cases(self, w):
         assets = w.probe_assets()
-        return [Case(["probe", *w.common(assets)], 15, ORCH_FINAL, rc=4, last="ex29", env=w.env, cwd=w.dir)]
+        grouped = w.probe_assets(exhausted=0, ok=3, name="grouped-assets.yaml")
+        unsaved = os.path.join(w.dir, "never-written.yaml")  # no assets file: results are not saved
+        return [
+            Case(["probe", *w.common(assets)], 12, ORCH_FINAL, rc=4, last="ex29", env=w.env, cwd=w.dir),
+            Case(["probe", *w.common(grouped)], 5, ORCH_FINAL, shows=("[not ok: Claude and GPT models]",), env=w.env, cwd=w.dir),
+            Case(["probe", *w.common(unsaved)], 4, re.compile(r"^action: .*results not saved .*offer probe --init to the user"),
+                 shows=("[note] no assets file",), env=w.env, cwd=w.dir),
+        ]
 
     def test_every_subcommand_has_a_contract_case(self):
         orch = load_module("orch_contract", ORCH)
@@ -239,6 +296,9 @@ def assert_contract(tc, case, rc, lines, rc_full, full):
     tc.assertTrue(case.final.match(full[-1]), "--full must end with the same decision line:\n" + "\n".join(full))
     for item in case.shows:
         tc.assertIn(item, text)
+    for item in case.hides:
+        tc.assertNotIn(item, text)
+        tc.assertIn(item, "\n".join(full), "--full must still show %r" % item)
     if case.last:
         tc.assertIn(MORE, text)
         tc.assertNotIn(case.last, text, "compact output must cap the list")
@@ -286,7 +346,11 @@ class RepoContract(unittest.TestCase):
                 Case(["check", "--root", no_base, "--base", "origin/no-such-ref"], 4, CHECK_FINAL, rc=1),
                 Case(["check", "--self-test"], 1, CHECK_FINAL),
             ],
-            "bump": [Case(lambda: ["bump", "1.1.0", "--root", self.fixture()], 1, CHECK_FINAL)],
+            "bump": [
+                Case(lambda: ["bump", "1.1.0", "--root", self.fixture()], 1, CHECK_FINAL),
+                Case(lambda: ["bump", "0.0.1", "--root", self.fixture()], 2, CHECK_FINAL, rc=1),
+                Case(lambda: ["bump", "nope", "--root", self.fixture()], 2, CHECK_FINAL, rc=1),
+            ],
             "release": [self.release_case()],
         }
 
@@ -332,7 +396,8 @@ class RepoContract(unittest.TestCase):
         (_, lines), _ = run(REPO, Case(["check", "--root", root], 5, CHECK_FINAL, rc=1))
         self.assertIn("fix or remove the broken link", lines[-1])
         (_, lines), _ = run(REPO, Case(["check", "--root", root, "--base", "origin/no-such-ref"], 5, CHECK_FINAL, rc=1))
-        self.assertTrue(any("run: git fetch" in l for l in lines), lines)
+        self.assertIn("run: git fetch", lines[-1])  # the closing line carries the git hint, not "run bump"
+        self.assertNotIn("bump", lines[-1])
 
     def test_help_is_short_and_has_an_example(self):
         sub = next(a for a in self.repo.build_parser()._actions if a.dest == "cmd")

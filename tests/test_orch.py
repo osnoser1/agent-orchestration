@@ -3033,7 +3033,7 @@ class TestSelectActionLine(unittest.TestCase):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 0,
             "action: stage: dispatch Phase 1 codex/gpt-6-2-sol @ xhigh now; switch to claude/claude-opus-5-5 @ xhigh "
-            "at the Phase 1 boundary, with a resume double check at 2026-11-23T08:02:00+00:00",
+            "at the Phase 1 boundary (earliest reset 2026-11-23T08:00:00+00:00), with a resume double check at 2026-11-23T08:02:00+00:00",
             ref="a-stage",
         )
 
@@ -3107,7 +3107,7 @@ class TestSelectActionLine(unittest.TestCase):
     def test_exit4_all_tier_models_exhausted_holds_until_reset_plus_margin(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5", 4,
-            "action: hold until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            "action: hold until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             ref="a-hold",
         )
 
@@ -3149,14 +3149,14 @@ class TestSelectActionLine(unittest.TestCase):
     def test_high_risk_no_reviewer_waits_for_the_tier(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5,codex:gpt-6-2-sol", 4,
-            "action: hold the review until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             implementer="gpt-6-2-sol", ref="a-rev-wait",
         )
 
     def test_no_reviewer_exhausted_holds_the_review(self):
         self.sel(
             CLAUDE_EXHAUSTED, "claude:claude-opus-5-5", 4,
-            "action: hold the review until 2026-11-23T08:02:00+00:00; record a resume follow-up",
+            "action: hold the review until 2026-11-23T08:02:00+00:00; follow-up recorded: schedule its wakeup",
             complexity="hard", risk="medium", implementer="claude-opus-5-5", ref="a-rev-none",
         )
 
@@ -3194,9 +3194,9 @@ class TestSelectActionLine(unittest.TestCase):
         )
 
 
-def _fail(message, ref="item-1", ledger=None, known=None, assets=None):
+def _fail(message, ref="item-1", ledger=None, known=None, assets=None, full=True):
     return _Args(
-        message=message, ref=ref, ledger=ledger, known=known, assets=assets, now="2026-11-20T21:00:00Z"
+        message=message, ref=ref, ledger=ledger, known=known, assets=assets, now="2026-11-20T21:00:00Z", full=full
     )
 
 
@@ -3232,10 +3232,18 @@ class TestFailureCommand(unittest.TestCase):
         self.assertEqual(f["log"], "--event complete --outcome quota --failure-class quota --ref item-1")
         self.assertEqual(
             f["action"],
-            "if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
+            "quota (resets 2026-11-23T03:00:00-05:00): if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
             "(add --model or --group per references/quota-errors.md) and follow the quota order in references/harnesses.md; "
             "otherwise treat it as infra: rerun once",
         )
+
+    def test_compact_output_keeps_the_log_flags_and_the_action(self):
+        rc, out = _run(orch.failure_cmd, _fail("You've hit your weekly limit \u00b7 resets Nov 23, 3am (America/New_York)", full=False))
+        lines = out.rstrip("\n").split("\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(lines), 2, out)
+        self.assertEqual(lines[0], "log: --event complete --outcome quota --failure-class quota --ref item-1")
+        self.assertTrue(lines[1].startswith("action: quota (resets 2026-11-23T03:00:00-05:00): "), out)
 
     def test_quota_without_a_reset_time(self):
         _, f, _ = self.run_failure(_fail("429 Too Many Requests: rate limit exceeded"))
@@ -3311,7 +3319,8 @@ class TestFailureCommand(unittest.TestCase):
             led = self.ledger(tmp, [("item-1", "tool"), ("item-1", "tool")])
             _, f, _ = self.run_failure(_fail("rate limit reached, try again in 2h", ledger=led))
             self.assertEqual((f["class"], f["retries"]), ("quota", "2/2"))
-            self.assertTrue(f["action"].startswith("if the limit is the model provider's"))
+            self.assertTrue(f["action"].startswith("quota (resets "))
+            self.assertIn("if the limit is the model provider's", f["action"])
 
     def test_known_failures_win_over_every_class(self):
         known = ["eslint exploded=>run npm ci once, then rerun", "ETIMEDOUT=>never reached"]
@@ -3404,7 +3413,7 @@ def _git(root, *argv):
 
 
 def _scope(root, **kw):
-    base = dict(repo=root, base="main", max_files=None, max_lines=None, expect=None)
+    base = dict(repo=root, base="main", max_files=None, max_lines=None, expect=None, full=True)
     base.update(kw)
     rc, out = _run(orch.scope_cmd, _Args(**base))
     lines = out.rstrip("\n").split("\n")
@@ -3430,6 +3439,27 @@ class TestScopeCommand(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
+
+    def test_compact_output_labels_each_flagged_file_and_caps_the_list(self):
+        for rel in ("package.json", "x.orig", "src/ok.py", "other/a.py"):
+            self.put(rel, "1\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "w")
+        base = dict(repo=self.root, base="main", max_files=None, max_lines=None, expect=["src/**"], full=False)
+        rc, out = _run(orch.scope_cmd, _Args(**base))
+        lines = out.rstrip("\n").split("\n")
+        self.assertEqual((rc, len(lines)), (0, 1), out)
+        self.assertIn("other/a.py (outside)", lines[0])
+        self.assertIn("package.json (manifest, outside)", lines[0])
+        self.assertIn("x.orig (outside, stray)", lines[0])
+        self.assertNotIn("src/ok.py", lines[0])
+        self.assertNotIn("more (rerun", lines[0])
+        for i in range(8):
+            self.put("other/f%d.py" % i, "1\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "more")
+        _, out = _run(orch.scope_cmd, _Args(**base))
+        self.assertIn("\u2026 6 more (rerun with --full)", out)
 
     def test_clean_diff_within_budget_is_ok(self):
         self.put("src/app.py", "print(1)\nprint(2)\n")

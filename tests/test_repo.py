@@ -336,7 +336,7 @@ class TestBaseGuard(unittest.TestCase):
             return (128, "fatal: boom") if argv[:2] == ["git", "diff"] else repo.sh(argv, cwd)
 
         errors = repo.run_checks(root, base="HEAD", run=run).errors
-        self.assertTrue(any(e.startswith("version:") and "git diff" in e and "boom" in e for e in errors), errors)
+        self.assertTrue(any(e.startswith("version-git:") and "git diff" in e and "boom" in e for e in errors), errors)
 
     def test_failed_ls_files_is_an_error_not_a_pass(self):
         root = git_fixture(self)
@@ -345,12 +345,29 @@ class TestBaseGuard(unittest.TestCase):
             return (128, "fatal: boom") if argv[:3] == ["git", "ls-files", "--others"] else repo.sh(argv, cwd)
 
         errors = repo.run_checks(root, base="HEAD", run=run).errors
-        self.assertTrue(any(e.startswith("version:") and "ls-files" in e for e in errors), errors)
+        self.assertTrue(any(e.startswith("version-git:") and "ls-files" in e for e in errors), errors)
+
+    def test_a_skipped_bump_check_shows_in_the_closing_line(self):
+        root = git_fixture(self)
+        write(root, "skills/agent-orchestration/references/harnesses.md", "# Harnesses\n\n" + repo.FIX_TABLE + "\nMore.\n")
+
+        def run(argv, cwd):
+            return (128, "") if argv[:2] == ["git", "show"] else repo.sh(argv, cwd)
+
+        report = repo.run_checks(root, base="HEAD", run=run)
+        self.assertEqual(report.errors, [])
+        self.assertIn("skipping bump check", report.closing())
+
+    def test_missing_merge_base_closing_line_points_at_git_not_bump(self):
+        root = git_fixture(self)
+        closing = repo.run_checks(root, base="no-such-ref").closing()
+        self.assertIn("run: git fetch", closing)
+        self.assertNotIn("bump", closing)
 
     def test_missing_merge_base_is_an_error(self):
         root = git_fixture(self)
         errors = repo.run_checks(root, base="no-such-ref").errors
-        self.assertTrue(any(e.startswith("version:") and "merge-base" in e for e in errors), errors)
+        self.assertTrue(any(e.startswith("version-git:") and "merge-base" in e for e in errors), errors)
 
 
 class TestMarkdownRules(unittest.TestCase):

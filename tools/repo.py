@@ -10,8 +10,8 @@ Commands:
   release [--publish]               verify release preconditions; dry run unless --publish
 
 Output contract (tests/test_output_contract.py is the source of truth): compact by
-default, every list capped at 10 per rule followed by `... N more (rerun with --full)`,
-no color, no prompts, and the last line is the decision: `ok: ...` or
+default, every list capped at 10 per rule followed by `… N more (rerun with --full)`,
+no color, no prompts, and the last line is the decision: `ok: …` or
 `error: N problem(s); action: <fix or rerun hint>`. `--full` prints every line.
 
 Data files (all under tools/): versions.json (version locators), harnesses.json
@@ -24,8 +24,8 @@ token `claude-opus` (trailing `-` and `.` are stripped), so allow `claude-opus`;
 an effort suffix (`-high`, ...) on a catalog id needs no entry.
 
 Output: one line per problem, `error: <rule>: <message>` (fails the run);
-`note:` lines (information only) appear with --full. Rules: version, harness,
-links, budget, leak, model, pinned, skills.
+`note:` lines (information only) appear with --full. Rules: version, version-git
+(git could not answer for --base), harness, links, budget, leak, model, pinned, skills.
 """
 import argparse
 import glob
@@ -46,8 +46,9 @@ SKILL_WORD_BUDGET = 1500  # SKILL.md body words
 AGENTS_MAX_LINES = 150
 VENDORED_PREFIXES = (".agents/skills/writing-for-agents/",)  # `npx skills update` owns these
 CAP = 10  # list items shown per rule unless --full
-RULE_FIX = {  # one fix hint per rule, joined into the closing `error: N problem(s); action: ...` line
+RULE_FIX = {  # one fix hint per rule, joined into the closing `error: N problem(s); action: …` line
     "version": "run python3 tools/repo.py bump <X.Y.Z> (the version files must agree first)",
+    "version-git": "run: git fetch --unshallow (or git fetch origin), then rerun with the same --base",
     "harness": "edit the list or table to match tools/harnesses.json (alphabetical)",
     "links": "fix or remove the broken link or anchor",
     "budget": "shorten the file to its budget",
@@ -117,7 +118,7 @@ class Report:
         return [line for lines in groups.values() for line in capped(lines, False)]
 
     def closing(self):
-        """The last line: `ok: ...` or `error: N problem(s); action: ...`."""
+        """The last line: `ok: …` or `error: N problem(s); action: …`."""
         errors = self.errors
         if not errors:
             return "ok: all checks passed" + (" (%s)" % "; ".join(self.briefs) if self.briefs else "")
@@ -280,15 +281,15 @@ def check_base(root, report, cfg, current, base, run):
     rc, mb = run(["git", "merge-base", base, "HEAD"], root)
     mb = mb.strip()
     if rc != 0 or not mb:
-        report.error("version", "cannot find a merge-base with %s; run: git fetch --unshallow (or git fetch origin)" % base)
+        report.error("version-git", "cannot find a merge-base with %s; run: git fetch --unshallow (or git fetch origin)" % base)
         return
     rc, diff = run(["git", "diff", "--name-only", "--no-renames", mb], root)  # a rename must list its old path too
     if rc != 0:
-        report.error("version", "git diff against merge-base %s failed: %s" % (mb[:7], diff.strip() or "no output"))
+        report.error("version-git", "git diff against merge-base %s failed: %s" % (mb[:7], diff.strip() or "no output"))
         return
     rc, untracked = run(["git", "ls-files", "--others", "--exclude-standard"], root)
     if rc != 0:
-        report.error("version", "git ls-files failed: %s" % (untracked.strip() or "no output"))
+        report.error("version-git", "git ls-files failed: %s" % (untracked.strip() or "no output"))
         return
     changed = {p for p in (diff + "\n" + untracked).split("\n") if p}
     guards = tuple(cfg.get("guarded_paths") or [])
@@ -300,11 +301,11 @@ def check_base(root, report, cfg, current, base, run):
     rc, old_text = run(["git", "show", "%s:%s" % (mb, first["file"])], root)
     hit = find_version(old_text, first["pattern"]) if rc == 0 else None
     if hit is None:
-        report.note("%s has no version at merge-base %s; skipping bump check" % (first["file"], mb[:7]))
+        report.note("%s has no version at merge-base %s; skipping bump check" % (first["file"], mb[:7]), brief=True)
         return
     old = hit[0]
     if not SEMVER.match(old):
-        report.note("%s has a non-semver version %r at merge-base; skipping bump check" % (first["file"], old))
+        report.note("%s has a non-semver version %r at merge-base; skipping bump check" % (first["file"], old), brief=True)
         return
     if current is None:
         return  # sync error already reported
@@ -604,6 +605,7 @@ def self_test_cases():
     return [
         ("baseline fixture passes", None, lambda r: None, None),
         ("version files disagree", "version", lambda r: _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"), None),
+        ("--base without git history", "version-git", lambda r: None, "origin/main"),
         ("version not X.Y.Z", "version", lambda r: _edit(r, ".claude-plugin/plugin.json", "1.0.0", "v1"), None),
         ("shipped file changed, version same (--base)", "version",
          lambda r: (_git_repo(r), _append(r, "skills/agent-orchestration/SKILL.md", "More text.\n")), "HEAD"),
@@ -676,17 +678,20 @@ def cmd_self_test(out=print, full=False):
 # ---------- bump ----------
 def cmd_bump(root, new, out=print, full=False):
     if not SEMVER.match(new):
-        out("error: bump: %r is not X.Y.Z; action: pass a version like 1.2.3" % new)
+        out("error: bump: %r is not X.Y.Z" % new)
+        out("error: 1 problem(s); action: pass a version like 1.2.3")
         return 1
     report = Report()
     cfg, current = check_versions(root, report)
     if current is None:
         for line in report.render_compact(full):
             out(line)
-        out("error: bump: versions must agree before bumping; action: fix the version files listed above, then rerun bump")
+        out("error: bump: versions must agree before bumping")
+        out("error: %d problem(s); action: fix the version files listed above, then rerun bump" % (len(report.errors) + 1))
         return 1
     if semver_tuple(new) <= semver_tuple(current):
-        out("error: bump: %s must be higher than the current %s; action: pass a higher X.Y.Z" % (new, current))
+        out("error: bump: %s must be higher than the current %s" % (new, current))
+        out("error: 1 problem(s); action: pass a higher X.Y.Z")
         return 1
     # Plan every write before touching any file.
     plans = []

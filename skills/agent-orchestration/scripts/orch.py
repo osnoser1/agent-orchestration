@@ -29,8 +29,8 @@ Exit codes:
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
 `probe`, `select`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
-`check` ends with `ok: ...` or `error: N problem(s); action: ...`.
-Every command is compact by default: lists stop at 10 items (`... N more (rerun with --full)`), repeated notes group by
+`check` ends with `ok: …` or `error: N problem(s); action: …`.
+Every command is compact by default: lists stop at 10 items (`… N more (rerun with --full)`), repeated notes group by
 reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
 
 YAML support is a small subset: block maps, '- ' lists of maps, one-line {..} / [..], # comments.
@@ -114,12 +114,12 @@ def _more(n):
     return f"… {n} more (rerun with --full)"
 
 
-def _capped(items):
-    """`items` limited to CAP unless --full, plus a trailing `… N more` entry when some were cut."""
+def _capped(items, limit=CAP):
+    """`items` limited to `limit` (default CAP) unless --full, plus a trailing `… N more` entry when some were cut."""
     items = list(items)
-    if _FULL or len(items) <= CAP:
+    if _FULL or len(items) <= limit:
         return items
-    return items[:CAP] + [_more(len(items) - CAP)]
+    return items[:limit] + [_more(len(items) - limit)]
 
 
 def _detail(text):
@@ -701,10 +701,20 @@ def pending_ready_followups(catalog, assets, now):
     return ready
 
 
+def _due_lines(due):
+    """`followup due:` lines: one per follow-up under --full, else one per (kind, usable pool) listing its refs."""
+    if _FULL:
+        return [_due_line(fu, usable) for fu, usable in due]
+    groups = {}
+    for fu, usable in due:
+        groups.setdefault((fu.get("kind", "review"), ", ".join(usable)), []).append(str(fu.get("ref", "")))
+    return _capped([f"followup due: [{kind}] via {pool}: " + ", ".join(_capped(refs)) for (kind, pool), refs in groups.items()])
+
+
 def _print_due(catalog, assets, now, available):
     """Print the due follow-ups (capped); return how many are due."""
     due = due_followups(catalog, assets, now, available=available)
-    for line in _capped([_due_line(fu, usable) for fu, usable in due]):
+    for line in _due_lines(due):
         print(line)
     return len(due)
 
@@ -724,7 +734,7 @@ def print_followups_status(catalog, assets, now, available=None, due_only=True):
         due = due_followups(catalog, assets, now, available=available)
         n_due = len(due)
         due_ids = {id(fu) for fu, _ in due}
-        lines += [_due_line(fu, usable) for fu, usable in due]
+        lines += _due_lines(due)
         if not due_only:
             lines += [_pending_line(fu) for fu in all_fus if id(fu) not in due_ids]
             if not all_fus:
@@ -1031,13 +1041,16 @@ def _gate_cause(reasons):
     return "low" if reasons["threshold"] > 0 else "ask" if reasons["askable"] > 0 else "excluded"
 
 
-def _stop_action(rc, resume_iso, who="", cause="", notes=()):
+def _stop_action(rc, resume_iso, who="", cause="", notes=(), recorded=True):
     """`action:` line for a `select` exit that dispatches nothing (2, 3 or 4); `who` names a held step such as the review."""
     if rc == 2:
         research = any("research-unrated" in n for n in notes)
         _action("no tier match: " + ("run references/research-unrated.md or ask the user" if research else "ask the user"))
     elif rc == 4:
-        _action(f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; record a resume follow-up")
+        _action(
+            f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; "
+            + ("follow-up recorded: schedule its wakeup" if recorded else "no follow-up was recorded (no --ref): add one with followups --add --kind resume")
+        )
     elif cause == "low":
         _action(
             "rerun select without --fail-on-low and dispatch its " + ("reviewer" if who else "candidate")
@@ -1095,7 +1108,8 @@ def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_l
     return None
 
 
-def print_reviewer(rt, pick, impl_model, floor):
+def print_reviewer(rt, pick, impl_model, floor, always=False):
+    """Print the reviewer lines; the degradation note shows in compact mode only when the reviewer is the output (`always`)."""
     stage, c, below = pick
     fam = impl_model["family"]
     labels = {
@@ -1118,7 +1132,8 @@ def print_reviewer(rt, pick, impl_model, floor):
         why = "no other model usable; using the implementer's model in a fresh conversation"
     if below:
         why += f" (below {rt}: score {c['score']} < {floor})"
-    print(f"[note] reviewer degraded: {why}. State this in the report.")
+    if always or _FULL:
+        print(f"[note] reviewer degraded: {why}. State this in the report.")
 
 
 def _resume_ref(ref_arg, assets_exists):
@@ -1129,7 +1144,7 @@ def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low
     """Record one `kind: resume` entry per ref; refresh it when its fields changed."""
     if not ref:
         print("[note] no assets file and no --ref; pass --ref to record the resume follow-up")
-        return
+        return False
     entry = {"kind": "resume", "ref": ref, "needs": needs}
     if after_iso:
         entry["after"] = after_iso
@@ -1141,12 +1156,13 @@ def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low
     after_txt = f", after {after_iso}" if after_iso else ""
     if existing and dict(existing) == entry:
         print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
-        return
+        return True
     record_followup(ap, entry, now=now)
     if existing:
         print(f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup")
     else:
         print(f"followup recorded: [resume] {ref} (needs {needs}{after_txt})")
+    return True
 
 
 def _schedule_resume(label, earliest_dt):
@@ -1186,7 +1202,7 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     _detail(f"implementer (given): {m['family']} / {m['id']}")
     pick, wait = choose_reviewer(catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode)
     if pick:
-        print_reviewer(rt, pick, m, floors[rt])
+        print_reviewer(rt, pick, m, floors[rt], always=True)
         _action(
             f"dispatch reviewer {_cand_ref(pick[1])} now"
             + ("" if pick[0] == 1 else "; state the reviewer degradation in the report")
@@ -1199,8 +1215,8 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
             "wait for one to renew"
         )
         resume_iso = _schedule_resume(f"{rt} reviewers", earliest_dt)
-        _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
-        _stop_action(4, resume_iso, "the review")
+        rec = _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
+        _stop_action(4, resume_iso, "the review", recorded=rec)
         return 4
     _, notes, reasons = candidates(
         catalog,
@@ -1225,8 +1241,8 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
             _, earliest_dt, _, _ = exhausted_tier_candidates(catalog, assets, avail, "any", 0, now)
             needs, label = "any", "reviewers"
         resume_iso = _schedule_resume(label, earliest_dt)
-        _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
-        _stop_action(4, resume_iso, "the review")
+        rec = _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
+        _stop_action(4, resume_iso, "the review", recorded=rec)
         return 4
     _stop_action(2, None, notes=notes)
     return 2
@@ -1350,7 +1366,7 @@ def select(a):
             _action(
                 f"stage: dispatch Phase 1 {_cand_ref(impl)} now; switch to "
                 + (_cand_ref(target) if target else f"the first usable {tier} model")
-                + f" at the Phase 1 boundary, with a resume double check at {resume_iso or 'reset + 2m'}"
+                + f" at the Phase 1 boundary (earliest reset {reset_txt}), with a resume double check at {resume_iso or 'reset + 2m'}"
             )
             return 0
 
@@ -1383,8 +1399,8 @@ def select(a):
             _print_notes(notes)
         if saw_ex_tier and reasons["threshold"] == 0:
             sched_iso = _schedule_resume(f"{tier} candidates", earliest_dt)
-            _record_resume(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
-            _stop_action(4, sched_iso)
+            rec = _record_resume(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
+            _stop_action(4, sched_iso, recorded=rec)
             return 4
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
             _stop_action(3, None, "", _gate_cause(reasons))
@@ -1398,6 +1414,7 @@ def select(a):
     pref_need = None
     pref_kind = None
     provisional = False
+    skipped_followup = False
     if a.ui and "ui-ux-review" not in (impl["model"].get("strengths") or []):
         pref_need = "ui-ux-review"
         pref_kind = "ui-review"
@@ -1457,7 +1474,7 @@ def select(a):
                 print(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
                 assets = load_file(ap)
             else:
-                _detail("[note] no assets file; skipped recording follow-up")
+                skipped_followup = True
 
     _detail(f"implementer: {fmt(impl)}")
 
@@ -1477,6 +1494,7 @@ def select(a):
     _action(
         f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts"
         + ("; mark it provisional (log --provisional)" if provisional else "")
+        + ("; no assets file, so no follow-up was recorded: queue the preferred-model review yourself" if skipped_followup else "")
     )
     return 0
 
@@ -2400,15 +2418,15 @@ def probe(a):
     ap = a.assets or def_assets()
     if os.path.exists(ap) or _opt_bool(a, "init"):
         return _probe(a, ap)
-    _detail(f"[note] no assets file at {ap}: probing with defaults without saving (pass --init to create it)")
+    print(f"[note] no assets file at {ap}: probing with defaults without saving (pass --init to create it)")
     tmp_dir = tempfile.mkdtemp(prefix="orch-probe-")
     try:
-        return _probe(a, os.path.join(tmp_dir, "assets.yaml"), cache_home=ap)
+        return _probe(a, os.path.join(tmp_dir, "assets.yaml"), cache_home=ap, unsaved=True)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _probe(a, ap, cache_home=None):
+def _probe(a, ap, cache_home=None, unsaved=False):
     now = get_now(a.now)
     catalog_path = a.catalog or DEF_CATALOG
     catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
@@ -2438,8 +2456,9 @@ def _probe(a, ap, cache_home=None):
     lines = []  # (text, shown in compact mode); compact keeps recoveries, errors and non-ok providers
     tally = {}
 
-    def emit(text, compact=True):
-        lines.append((text, compact))
+    def emit(text, compact=True, short=None):
+        """`compact` False hides the line unless --full; `short` replaces its text in compact mode."""
+        lines.append((text, compact, short))
 
     # 1. Auto-clear expired exhausted entries (provider and group level) and persist them once per scope.
     for p in providers:
@@ -2542,7 +2561,7 @@ def _probe(a, ap, cache_home=None):
         result, err = fn(cfg, now, catalog) if kind == "antigravity" else fn(cfg, now)
         if err:
             emit(f"{pid}: {err}")
-            tally["error"] = tally.get("error", 0) + 1
+            tally["unverified"] = tally.get("unverified", 0) + 1
             continue
 
         if "groups" in result:
@@ -2652,7 +2671,9 @@ def _probe(a, ap, cache_home=None):
             usable = sum(1 for g in persisted_groups if g["status"] != "exhausted")
             eff_reset = p["exhausted_until"] if keep_prov_err else r_at
             reset_msg = f", resets {eff_reset}" if (st == "exhausted" and eff_reset) else ""
-            emit(f"{pid}: {st} ({usable}/{len(persisted_groups)} groups usable{reset_msg})", st != "ok")
+            bad = [g["name"] for g in persisted_groups if g["status"] != "ok"]
+            head = f"{pid}: {st} ({usable}/{len(persisted_groups)} groups usable{reset_msg})"
+            emit(head, st != "ok" or bool(bad), head + (f" [not ok: {', '.join(bad)}]" if bad else ""))
             tally[st] = tally.get(st, 0) + 1
             for g in persisted_groups:
                 g_eff_reset = g.get("exhausted_until") or g.get("resets_at")
@@ -2696,17 +2717,18 @@ def _probe(a, ap, cache_home=None):
         emit(f"{pid}: {st} ({pct}% of {win}{reset_msg})", st != "ok")
         tally[st] = tally.get(st, 0) + 1
 
-    for text in _capped([t for t, compact in lines if _FULL or compact]):
+    for text in _capped([t if _FULL or not short else short for t, compact, short in lines if _FULL or compact]):
         print(text)
     updated_assets = load_file(ap) or {}
     avail_str = _opt_str(a, "available")
     avail = [x.strip() for x in avail_str.split(",") if x.strip()] if avail_str else None
     n_due = print_followups_status(catalog, updated_assets, now, available=avail, due_only=True)
     total = sum(tally.values())
-    summary = ", ".join(f"{tally[k]} {k}" for k in ("ok", "low", "exhausted", "unverified", "error") if tally.get(k))
+    summary = ", ".join(f"{tally[k]} {k}" for k in ("ok", "low", "exhausted", "unverified") if tally.get(k))
     _action(
         (f"probed {total} provider(s) ({summary}); " if total else "no provider was probed; ")
-        + "run select to apply them" + (f"; {n_due} follow-up(s) due above" if n_due else "")
+        + ("results not saved (no assets file): offer probe --init to the user, then run select" if unsaved else "run select to apply them")
+        + (f"; {n_due} follow-up(s) due above" if n_due else "")
     )
 
     return worst
@@ -2945,7 +2967,8 @@ def failure_cmd(a):
         _detail("resets: " + (reset.isoformat(timespec="seconds") if reset else "unknown"))
         _failure_log_hint("quota", cls, tag)
         print(
-            "action: if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
+            f"action: quota (resets {reset.isoformat(timespec='seconds') if reset else 'unknown'}): "
+            "if the limit is the model provider's, run orch.py exhaust <provider> \"<error text>\" "
             "(add --model or --group per references/quota-errors.md) and follow the quota order in references/harnesses.md; "
             "otherwise treat it as infra: rerun once"
         )
@@ -3083,8 +3106,15 @@ def scope_cmd(a):
     if not flagged and not over:
         _action("ok")
         return 0
+    shown = flagged
+    if not _FULL:  # compact: say why each file is flagged
+        why = {p: [] for p in flagged}
+        for label, group in (("manifest", manifests), ("outside", outside), ("stray", stray)):
+            for p in group:
+                why[p].append(label)
+        shown = [f"{p} ({', '.join(why[p])})" if why[p] else f"{p} (largest)" for p in flagged]
     _action(
-        "trim: ask the implementer to justify or drop: " + ", ".join(_capped(flagged))
+        "trim: ask the implementer to justify or drop: " + ", ".join(_capped(shown, 5))  # labeled names are long: 5 keep the line short
         + (f"; over budget: {', '.join(over)}" if over else "")
     )
     return 0

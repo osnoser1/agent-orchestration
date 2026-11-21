@@ -22,7 +22,7 @@ Run up to 3 numbered passes across the full set of changed agent-facing files. I
 3. **Completion criteria**: end every step on a checkable, high-demand `*Done when*` bound.
 4. **Leading words and positive targets**: collapse repeated descriptions into compact pretrained tokens; state target behaviors positively (pairing any hard guardrail with what to do).
 5. **Pruning**: keep one source of truth per rule across all files; cut environment caches, exposition, and instructions the model obeys by default.
-6. **Determinism**: a rule that counts, compares, or matches fixed inputs belongs in a script with tests (`skills/agent-orchestration/scripts/orch.py` for user-facing decisions, `tools/repo.py` for maintainer checks). Propose the script and point the doc at its `action:` line instead of adding prose.
+6. **Determinism**: a rule that counts, compares, or matches fixed inputs belongs in a script with tests (`skills/agent-orchestration/scripts/orch.py` for user-facing decisions, `tools/repo.py` for maintainer checks). Propose the script and point the doc at the command and its decision line instead of adding prose.
 
 When a pass finds any defect, fix all findings immediately and start the next numbered pass across all changed files. Stop as soon as a complete pass produces zero findings, or after pass 3 and list any remaining findings under `## Obstacles / not verified`.
 
