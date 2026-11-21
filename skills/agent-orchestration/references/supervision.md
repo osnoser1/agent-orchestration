@@ -63,26 +63,26 @@ On each check:
 
 ## Failure-mode retries
 
-Map how a child failed to the next action, and log each outcome with `scripts/orch.py log` (`--event complete --outcome failed|quota|stall`).
+Map how a child failed to the next action, and log the outcome with `scripts/orch.py log --event complete --outcome <outcome>`.
 
-| How the child failed | Next action |
-|---|---|
-| Quota error | The quota flow in `SKILL.md` Step 6 and `references/harnesses.md`. |
-| Context or turn cap hit | Start a replacement (confirm-stop below) with the partial results (branch, commit, last completed step) and a narrower scope covering only the remaining work. |
-| Tool or harness error | Retry once on the same model; if it recurs, switch to the next `select` candidate (`references/selection.md`). |
-| Transient infrastructure or CI failure | The single rerun in `references/verification.md`. |
-| Stall | The supervision loop above. |
-| Unknown | Retry once. |
+| How the child failed | Next action | Outcome |
+|---|---|---|
+| Quota error | The quota flow in `SKILL.md` Step 6 and `references/harnesses.md`. | `quota` |
+| Context or turn cap hit | Start a replacement (confirm-stop below) with the partial results (branch, commit, last completed step) and a narrower scope covering only the remaining work. | `failed` |
+| Tool or harness error | Retry once on the same model; if it recurs, rerun `select` with the failing model removed from `--available` and use its candidate. | `failed` |
+| Transient infrastructure or CI failure | The single rerun in `references/verification.md`. | `ok` when the rerun passes, else `failed` |
+| Stall | The harness row's stall handling in `references/harnesses.md`; for non-notifying children, the supervision loop above. | `stall` |
+| Unknown | Retry once; a failed retry counts toward the two below. | `failed` |
 
-After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count retries per item across models.
+After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements made under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count.
 
 *Done when*: each failed child's next action is taken from the table, its outcome is logged, and any item past two failed retries is reported to the user with evidence.
 
 ## Confirm stop before replacement
 
-Before a replacement child writes to the same paths or branch as an old child, cancel the old child and confirm it stopped (its status shows no running turn and no child runs; the Cancel column in `references/harnesses.md` says how). Launch the replacement only after that confirmation: never run two writers on one checkout.
+Before a replacement child writes to the same paths or branch as an old child, cancel the old child and confirm it stopped as the Cancel column in `references/harnesses.md` says. This covers every replacement, including the quota flow's new child (`references/harnesses.md` step 3); a quota-stopped child the harness resumes on its own counts as running until cancelled. Launch the replacement only after that confirmation: never run two writers on one checkout.
 
-*Done when*: the old child's status shows no running turn and no child runs before the replacement's first write.
+*Done when*: the Cancel column's confirming read shows the old child stopped before the replacement's first write.
 
 ## Idempotent child messages
 

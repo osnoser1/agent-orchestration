@@ -12,10 +12,6 @@ Log twice per delegation:
 
 Recorded fields: `ts`, `event`, `repo` (basename only — paths are stripped automatically), `surface` (`subagent|conversation`), `complexity`, `risk`, `ui`, `provider`, `model`, `effort`, `reviewer`, `outcome`, `findings`, and optional `provisional`. Keep prompts, source code, secrets, full paths, and personal data out of the ledger.
 
-## Structural first
-
-Before filing a finding as a wording change, check whether `orch.py check`, a test, CI, or a pinned rule (`tools/pinned-rules.json` in this repo) can enforce it, and prefer that.
-
 ## Filing retrospective findings upstream
 
 During a consumer repo's retrospective (`retro` / `retro-dispatch`), inspect recent `ledger.jsonl` lines for that repo and file an upstream issue on `osnoser1/agent-orchestration` using `.github/ISSUE_TEMPLATE/retro-finding.md` for any of these categories:
@@ -28,6 +24,8 @@ During a consumer repo's retrospective (`retro` / `retro-dispatch`), inspect rec
 - **Unrated model**: model missing scores or outdated benchmark data — open a PR updating `skills/agent-orchestration/catalog.yaml` with `python3 skills/agent-orchestration/scripts/orch.py check` passing.
 
 Include the relevant `ledger.jsonl` lines as evidence (still free of secrets, prompts, or private code).
+
+When filing an upstream finding, propose an enforceable fix (an `orch.py check` rule, a test, CI, or a pinned rule in `osnoser1/agent-orchestration`) before a wording change.
 
 ## Keeping installs current
 

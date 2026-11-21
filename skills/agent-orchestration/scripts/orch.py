@@ -2692,35 +2692,41 @@ def check_install_staleness(now, lockfile_override=None):
 
 def check_available_notes(catalog, assets_path, loaded_assets, available):
     """[note] lines for assets, local-catalog, and followup entries the harness's discovery does not offer."""
-    pairs = [x.strip() for x in available.split(",") if x.strip()]
-    avail_models = {}
-    for pair in pairs:
-        prov, _, mid = pair.partition(":")
-        avail_models.setdefault(norm(prov), set()).add(norm(mid))
-    all_models = set().union(*avail_models.values()) if avail_models else set()
+    names = _catalog_name_map(catalog)
+
+    def canon(x):
+        return norm(names.get(norm(x), x))
+
     notes = []
+    avail_models = {}
+    for pair in (x.strip() for x in available.split(",") if x.strip()):
+        prov, sep, mid = pair.partition(":")
+        if not sep or not prov.strip() or not mid.strip():
+            notes.append(f"[note] --available entry {pair} is not provider:model; ignored")
+            continue
+        avail_models.setdefault(norm(prov), set()).add(canon(mid))
+    all_models = set().union(*avail_models.values()) if avail_models else set()
     for p in (loaded_assets or {}).get("providers") or []:
         if isinstance(p, dict) and p.get("id") and norm(p["id"]) not in avail_models:
             notes.append(f"[note] assets provider {p['id']} has no available model in --available")
     local_path = os.path.join(os.path.dirname(os.path.abspath(assets_path)), "catalog.local.yaml")
     loc = load_file(local_path) if os.path.exists(local_path) else None
     for m in (loc.get("models") or []) if isinstance(loc, dict) else []:
-        if isinstance(m, dict) and m.get("id") and norm(m["id"]) not in all_models:
+        if isinstance(m, dict) and m.get("id") and canon(m["id"]) not in all_models:
             notes.append(f"[note] catalog.local.yaml model {m['id']} is not in the available list")
-    known = {norm(m["id"]) for m in (catalog or {}).get("models") or []}
     for fu in (loaded_assets or {}).get("followups") or []:
         if not isinstance(fu, dict) or not fu.get("needs"):
             continue
         need = str(fu["needs"]).strip()
-        low = need.lower()
-        if low.startswith("provider:"):
+        if need.lower().startswith("provider:"):
             parts = [x.strip() for x in need[len("provider:"):].split("/") if x.strip()]
             if len(parts) not in (2, 3):
                 continue
             models = avail_models.get(norm(parts[0]))
-            if models is None or (norm(parts[-1]) in known and norm(parts[-1]) not in models):
-                notes.append(f"[note] followup {fu.get('ref', '')} needs {need}, which is not available")
-        elif norm(need) in known and norm(need) not in all_models:
+            missing = models is None or (norm(parts[-1]) in names and canon(parts[-1]) not in models)
+        else:
+            missing = norm(need) in names and canon(need) not in all_models
+        if missing:
             notes.append(f"[note] followup {fu.get('ref', '')} needs {need}, which is not available")
     return notes
 
@@ -2757,6 +2763,7 @@ def check(a):
             or any(not isinstance(x, str) or not x.strip() for x in aliases)
         ):
             errs.append(f"{m.get('id')}: aliases must be a non-empty list of strings")
+    loaded_assets = {}
     if not os.path.exists(ap):
         print(f"[note] no assets file at {ap}: defaults apply (all discovered providers ok, policy normal)")
     else:
@@ -2863,7 +2870,7 @@ def check(a):
     print("OK" if not errs else "\n".join(errs))
     if not errs:
         avail_str = _opt_str(a, "available")
-        if avail_str and os.path.exists(ap):
+        if avail_str:
             for note in check_available_notes(c, ap, loaded_assets, avail_str):
                 print(note)
         for note in check_install_staleness(now, lockfile_override=_opt_str(a, "lockfile")):

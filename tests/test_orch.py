@@ -1149,6 +1149,67 @@ class TestCheckAvailable(unittest.TestCase):
         self.assertNotIn("catalog.local.yaml model", out)
         self.assertNotIn("[note] followup", out)
 
+    def test_three_part_group_needs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = os.path.join(tmp, "assets.yaml")
+            _write(
+                assets,
+                "version: 1\nproviders:\n  - id: antigravity\n  - id: claude\nfollowups:\n"
+                '  - {kind: resume, ref: "g-missing", needs: "provider:antigravity/Gemini Models/hard"}\n'
+                '  - {kind: resume, ref: "g-present", needs: "provider:claude/Pool/hard"}\n'
+                '  - {kind: resume, ref: "g-model", needs: "provider:claude/Pool/claude-opus-5-5"}\n',
+            )
+            args = mock.Mock(
+                assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="",
+                available="claude:claude-sonnet-5-5",
+            )
+            rc, out = _run(orch.check, args)
+        self.assertEqual(rc, 0)
+        self.assertIn("[note] followup g-missing needs provider:antigravity/Gemini Models/hard", out)
+        self.assertNotIn("g-present", out)
+        self.assertIn("[note] followup g-model needs provider:claude/Pool/claude-opus-5-5", out)
+
+    def test_aliases_and_display_names_resolve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = os.path.join(tmp, "assets.yaml")
+            _write(
+                assets,
+                "version: 1\nproviders:\n  - id: antigravity\nfollowups:\n"
+                '  - {kind: resume, ref: "by-id", needs: "provider:antigravity/gemini-pro-orchestrator-neon"}\n'
+                '  - {kind: resume, ref: "bare", needs: "gemini-pro-orchestrator-neon"}\n',
+            )
+            _write(
+                os.path.join(tmp, "catalog.local.yaml"),
+                "models:\n  - id: gemini-pro-orchestrator-neon\n    name: Orchestrator (Neon)\n"
+                "    aliases: [gemini-4-orchestrator-neon]\n    family: google\n    cost: normal\n    rating: unrated\n",
+            )
+            args = mock.Mock(
+                assets=assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="",
+                available="antigravity:gemini-4-orchestrator-neon",
+            )
+            rc, out = _run(orch.check, args)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("[note]", out)
+
+    def test_malformed_pair_is_noted_and_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = self._check(tmp, available="claude-opus-5-5,claude:claude-opus-5-5,:x")
+        self.assertEqual(rc, 0)
+        self.assertIn("[note] --available entry claude-opus-5-5 is not provider:model; ignored", out)
+        self.assertIn("[note] --available entry :x is not provider:model; ignored", out)
+        self.assertNotIn("assets provider claude has no", out)
+
+    def test_missing_assets_file_still_notes_malformed_pairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = mock.Mock(
+                assets=os.path.join(tmp, "absent.yaml"), catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z",
+                lockfile="", available="oops",
+            )
+            rc, out = _run(orch.check, args)
+        self.assertEqual(rc, 0)
+        self.assertIn("no assets file", out)
+        self.assertIn("[note] --available entry oops is not provider:model; ignored", out)
+
     def test_without_flag_behaviour_is_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             rc, out = self._check(tmp)
