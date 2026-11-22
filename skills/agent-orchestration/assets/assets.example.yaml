@@ -13,9 +13,6 @@ preferences:
   # usage_cache_ttl_seconds: 300                  # optional: seconds `probe` reuses a cached Claude usage reading
   # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
-# Temporary compatibility flags (off by default; new installs omit this):
-# compat:
-#   legacy_orchestration_policy: true             # issue #19: accept legacy free-text ## Orchestration with warnings
 providers:
   # id = provider id your harness uses for delegation.
   # policy: ending | spend-first | normal | preserve | avoid

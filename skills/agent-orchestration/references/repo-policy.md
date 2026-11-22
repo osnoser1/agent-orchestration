@@ -45,9 +45,9 @@ Repository policy for the agent-orchestration skill; it overrides the skill's de
 | `Evidence` | Verification evidence expected by change type (`references/verification.md`), scaled by `preferences.evidence` in `assets.yaml` (Precedence 2). |
 | `Checkpoints` | User-visible surfaces or taste choices that trigger a design checkpoint (`references/verification.md`). |
 
-## Legacy compatibility (temporary, issue #19)
+## Invalid policy
 
-New installs accept only the typed format; legacy needs the compat flag (issue #19). On an `error:` from `orch.py policy`, the orchestrator proceeds with skill defaults for the invalid field(s) and tells the user once (converting the repo policy is the user's call). The user may temporarily set `compat: {legacy_orchestration_policy: true}` in `assets.yaml` (kept off in `assets/assets.example.yaml`) to parse legacy free text best-effort with `warn:` lines referencing issue #19; legacy `Known failures` remain display-only and are not matched by `orch.py failure`.
+Only the typed format is accepted; free-text `Models`, `High risk`, and `Known failures` values are errors. On an `error:` from `orch.py policy`, the orchestrator proceeds with skill defaults for the invalid field(s) and tells the user once (converting the repo policy is the user's call). `orch.py failure` ignores invalid `Known failures` entries and notes that `orch.py policy` explains them.
 
 ## Precedence
 

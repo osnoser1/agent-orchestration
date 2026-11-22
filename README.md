@@ -88,7 +88,7 @@ Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-fligh
 
 All extension points live at two layers:
 
-1. **Per-repository policy (`.agents/orchestration.md` or `AGENTS.md` `## Orchestration`)** — add an optional policy in `.agents/orchestration.md` (checked first) or in `AGENTS.md` under `## Orchestration` to override process defaults, extra high-risk triggers, model preferences, conversation guidance, verification evidence, design checkpoints, and known infrastructure failure remedies. Every line is optional; absent policy uses defaults. New installs accept only the typed format (`Models`, `High risk`, `Known failures`); temporary legacy support requires `compat: {legacy_orchestration_policy: true}` in `assets.yaml` (issue #19). See `skills/agent-orchestration/references/repo-policy.md`.
+1. **Per-repository policy (`.agents/orchestration.md` or `AGENTS.md` `## Orchestration`)** — add an optional policy in `.agents/orchestration.md` (checked first) or in `AGENTS.md` under `## Orchestration` to override process defaults, extra high-risk triggers, model preferences, conversation guidance, verification evidence, design checkpoints, and known infrastructure failure remedies. Every line is optional; absent policy uses defaults. `Models`, `High risk`, and `Known failures` accept only the typed format; `orch.py policy --check` validates it. See `skills/agent-orchestration/references/repo-policy.md`.
 
 ```markdown
 ## Orchestration

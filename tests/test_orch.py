@@ -3922,14 +3922,13 @@ class TestRepoPolicy(unittest.TestCase):
         self.assertIn("invalid glob '***'", out)
         self.assertIn("High risk: db/migrations/**; source:<path>; class:<phrase>", out)
 
-    def test_brace_globs_are_not_treated_as_legacy(self):
-        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: true\n")
+    def test_brace_globs_are_not_treated_as_free_text(self):
         self.put("AGENTS.md", "## Orchestration\n- High risk: apps/{web,api}/**\n")
         rc, out = self.run_policy()
         self.assertEqual(rc, 1)
         self.assertIn("brace expansion unsupported", out)
         self.assertIn("list each glob with ';'", out)
-        self.assertNotIn("warn: legacy", out)
+        self.assertNotIn("free-text format", out)
 
     def test_indented_continuations_and_non_bullet_errors(self):
         self.put(
@@ -4044,7 +4043,7 @@ class TestRepoPolicy(unittest.TestCase):
         self.assertIn("docs/missing.md", out)
         self.assertIn("SKILL.md", out)
 
-    def test_legacy_format_rejected_and_action_does_not_tell_agent_to_edit(self):
+    def test_free_text_format_rejected_and_action_does_not_tell_agent_to_edit(self):
         self.put("policy/risky.txt", "auth/**\n")
         self.put(
             "AGENTS.md",
@@ -4053,35 +4052,24 @@ class TestRepoPolicy(unittest.TestCase):
             "- High risk: database schemas, CI workflows, auth and secrets (see [risk policy](policy/risky.txt)).\n"
             "- Known failures: registry 502 or lost runner → rerun once before investigating\n",
         )
-        # Default (no assets / no compat flag): errors
         rc, out = self.run_policy()
         self.assertEqual(rc, 1)
-        self.assertIn("legacy free-text format", out)
-        self.assertIn("issue #19", out)
-        self.assertIn("the user may set compat.legacy_orchestration_policy: true", out)
+        self.assertIn("Models: free-text format is not supported", out)
+        self.assertIn("High risk: free-text format is not supported", out)
+        self.assertIn("Known failures: free-text format is not supported", out)
+        self.assertNotIn("compat", out)
         self.assertEqual(
             out.strip().splitlines()[-1],
             "error: 3 problem(s); action: proceed with skill defaults for the invalid field(s) and tell the user once (converting is their call; references/repo-policy.md)",
         )
 
-        # Explicitly false compat flag: still errors
-        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: false\n")
-        rc, out = self.run_policy()
-        self.assertEqual(rc, 1)
-
-        # Compat flag enabled: warns, displays legacy Known failures as plain prose, and passes
+        # A leftover compat flag in assets.yaml no longer enables free text
         self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: true\n")
         rc, out = self.run_policy(check=True)
-        self.assertEqual(rc, 0, out)
-        self.assertIn("warn: legacy Models format", out)
-        self.assertIn("warn: legacy High risk format", out)
-        self.assertIn("warn: legacy Known failures format", out)
-        self.assertIn("issue #19", out)
-        self.assertIn("registry 502 or lost runner → rerun once before investigating", out)
-        self.assertNotIn("`rerun once before investigating`", out)
-        self.assertIn("ok: policy valid (3 fields)", out)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("warn: legacy", out)
 
-        # Legacy Known failures are display-only in failure_cmd
+        # failure_cmd ignores free-text Known failures and points at orch.py policy
         rc, out = _run_orch(
             orch.failure_cmd,
             _Args(
@@ -4096,7 +4084,7 @@ class TestRepoPolicy(unittest.TestCase):
             ),
         )
         self.assertEqual(rc, 0, out)
-        self.assertIn("note: repo Known failures uses legacy format (display-only", out)
+        self.assertIn("note: repo Known failures has 1 invalid entry; run orch.py policy", out)
         self.assertNotIn("known: registry 502", out)
 
     def test_neutral_agents_section_layout(self):
@@ -4280,22 +4268,15 @@ class TestRepoPolicy(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(out.strip().splitlines()[-1], "action: drain node")
 
-    def test_check_validates_compat_flags(self):
+    def test_check_rejects_removed_compat_key(self):
         self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: true\n")
         rc, out = _run_orch(
             orch.check,
             _Args(assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", available=None, full=True),
         )
-        self.assertEqual(rc, 0, out)
-
-        self.write_assets("version: 1\ncompat:\n  legacy_orchestration_policy: maybe\n  other_flag: true\n")
-        rc, out = _run_orch(
-            orch.check,
-            _Args(assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", available=None, full=True),
-        )
         self.assertEqual(rc, 1)
-        self.assertIn("compat.legacy_orchestration_policy", out)
-        self.assertIn("compat.other_flag", out)
+        self.assertIn("error: assets compat: removed in 0.14.0", out)
+        self.assertIn("delete the key", out)
 
 
 if __name__ == "__main__":
