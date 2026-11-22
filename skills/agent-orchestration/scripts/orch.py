@@ -3076,7 +3076,7 @@ def failure_cmd(a):
     else:
         explicit_repo = _opt_str(a, "repo")
         repo_dir = os.path.abspath(explicit_repo) if explicit_repo else _default_repo_dir()
-        known, repo_notes = _load_repo_known_failures(repo_dir, ap, explicit_repo=bool(explicit_repo))
+        known, repo_notes = _load_repo_known_failures(repo_dir, explicit_repo=bool(explicit_repo))
     ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
     cls, hit, reset = classify_failure(text, now, known)
     seen = prior_failures(ledger_path, ref)
@@ -3491,18 +3491,8 @@ def check(a):
                                 f"assets followups[{idx}].needs: bad value {needs_val} "
                                 "(expected provider:<id>/<tier|model> or provider:<id>/<group>/<tier>)"
                             )
-        compat = loaded_assets.get("compat")
-        if compat is not None:
-            if not isinstance(compat, dict):
-                errs.append("assets compat: must be a map")
-            else:
-                for ck, cv in compat.items():
-                    if ck != "legacy_orchestration_policy":
-                        errs.append(f"assets compat.{ck}: unknown compat flag")
-                    elif not isinstance(cv, bool):
-                        errs.append(
-                            f"assets compat.legacy_orchestration_policy: bad value {cv} (expected true|false)"
-                        )
+        if "compat" in loaded_assets:
+            errs.append("assets compat: removed in 0.14.0 (legacy repo policy is no longer supported); delete the key")
     if errs:
         for line in _capped(["error: " + e for e in errs]):
             print(line)
@@ -3529,7 +3519,7 @@ def status_cmd(a):
     return 0
 
 
-# ---------- repo orchestration policy (issue #19: temporary legacy compat) ----------
+# ---------- repo orchestration policy ----------
 POLICY_KEYS = (
     "Implement",
     "Review",
@@ -3545,18 +3535,6 @@ POLICY_KEYS = (
 POLICY_KEY_MAP = {k.lower(): k for k in POLICY_KEYS}
 POLICY_LINK_RE = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 POLICY_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-LEGACY_COMPAT_MSG = "compat.legacy_orchestration_policy; scheduled for removal in issue #19"
-
-
-def _policy_compat_enabled(assets_path):
-    if not assets_path or not os.path.isfile(assets_path):
-        return False
-    try:
-        assets = load_file(assets_path) or {}
-    except OSError:
-        return False
-    compat = assets.get("compat") if isinstance(assets, dict) else None
-    return isinstance(compat, dict) and compat.get("legacy_orchestration_policy") is True
 
 
 def _default_repo_dir():
@@ -3639,7 +3617,7 @@ def _strip_key_markup(raw_key):
     return k
 
 
-def _parse_policy_bullets(lines, compat_legacy=False):
+def _parse_policy_bullets(lines):
     """Extract ordered `{key: value}` pairs, warnings, and structural errors from policy lines."""
     fields = {}
     warnings = []
@@ -3777,14 +3755,14 @@ def _balanced_parens(text):
     return depth == 0
 
 
-def _parse_models_field(val, known_families, compat_legacy):
+def _parse_models_field(val, known_families):
     items = _split_policy_items(val)
     parsed, warnings, errors = [], [], []
-    legacy = False
+    free_text = False
     for item in items:
         m = re.match(r"^(.*?)\s*(?:→|->)\s*(.+)$", item)
         if not m:
-            legacy = True
+            free_text = True
             continue
         task, rhs = m.group(1).strip(), m.group(2).strip()
         if not task:
@@ -3795,7 +3773,7 @@ def _parse_models_field(val, known_families, compat_legacy):
             if rhs.lower().startswith("family:"):
                 errors.append(f"Models: invalid family spec in {item!r} (example: Models: ui → family:anthropic)")
             else:
-                legacy = True
+                free_text = True
             continue
         fam = fm.group(1).lower()
         if known_families and fam not in known_families:
@@ -3817,29 +3795,16 @@ def _parse_models_field(val, known_families, compat_legacy):
                 continue
         parsed.append({"task": task, "family": fam, "note": note})
 
-    if legacy:
-        if not compat_legacy:
-            errors.append(
-                "Models: legacy free-text format (example: Models: ui → family:anthropic; "
-                "the user may set compat.legacy_orchestration_policy: true in assets.yaml, issue #19)"
-            )
-            return [], warnings, errors
-        warnings.append(f"legacy Models format ({LEGACY_COMPAT_MSG})")
-        for item in items:
-            m = re.match(r"^(.*?)\s*(?:→|->)\s*(.+)$", item)
-            if m:
-                task, rhs = m.group(1).strip(), m.group(2).strip()
-                hit = next((f for f in sorted(known_families) if re.search(rf"\b{re.escape(f)}\b", rhs, _I)), None)
-                parsed.append({"task": task, "family": hit or "unknown", "note": rhs, "legacy": True})
-            else:
-                parsed.append({"task": "note", "family": "unknown", "note": item, "legacy": True})
+    if free_text:
+        errors.append("Models: free-text format is not supported (example: Models: ui → family:anthropic)")
+        return [], warnings, errors
     return parsed, warnings, errors
 
 
-def _parse_high_risk_field(val, repo_dir, compat_legacy, check_fs=True):
+def _parse_high_risk_field(val, repo_dir, check_fs=True):
     items = _split_policy_items(val)
     parsed, warnings, errors = [], [], []
-    legacy = False
+    free_text = False
     real_repo = os.path.realpath(repo_dir) if repo_dir else None
     ex = "example: High risk: db/migrations/**; source:<path>; class:<phrase>"
     for item in items:
@@ -3869,7 +3834,7 @@ def _parse_high_risk_field(val, repo_dir, compat_legacy, check_fs=True):
         elif "{" in item or "}" in item:
             errors.append(f"High risk: brace expansion unsupported in {item!r}; list each glob with ';' ({ex})")
         elif POLICY_LINK_RE.search(item) or "," in re.sub(r"\{[^}]*\}", "", item) or any(c.isspace() for c in item):
-            legacy = True
+            free_text = True
         else:
             if item.startswith(("/", "~")):
                 errors.append(f"High risk: glob must be repo-relative: {item!r} ({ex})")
@@ -3884,19 +3849,9 @@ def _parse_high_risk_field(val, repo_dir, compat_legacy, check_fs=True):
             else:
                 parsed.append({"kind": "glob", "value": item})
 
-    if legacy:
-        if not compat_legacy:
-            errors.append(
-                f"High risk: legacy free-text format ({ex}; "
-                "the user may set compat.legacy_orchestration_policy: true in assets.yaml, issue #19)"
-            )
-            return [], warnings, errors
-        warnings.append(f"legacy High risk format ({LEGACY_COMPAT_MSG})")
-        parsed = []
-        for chunk in re.split(r"[;,]", val):
-            c = chunk.strip().rstrip(".")
-            if c:
-                parsed.append({"kind": "class", "value": c, "legacy": True})
+    if free_text:
+        errors.append(f"High risk: free-text format is not supported ({ex})")
+        return [], warnings, errors
     return parsed, warnings, errors
 
 
@@ -3933,15 +3888,15 @@ def _split_known_failure_entry(item):
     return s[: close + 1], flags.strip(), rhs.strip(), False
 
 
-def _parse_known_failures_field(val, compat_legacy):
+def _parse_known_failures_field(val):
     items = _split_policy_items(val, regex_mode=True)
     parsed, warnings, errors = [], [], []
-    legacy = False
+    free_text = False
     ex = "example: Known failures: /ETIMEDOUT/ => rerun"
     for item in items:
-        lhs, flags, rhs, is_leg = _split_known_failure_entry(item)
-        if is_leg:
-            legacy = True
+        lhs, flags, rhs, is_free_text = _split_known_failure_entry(item)
+        if is_free_text:
+            free_text = True
             continue
         if flags:
             errors.append(f"Known failures: regex flags unsupported; matching is case-insensitive ({ex})")
@@ -3982,22 +3937,9 @@ def _parse_known_failures_field(val, compat_legacy):
         else:
             errors.append(f"Known failures: action {rhs!r} must be 'rerun' or a backticked command ({ex})")
 
-    if legacy:
-        if not compat_legacy:
-            errors.append(
-                f"Known failures: legacy free-text format ({ex}; "
-                "the user may set compat.legacy_orchestration_policy: true in assets.yaml, issue #19)"
-            )
-            return [], warnings, errors
-        warnings.append(f"legacy Known failures format ({LEGACY_COMPAT_MSG})")
-        parsed = []
-        for item in items:
-            m = re.match(r"^(.*?)\s*(?:→|->)\s*(.+)$", item)
-            if m:
-                rx_txt, act = m.group(1).strip(), m.group(2).strip()
-                parsed.append({"regex": rx_txt, "display_regex": rx_txt, "action_kind": "legacy", "action": act, "legacy": True})
-            else:
-                parsed.append({"regex": item, "display_regex": item, "action_kind": "legacy", "action": "", "legacy": True})
+    if free_text:
+        errors.append(f"Known failures: free-text format is not supported ({ex})")
+        return [], warnings, errors
     return parsed, warnings, errors
 
 
@@ -4029,10 +3971,10 @@ def _check_policy_links(key, text, policy_path, repo_dir):
     return errs
 
 
-def _load_repo_policy(repo_dir, catalog=None, assets_path=None, check_links=False, check_fs=True):
+def _load_repo_policy(repo_dir, catalog=None, check_links=False, check_fs=True):
     located = _locate_repo_policy(repo_dir)
     if located is None:
-        return {"found": False, "fields": {}, "parsed": {}, "warnings": [], "errors": [], "legacy_err": False}
+        return {"found": False, "fields": {}, "parsed": {}, "warnings": [], "errors": []}
     source_rel, source_path, sec_lines, loc_warnings, read_err = located
     if read_err is not None:
         return {
@@ -4043,40 +3985,31 @@ def _load_repo_policy(repo_dir, catalog=None, assets_path=None, check_links=Fals
             "parsed": {},
             "warnings": loc_warnings,
             "errors": [read_err],
-            "legacy_err": False,
         }
-    compat = _policy_compat_enabled(assets_path)
-    fields, bullet_warns, errors = _parse_policy_bullets(sec_lines, compat_legacy=compat)
+    fields, bullet_warns, errors = _parse_policy_bullets(sec_lines)
     families = {str(m.get("family")).lower() for m in (catalog or {}).get("models", []) if m.get("family")}
     parsed, warnings = {}, list(loc_warnings) + bullet_warns
-    legacy_err = False
 
     for key, val in fields.items():
         if key == "Models":
-            items, w, e = _parse_models_field(val, families, compat)
+            items, w, e = _parse_models_field(val, families)
             parsed[key] = items
             warnings.extend(w)
             errors.extend(e)
-            if any("legacy free-text format" in x for x in e):
-                legacy_err = True
             if check_links:
                 for it in items:
                     if it.get("note"):
                         errors.extend(_check_policy_links(key, it["note"], source_path, repo_dir))
         elif key == "High risk":
-            items, w, e = _parse_high_risk_field(val, repo_dir, compat, check_fs=check_fs)
+            items, w, e = _parse_high_risk_field(val, repo_dir, check_fs=check_fs)
             parsed[key] = items
             warnings.extend(w)
             errors.extend(e)
-            if any("legacy free-text format" in x for x in e):
-                legacy_err = True
         elif key == "Known failures":
-            items, w, e = _parse_known_failures_field(val, compat)
+            items, w, e = _parse_known_failures_field(val)
             parsed[key] = items
             warnings.extend(w)
             errors.extend(e)
-            if any("legacy free-text format" in x for x in e):
-                legacy_err = True
         else:
             parsed[key] = val
             if check_links:
@@ -4090,11 +4023,10 @@ def _load_repo_policy(repo_dir, catalog=None, assets_path=None, check_links=Fals
         "parsed": parsed,
         "warnings": warnings,
         "errors": errors,
-        "legacy_err": legacy_err,
     }
 
 
-def _load_repo_known_failures(repo_dir, assets_path, explicit_repo=False):
+def _load_repo_known_failures(repo_dir, explicit_repo=False):
     """Load typed `Known failures` from repo policy; keep valid entries even if others fail."""
     notes = []
     if not repo_dir or not os.path.isdir(repo_dir):
@@ -4111,19 +4043,16 @@ def _load_repo_known_failures(repo_dir, assets_path, explicit_repo=False):
         if explicit_repo:
             notes.append(read_err)
         return [], notes
-    compat = _policy_compat_enabled(assets_path)
-    fields, _, _ = _parse_policy_bullets(sec_lines, compat_legacy=compat)
+    fields, _, _ = _parse_policy_bullets(sec_lines)
     val = fields.get("Known failures")
     if not val:
         return [], notes
-    items, _, errs = _parse_known_failures_field(val, compat)
+    items, _, errs = _parse_known_failures_field(val)
     if errs:
         n = len(errs)
         noun = "entry" if n == 1 else "entries"
         notes.append(f"repo Known failures has {n} invalid {noun}; run orch.py policy")
-    if any(it.get("legacy") for it in items):
-        notes.append("repo Known failures uses legacy format (display-only; not matched by orch.py failure)")
-    known = [(it["compiled"], it["regex"], it["action"]) for it in items if not it.get("legacy") and "compiled" in it]
+    known = [(it["compiled"], it["regex"], it["action"]) for it in items]
     return known, notes
 
 
@@ -4143,8 +4072,6 @@ def _cap_inline_list(key, rendered_items):
 
 
 def _fmt_known_failure_item(it):
-    if it.get("legacy"):
-        return f"{it['display_regex']} → {it['action']}" if it.get("action") else it["display_regex"]
     act = "rerun" if it["action_kind"] == "rerun" else f"`{it['action']}`"
     return f"/{it['display_regex']}/ => {act}"
 
@@ -4163,7 +4090,6 @@ def policy_cmd(a):
     res = _load_repo_policy(
         repo_dir,
         catalog=catalog,
-        assets_path=ap,
         check_links=_opt_bool(a, "check"),
         check_fs=True,
     )
