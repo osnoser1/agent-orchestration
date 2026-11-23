@@ -8,15 +8,18 @@
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
                     [--fallback proceed|defer|ask] [--below-tier stage|wait|proceed]
                     [--ref TEXT] [--fail-on-low] [--implementer M] [--catalog F] [--assets F] [--now ISO]
+                    [--phase plan|review|supervise --current P:M@E]   (orchestrator per-phase effort)
   orch.py launch    <spec> [--available provider:model[,...]] [--no-probe] [--out FILE] [--assets F] [--catalog F] [--now ISO]
   orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
                     [--available ...] [--catalog F] [--assets F] [--now ISO]
   orch.py log       --complexity C --risk R --provider P --model M --effort E
                     [--role implementer|reviewer|orchestrator] [--rubric K=N,...] [--requested P:M@E] [--effective P:M@E]
                     [--ui] [--reviewer R] [--surface subagent|conversation] [--event select|complete]
-                    [--outcome ok|failed|quota|stall|rework] [--findings N] [--repo NAME] [--provisional]
+                    [--outcome ok|failed|quota|stall|rework] [--findings N] [--unflagged N] [--repo NAME] [--provisional]
                     [--ref ITEM] [--failure-class C] [--assets F] [--ledger F] [--now ISO]
-  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator] [--ledger F] [--assets F]
+  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator [--by model,effort]] [--ledger F] [--assets F]
+  orch.py escalate  --role R --ref ITEM --current P:M@E --cause rework|findings|status --available ... [--findings N]
+                    [--complexity C --risk R | --coordination 0|1|2] [--implementer P:M] [--dry-run] [--ledger F]
   orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
@@ -27,12 +30,13 @@
 Exit codes:
   0  ok
   1  validation or invocation error
-  2  no candidate meets the required tier (select), or no reviewer is usable (select --implementer)
-  3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
+  2  no candidate meets the required tier (select), no reviewer is usable (select --implementer), or no higher rung (escalate)
+  3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy),
+     or escalate stops at its cap or asks the user
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
-`probe`, `classify`, `select`, `launch`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
-`check` and `policy` end with `ok: …` or `error: N problem(s); action: …`.
+`probe`, `classify`, `select`, `launch`, `escalate`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+`check`, `policy` and `history` end with `ok: …` or `error: N problem(s); action: …`.
 Every command is compact by default: lists stop at 10 items (`… N more (rerun with --full)`), repeated notes group by
 reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
 
@@ -56,6 +60,8 @@ VALID_DESIGN_CHECKPOINTS = ("ask", "delegate")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
 VALID_SURFACES = ("subagent", "conversation")
 VALID_ROLES = ("implementer", "reviewer", "orchestrator")
+VALID_CAUSES = ("rework", "findings", "status")  # quality-escalation triggers (references/supervision.md)
+VALID_PHASES = ("plan", "review", "supervise")  # orchestrator per-phase effort (references/selection.md)
 ORCH_TIERS_DEFAULT = {0: "T1", 1: "T2", 2: "T3"}
 ORCH_EFFORTS = ("none", "low", "medium", "high")
 RUBRIC_KEYS = ("size", "uncertainty", "deps", "consequences", "verification", "coordination")
@@ -1414,7 +1420,24 @@ def _orchestrator_prefs(assets):
     max_escalations = esc if isinstance(esc, int) and not isinstance(esc, bool) and 0 <= esc <= 3 else 2
     lad = raw.get("ladder")
     ladder = list(lad) if isinstance(lad, list) and lad else "auto"
-    return {"tiers": tiers, "max_effort": max_effort, "defaults": defaults, "max_escalations": max_escalations, "ladder": ladder}, notes
+    unf = raw.get("unflagged_findings")
+    return {
+        "tiers": tiers, "max_effort": max_effort, "defaults": defaults, "max_escalations": max_escalations, "ladder": ladder,
+        "unflagged_findings": unf if _is_int(unf) and unf >= 1 else 3,
+        "phase_effort": "on" if raw.get("phase_effort") == "on" else "off",
+    }, notes
+
+
+_is_int = lambda v: isinstance(v, int) and not isinstance(v, bool)  # noqa: E731
+
+
+def _escalation_prefs(assets):
+    """`preferences.escalation` for workers with defaults: `findings` (trigger threshold, >= 1) and `max` (cap, 0..3)."""
+    prefs = (assets or {}).get("preferences") or {}
+    raw = prefs.get("escalation") if isinstance(prefs, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    f, m = raw.get("findings"), raw.get("max")
+    return {"findings": f if _is_int(f) and f >= 1 else 3, "max": m if _is_int(m) and 0 <= m <= 3 else 2}
 
 
 def _classify_rubric(rubric, assets=None):
@@ -1591,6 +1614,12 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
         print("error: --coordination 0|1|2 is required for --role orchestrator")
         _action("fix --coordination (0|1|2 required for --role orchestrator) and rerun select")
         return 1
+    phase, cur_raw = _opt_str(a, "phase"), _opt_str(a, "current")
+    cur = _parse_pme(cur_raw, allow_slash=True) if cur_raw else None
+    if bool(phase) != bool(cur_raw) or (cur_raw and not cur):
+        print("error: --phase plan|review|supervise and --current provider:model@effort go together for --role orchestrator")
+        _action("fix --phase/--current (pass both; --current is the orchestrator's base rung) and rerun select")
+        return 1
     fail_on_low, ref_arg = bool(a.fail_on_low), _opt_str(a, "ref")
     ignored = [
         flag for flag, present in (
@@ -1638,6 +1667,12 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
     if ignored_line:
         print(ignored_line)
     _print_notes(extra_notes)
+    if phase:
+        line, act = _phase_effort(catalog, _orchestrator_prefs(assets)[0], phase, cur)
+        print(line)
+        if act:
+            _action(act)
+            return 0
     _action(
         f"launch the orchestrator on {_cand_ref(same_rungs[0])}; "
         "climb the ladder only on an escalation trigger (references/selection.md)"
@@ -1645,6 +1680,33 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
         + "; log it with --role orchestrator --rubric <rubric>"
     )
     return 0
+
+
+def _rung_model(catalog, mid):
+    """Catalog model for a model id, name, or alias, or None."""
+    canon = norm(_catalog_name_map(catalog).get(norm(mid), mid))
+    return next((m for m in catalog.get("models") or [] if norm(m.get("id") or "") == canon), None)
+
+
+def _phase_effort(catalog, oprefs, phase, cur):
+    """`(line, action)` for the orchestrator's effort at a phase boundary: plan keeps the base rung `cur`, review takes the
+    next higher rated effort (<= max_effort), supervise the next lower one (never below low); same model and provider.
+    `action` is None while `preferences.orchestrator.phase_effort` is off (the line is then a note)."""
+    prov, mid, eff = cur
+    m = _rung_model(catalog, mid)
+    here = f"{prov}/{m['id'] if m else mid} @ {eff}"
+    if oprefs["phase_effort"] != "on":
+        return f"note: phase effort is off (preferences.orchestrator.phase_effort); stay on {here}", None
+    emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
+    rated = [e for e, _ in _rated_efforts(m, emerg, max_effort=oprefs["max_effort"])] if m else []
+    rank = EFFORT_ORDER.get(eff, 99)
+    new = eff
+    if phase == "review":
+        new = next((e for e in rated if EFFORT_ORDER.get(e, 99) > rank), eff)
+    elif phase == "supervise":
+        new = next((e for e in reversed(rated) if EFFORT_ORDER["low"] <= EFFORT_ORDER.get(e, 99) < rank), eff)
+    to = f"{prov}/{m['id'] if m else mid} @ {new}"
+    return f"phase effort: {phase} -> {to}", (f"at this phase boundary switch the orchestrator in place to {to}" if new != eff else f"stay on {here}")
 
 
 def select(a):
@@ -1688,8 +1750,10 @@ def select(a):
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
     below_tier_mode = _opt_str(a, "below_tier") or prefs.get("below_tier") or "stage"
     ref_arg = _opt_str(a, "ref")
-    if _opt_int(a, "coordination") is not None:
-        print(f"note: ignored for --role {eff_role}: --coordination")
+    ignored = [f for f, on in (("--coordination", _opt_int(a, "coordination") is not None), ("--phase", bool(_opt_str(a, "phase"))),
+                               ("--current", bool(_opt_str(a, "current")))) if on]
+    if ignored:
+        print(f"note: ignored for --role {eff_role}: {', '.join(ignored)}")
 
     if impl_id:
         return select_reviewer_only(
@@ -3613,6 +3677,30 @@ def _clean_ref(ref):
     return re.sub(r"[^A-Za-z0-9._#:-]+", "-", label).strip("-")[:64] or "item"
 
 
+def _append_ledger(ledger_path, entry):
+    os.makedirs(os.path.dirname(os.path.abspath(ledger_path)), exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+
+
+def _ledger_entries(ledger_path):
+    """`(position, entry)` for each JSON object line of the ledger; unreadable lines and a missing file yield nothing."""
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            for pos, line in enumerate(fh):
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict):
+                    yield pos, e
+    except OSError:
+        return
+
+
+_entry_role = lambda e: e.get("role") if e.get("role") in VALID_ROLES else "implementer"  # noqa: E731
+
+
 def log_cmd(a):
     _begin(a)
     now = get_now(_opt_str(a, "now"))
@@ -3655,6 +3743,8 @@ def log_cmd(a):
     }
     if _opt_bool(a, "provisional"):
         entry["provisional"] = True
+    if _opt_int(a, "unflagged") is not None:  # orchestrator: review findings its brief did not flag
+        entry["unflagged"] = _opt_int(a, "unflagged")
     ref = _opt_str(a, "ref")
     if ref:
         entry["ref"] = _clean_ref(ref)
@@ -3704,11 +3794,7 @@ def log_cmd(a):
         entry["mismatch"] = True
         mismatch_msg = f"warning: effective {entry['effective']} differs from requested {entry['requested']}; check the thread settings"
 
-    parent = os.path.dirname(os.path.abspath(ledger_path))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(ledger_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    _append_ledger(ledger_path, entry)
     if mismatch_msg:
         print(mismatch_msg)
     print(f"logged {event} ({repo}) -> {ledger_path}")
@@ -3723,31 +3809,22 @@ def read_ledger_refs(ledger_path):
     count as `implementer`.
     """
     runs, unreferenced = {}, 0
-    try:
-        with open(ledger_path, encoding="utf-8") as fh:
-            for pos, line in enumerate(fh):
-                try:
-                    e = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(e, dict):
-                    continue
-                ref = e.get("ref")
-                if not isinstance(ref, str) or not ref.strip():
-                    unreferenced += 1
-                    continue
-                role = e.get("role") if e.get("role") in VALID_ROLES else "implementer"
-                r = runs.setdefault((_clean_ref(ref), role), {})
-                r["pos"] = pos
-                if e.get("event") == "select":  # a new attempt (retry, other model) of this role starts clean
-                    r.pop("complete", None)
-                    r.pop("reviewer", None)
-                if e.get("event") in ("select", "complete"):
-                    r[e["event"]] = e
-                if e.get("reviewer"):
-                    r["reviewer"] = e["reviewer"]
-    except OSError:
-        pass
+    for pos, e in _ledger_entries(ledger_path):
+        ref = e.get("ref")
+        if not isinstance(ref, str) or not ref.strip():
+            unreferenced += 1
+            continue
+        if e.get("event") == "escalate":  # counted by `escalate` and `history --by`, not an attempt
+            continue
+        r = runs.setdefault((_clean_ref(ref), _entry_role(e)), {})
+        r["pos"] = pos
+        if e.get("event") == "select":  # a new attempt (retry, other model) of this role starts clean
+            r.pop("complete", None)
+            r.pop("reviewer", None)
+        if e.get("event") in ("select", "complete"):
+            r[e["event"]] = e
+        if e.get("reviewer"):
+            r["reviewer"] = e["reviewer"]
     return runs, unreferenced
 
 
@@ -3781,6 +3858,8 @@ def history_cmd(a):
     want = _clean_ref(_opt_str(a, "ref")) if _opt_str(a, "ref") else None
     last = _opt_int(a, "last")
     want_role = _opt_str(a, "role")
+    if _opt_str(a, "by") is not None:
+        return history_by(a, ledger_path, ap, want_role)
     runs, unreferenced = read_ledger_refs(ledger_path)
     try:
         assets = load_file(ap) if os.path.exists(ap) else {}
@@ -3820,6 +3899,242 @@ def history_cmd(a):
     if unreferenced and not want:
         tail += f"; {unreferenced} ledger entr{'y has' if unreferenced == 1 else 'ies have'} no ref (log with --ref to track them)"
     print(tail)
+    return 0
+
+
+def history_by(a, ledger_path, ap, role):
+    """`history --role R --by model,effort`: per provider:model@effort of that role's attempts (a `select` starts one, as in
+    read_ledger_refs), the items, rework rate, findings (and unflagged) averages, escalations away from it, and cost class."""
+    if _opt_str(a, "by") != "model,effort" or not role:
+        print("error: --by takes model,effort and needs --role" if role else "error: --by needs --role")
+        print("error: 1 problem(s); action: rerun history with --role implementer|reviewer|orchestrator --by model,effort")
+        return 1
+    ignored = [f for f, on in (("--ref", bool(_opt_str(a, "ref"))), ("--last", _opt_int(a, "last") is not None)) if on]
+    if ignored:
+        print(f"note: ignored with --by: {', '.join(ignored)}")
+    catalog = load_catalog_with_local(DEF_CATALOG, ap)
+    def combo(e):
+        raw = f"{e.get('provider')}:{e.get('model')}@{e.get('effort')}"
+        return _canon_pme(raw, catalog) or raw
+
+    open_by_ref, attempts, escalations = {}, [], {}
+    for _, e in _ledger_entries(ledger_path):
+        ref, ev = e.get("ref"), e.get("event")
+        if not isinstance(ref, str) or not ref.strip() or _entry_role(e) != role:
+            continue
+        if ev == "escalate" and isinstance(e.get("from"), str):
+            k = _canon_pme(e["from"], catalog) or e["from"]
+            escalations[k] = escalations.get(k, 0) + 1
+        elif ev in ("select", "complete"):
+            ref = _clean_ref(ref)
+            if ev == "select" or ref not in open_by_ref:
+                open_by_ref[ref] = {"ref": ref}
+                attempts.append(open_by_ref[ref])
+            open_by_ref[ref][ev] = e
+    stats = {}
+    new = lambda: {"refs": set(), "done": 0, "rework": 0, "findings": [], "unflagged": []}  # noqa: E731
+    for at in attempts:
+        st = stats.setdefault(combo(at.get("select") or at["complete"]), new())
+        st["refs"].add(at["ref"])
+        done = at.get("complete") or {}
+        if done.get("outcome"):
+            st["done"] += 1
+            st["rework"] += done["outcome"] == "rework"
+        for k in ("findings", "unflagged"):
+            if _is_int(done.get(k)):
+                st[k].append(done[k])
+    for k in escalations:
+        stats.setdefault(k, new())
+    avg = lambda xs: f"{sum(xs) / len(xs):.1f}" if xs else "n/a"  # noqa: E731
+    lines = []
+    for k in sorted(stats, key=lambda k: (-len(stats[k]["refs"]), k)):
+        st, m = stats[k], _rung_model(catalog, k.partition(":")[2].rpartition("@")[0])
+        parts = [f"{len(st['refs'])} item(s)", "rework " + (f"{round(100 * st['rework'] / st['done'])}%" if st["done"] else "n/a"),
+                 f"findings avg {avg(st['findings'])}"]
+        if role == "orchestrator":
+            parts.append(f"unflagged avg {avg(st['unflagged'])}")
+        parts += [f"escalations {escalations.get(k, 0)}", f"cost {(m or {}).get('cost') or '?'}"]
+        lines.append(f"{k}: " + "; ".join(parts))
+    for line in _capped(lines):
+        print(line)
+    print(f"ok: {len(lines)} combination(s) for role {role}")
+    return 0
+
+
+# ---------- quality escalation (references/supervision.md) ----------
+def _rung_score(m, eff):
+    """Catalog score of model `m` at `eff`; an unrated effort counts as the best rated score at or below it (0 if none)."""
+    scores = (m or {}).get("scores") or {}
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)  # noqa: E731
+    if num(scores.get(eff)):
+        return scores[eff]
+    rank = EFFORT_ORDER.get(eff, 99)
+    return max((v for e, v in scores.items() if num(v) and EFFORT_ORDER.get(e, 99) <= rank), default=0)
+
+
+def escalation_target(catalog, assets, avail, floors, tier, now, current, exclude_model=None):
+    """Next worker rung strictly above `current` `(provider, model, effort)`, or None: (1) the next higher rated non-emergency
+    effort of the same model that scores higher, while that model is still usable; else (2) among usable models ranked as
+    `candidates()` ranks them at `tier`, the first of the same provider, then of any provider, at its lowest rated effort
+    (from its tier-meeting effort up) that scores higher. `exclude_model` (a reviewer's implementer) never qualifies."""
+    prov, mid, eff = current
+    m_cur = _rung_model(catalog, mid)
+    if not m_cur:
+        return None
+    emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
+    cur_sc = _rung_score(m_cur, eff)
+    is_cur = lambda c: norm(c["provider"]) == norm(prov) and c["model"]["id"] == m_cur["id"]  # noqa: E731
+    usable, _, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, task_floor=floors[tier])
+    cur_c = next((c for c in usable if is_cur(c)), None)
+    if cur_c:
+        hit = next(((e, v) for e, v in _rated_efforts(m_cur, emerg) if EFFORT_ORDER.get(e, 99) > EFFORT_ORDER.get(eff, 99) and v > cur_sc), None)
+        if hit:
+            return {**cur_c, "effort": hit[0], "score": hit[1], "from_score": cur_sc}
+    cands, _, _ = candidates(catalog, assets, avail, floors[tier], floors, now)
+    ups = []
+    for c in sorted(cands, key=lambda c: c["key"]):
+        if is_cur(c) or (exclude_model and c["model"]["id"] == exclude_model["id"]):
+            continue
+        start = EFFORT_ORDER.get(c["effort"], 99)
+        hit = next(((e, v) for e, v in _rated_efforts(c["model"], emerg) if EFFORT_ORDER.get(e, 99) >= start and v > cur_sc), None)
+        if hit:
+            ups.append({**c, "effort": hit[0], "score": hit[1], "from_score": cur_sc})
+    return next((c for c in ups if norm(c["provider"]) == norm(prov)), ups[0] if ups else None)
+
+
+def _emergency_higher(catalog, assets, avail, now, cur_sc, exclude_model=None):
+    """True when an offered model in a usable pool beats `cur_sc` only at an emergency effort, or is an emergency model."""
+    emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
+    for pair in avail:
+        prov, _, mid = pair.partition(":")
+        p, st, _ = provider_state(assets, prov, now)
+        m = _rung_model(catalog, mid)
+        if not m or st == "exhausted" or p.get("pay_per_use") or p.get("policy") == "avoid" or (exclude_model and m["id"] == exclude_model["id"]):
+            continue
+        g = model_group(p, mid, m)
+        if g is not None and group_state(g, now)[0] == "exhausted":
+            continue
+        em_model = m.get("cost") == "emergency"
+        nums = [v for e, v in (m.get("scores") or {}).items() if (em_model or e in emerg) and isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if any(v > cur_sc for v in nums) or (em_model and not nums):
+            return True
+    return False
+
+
+def _orchestrator_escalation(catalog, assets, avail, floors, coord, now, current, cur_sc):
+    """`(rung, cross_provider, notes)`: the first orchestrator-ladder rung of the current provider scoring above `cur_sc`, else
+    the first other-provider rung (the ladder's provider-switch rung) scoring above it, else None."""
+    prov = current[0]
+    own = [p for p in avail if norm(p.partition(":")[0]) == norm(prov)]
+    if own:
+        _, rungs, _, _, _ = _compute_orchestrator_ladder(catalog, assets, own, floors, coord, now)
+        hit = next((r for r in rungs if r["score"] > cur_sc), None)
+        if hit:
+            return hit, False, []
+    _, rungs, switch, notes, _ = _compute_orchestrator_ladder(catalog, assets, avail, floors, coord, now)
+    hit = next((r for r in rungs + [switch] if r and norm(r["provider"]) != norm(prov) and r["score"] > cur_sc), None)
+    return hit, True, notes
+
+
+def escalate_cmd(a):
+    """Quality escalation for any role: on rework, too many findings, or a child's `STATUS: ESCALATE`, the next rung strictly
+    above --current (effort, then model; never down), capped per item and role, logged with its cause."""
+    _begin(a)
+    now = get_now(_opt_str(a, "now"))
+    ap = _opt_str(a, "assets") or def_assets()
+    catalog = load_catalog_with_local(_opt_str(a, "catalog") or DEF_CATALOG, ap)
+    assets = load_file(ap) if os.path.exists(ap) else None
+    prefs = (assets or {}).get("preferences") or {}
+    floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
+    role, cause, findings = _opt_str(a, "role") or "implementer", _opt_str(a, "cause"), _opt_int(a, "findings")
+
+    def fix(problem, what):
+        print("error: " + problem)
+        _action(f"fix {what} and rerun escalate")
+        return 1
+
+    avail = [x.strip() for x in (_opt_str(a, "available") or "").split(",") if x.strip()]
+    bad = bad_available_entries(avail, catalog)
+    if bad:
+        return fix("--available entries are not provider:model: " + ", ".join(_capped([_show_entry(x) for x in bad])),
+                   "--available (comma-separated <provider>:<model-id> pairs as discovery lists them)")
+    cur_raw = _opt_str(a, "current") or ""
+    cur = _parse_pme(cur_raw, allow_slash=True)
+    m_cur = _rung_model(catalog, cur[1]) if cur else None
+    if not m_cur:
+        return fix(f"--current {_show_entry(cur_raw)} is not a catalog provider:model@effort", "--current (provider:model@effort, as log --requested takes it)")
+    ref = _opt_str(a, "ref")
+    if role not in VALID_ROLES or cause not in VALID_CAUSES or not ref:
+        return fix("--role, --cause and --ref are required", "--role implementer|reviewer|orchestrator, --cause rework|findings|status and --ref ITEM")
+    if cause == "findings" and findings is None:
+        return fix("--findings N is required for --cause findings", "--findings (required for --cause findings)")
+    impl = None
+    if role == "orchestrator":
+        coord = _opt_int(a, "coordination")
+        if coord not in (0, 1, 2):
+            return fix("--coordination 0|1|2 is required for --role orchestrator", "--coordination (0|1|2 required for --role orchestrator)")
+    else:
+        complexity, risk = _opt_str(a, "complexity"), _opt_str(a, "risk")
+        if complexity not in TIER or risk not in ("low", "medium", "high"):
+            return fix(f"--complexity and --risk are required for --role {role}", f"--complexity/--risk (required for --role {role})")
+        tier = TIER[complexity][risk]
+        if role == "reviewer":
+            tier = reviewer_tier(tier, risk)
+            impl = resolve_implementer(catalog, _opt_str(a, "implementer") or "")
+            if not impl:
+                return fix("--implementer (the implementing model) is required for --role reviewer and must be in the catalog",
+                           "--implementer (required for --role reviewer; the implementing <model-id>)")
+    cross_role = {"implementer": ("coordination", "implementer"), "reviewer": ("coordination",), "orchestrator": ("complexity", "risk", "implementer")}
+    ignored = [f"--{k}" for k in cross_role[role] if (_opt_int(a, k) is not None if k == "coordination" else _opt_str(a, k))]
+    if ignored:
+        print(f"note: ignored for --role {role}: {', '.join(ignored)}")
+
+    here = f"{cur[0]}/{m_cur['id']} @ {cur[2]}"
+    oprefs, eprefs = _orchestrator_prefs(assets)[0], _escalation_prefs(assets)
+    threshold = oprefs["unflagged_findings"] if role == "orchestrator" else eprefs["findings"]
+    if cause == "findings" and findings < threshold:
+        _action(f"no escalation (findings below threshold: {findings} < {threshold}); continue on {here}")
+        return 0
+    cap = oprefs["max_escalations"] if role == "orchestrator" else eprefs["max"]
+    ref = _clean_ref(ref)
+    ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
+    done = sum(1 for _, e in _ledger_entries(ledger_path)
+               if e.get("event") == "escalate" and isinstance(e.get("ref"), str) and _clean_ref(e["ref"]) == ref and _entry_role(e) == role)
+    if done >= cap:
+        _action(f"escalation cap reached ({cap} of {cap}) for {ref}: report it to the user with the evidence")
+        return 3
+
+    cur_sc = _rung_score(m_cur, cur[2])
+    if role == "orchestrator":
+        target, cross, notes = _orchestrator_escalation(catalog, assets, avail, floors, coord, now, cur, cur_sc)
+        if target and cross:
+            _action(f"ask the user once before switching the orchestrator's provider to {_cand_ref(target)} (phase boundary only)")
+            return 3
+        ask = False
+    else:
+        target = escalation_target(catalog, assets, avail, floors, tier, now, cur, exclude_model=impl)
+        notes = [] if target else candidates(catalog, assets, avail, floors[tier], floors, now)[1]
+        ask = not target and _emergency_higher(catalog, assets, avail, now, cur_sc, exclude_model=impl)
+    if not target:
+        _print_notes(notes)
+        _action("ask the user once (only emergency models or efforts are higher)" if ask else "no higher rung: report it to the user with the evidence")
+        return 3 if ask else 2
+    assert target["score"] > cur_sc, "escalate never steps down"
+    to = _cand_ref(target)
+    print(f"escalate: {role} {here} -> {to} (cause {cause}; escalation {done + 1} of {cap})")
+    _detail(f"score {cur_sc} -> {target['score']}")
+    if _opt_bool(a, "dry_run"):
+        print("note: dry run: nothing logged")
+    else:
+        repo = os.path.basename(os.path.normpath(_opt_str(a, "repo") or os.getcwd())) or "unknown"
+        entry = {"ts": now.isoformat(timespec="seconds"), "event": "escalate", "repo": repo, "role": role, "ref": ref,
+                 "from": _canon_pme(cur_raw, catalog), "to": _canon_pme(f"{target['provider']}:{target['model']['id']}@{target['effort']}", catalog),
+                 "cause": cause}
+        if findings is not None:
+            entry["findings"] = findings
+        _append_ledger(ledger_path, entry)
+        _detail(f"logged escalate ({repo}) -> {ledger_path}")
+    _action(f"switch the {role} in place to {to} (references/harnesses.md, Switch model in place) and continue; re-review after the change")
     return 0
 
 
@@ -4335,6 +4650,20 @@ def check(a):
                         for idx, item in enumerate(ol):
                             if not _parse_pme(item):
                                 errs.append(f"assets preferences.orchestrator.ladder[{idx}]: bad value {item} (expected provider:model@effort)")
+                ouf, ope = op.get("unflagged_findings"), op.get("phase_effort")
+                if ouf is not None and not (_is_int(ouf) and ouf >= 1):
+                    errs.append(f"assets preferences.orchestrator.unflagged_findings: bad value {ouf} (expected int >= 1)")
+                if ope is not None and ope not in ("on", "off"):
+                    errs.append(f"assets preferences.orchestrator.phase_effort: bad value {ope} (expected on|off)")
+            esc = prefs.get("escalation")
+            if esc is not None and not isinstance(esc, dict):
+                errs.append("assets preferences.escalation: must be a map")
+            elif isinstance(esc, dict):
+                ef, em = esc.get("findings"), esc.get("max")
+                if ef is not None and not (_is_int(ef) and ef >= 1):
+                    errs.append(f"assets preferences.escalation.findings: bad value {ef} (expected int >= 1)")
+                if em is not None and not (_is_int(em) and 0 <= em <= 3):
+                    errs.append(f"assets preferences.escalation.max: bad value {em} (expected int 0..3)")
         for p in loaded_assets.get("providers", []) or []:
             if "id" not in p:
                 errs.append("assets: provider without id")
@@ -5055,6 +5384,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
     "followups": "followups --due --available claude:claude-opus-5-5",
     "log": "log --complexity standard --risk low --provider claude --model claude-opus-5-5 --effort high",
     "history": "history --last 5",
+    "escalate": "escalate --role implementer --ref PR-42 --current codex:gpt-6-2-sol@medium --cause rework --available codex:gpt-6-2-sol --complexity standard --risk low",
     "exhaust": 'exhaust claude "You\'ve hit your weekly limit · resets Nov 23, 3am"',
     "status": "status claude low",
     "failure": 'failure "context length exceeded" --ref item-1',
@@ -5066,7 +5396,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "classify", "select", "launch", "followups", "log", "history", "exhaust", "status", "failure", "scope", "policy"):
+    for n in ("check", "probe", "classify", "select", "launch", "followups", "log", "history", "escalate", "exhaust", "status", "failure", "scope", "policy"):
         usage = (
             "orch.py log [options] [--event select|complete] [--ui] [--surface subagent|conversation] [--repo NAME] [--assets F] [--ledger F] [--now ISO] [--full]"
             if n == "log"
@@ -5118,6 +5448,8 @@ def build_parser():
             p.add_argument("--ref")
             p.add_argument("--fail-on-low", action="store_true")
             p.add_argument("--implementer")
+            p.add_argument("--phase", choices=list(VALID_PHASES), help="orchestrator: effort for this phase (with --current)")
+            p.add_argument("--current", metavar="P:M@E", help="orchestrator: its base rung (with --phase)")
         if n == "launch":
             p.add_argument("spec", help="path to <name>.launch.yaml")
             p.add_argument("--available", help="comma-separated provider:model pairs (overrides spec available)")
@@ -5150,6 +5482,7 @@ def build_parser():
             p.add_argument("--reviewer")
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
+            p.add_argument("--unflagged", type=int, metavar="N", help="orchestrator: review findings its brief did not flag")
             p.add_argument("--repo", help=argparse.SUPPRESS)
             p.add_argument("--provisional", action="store_true",
                            help="work ran below the required tier (below_tier or ui_fallback proceed); needs a tier-meeting re-review")
@@ -5164,6 +5497,20 @@ def build_parser():
             p.add_argument("--ref", help="one item label (no paths)")
             p.add_argument("--last", type=int, metavar="N", help="only the N most recent refs")
             p.add_argument("--role", choices=list(VALID_ROLES), help="filter to refs with this role")
+            p.add_argument("--by", metavar="model,effort", help="with --role: one line per provider:model@effort (rework, findings, escalations, cost)")
+        if n == "escalate":
+            p.add_argument("--role", required=True, choices=list(VALID_ROLES))
+            p.add_argument("--ref", required=True, help="short item label (no paths)")
+            p.add_argument("--current", required=True, metavar="P:M@E", help="the rung that fell short")
+            p.add_argument("--cause", required=True, choices=list(VALID_CAUSES), help="rework, findings (with --findings), or status (STATUS: ESCALATE)")
+            p.add_argument("--available", required=True)
+            p.add_argument("--findings", type=int, metavar="N", help="important review findings (orchestrator: unflagged ones)")
+            p.add_argument("--complexity", choices=list(TIER))
+            p.add_argument("--risk", choices=["low", "medium", "high"])
+            p.add_argument("--coordination", type=int, choices=[0, 1, 2])
+            p.add_argument("--implementer", metavar="P:M", help="reviewer: the implementing model (never escalated to)")
+            p.add_argument("--dry-run", action="store_true", help="print the decision without logging it")
+            p.add_argument("--ledger")
         if n == "scope":
             p.add_argument("--base", required=True, help="git ref to diff against (the merge-base with HEAD is used)")
             p.add_argument("--max-files", type=int)
@@ -5204,6 +5551,7 @@ def main():
         "followups": followups_cmd,
         "log": log_cmd,
         "history": history_cmd,
+        "escalate": escalate_cmd,
         "exhaust": exhaust,
         "status": status_cmd,
         "failure": failure_cmd,

@@ -172,6 +172,25 @@ class OrchContract(unittest.TestCase):
                  last="item-00", env=env, cwd=w.dir),
             Case(["history", "--ledger", hist, "--ref", "no-such-item", *w.common(assets)], 3, CHECK_FINAL, rc=1, env=env, cwd=w.dir),
         ]
+        by_ledger = os.path.join(w.dir, "by-ledger.jsonl")
+        with open(by_ledger, "w", encoding="utf-8") as fh:
+            for i in range(40):
+                fh.write(json.dumps({"event": "select", "ref": "item-%02d" % i, "provider": "claude", "model": "m%02d" % i, "effort": "high"}) + "\n")
+        cases["history"] += [
+            Case(["history", "--ledger", by_ledger, "--role", "implementer", "--by", "model,effort", *w.common(assets)], 12,
+                 re.compile(r"^ok: 40 combination\(s\) for role implementer$"), last="claude:m39@high", env=env, cwd=w.dir),
+            Case(["history", "--ledger", by_ledger, "--by", "model,effort", *w.common(assets)], 3, CHECK_FINAL, rc=1, env=env, cwd=w.dir),
+        ]
+        esc = ["escalate", "--ref", "item-1", "--cause", "rework", "--ledger", os.path.join(w.dir, "esc-ledger.jsonl"), "--dry-run"]
+        cases["escalate"] = [
+            Case([*esc, "--role", "implementer", "--complexity", "standard", "--risk", "low", "--current", "claude:claude-opus-5-5@high",
+                  "--available", avail, *w.common(assets)], 4, ORCH_FINAL, env=env, cwd=w.dir, shows=("escalate: implementer",)),
+            Case([*esc, "--role", "implementer", "--complexity", "standard", "--risk", "low", "--current", "claude:claude-opus-5-5@xhigh",
+                  "--available", avail, *w.common(assets)], 6, ORCH_FINAL, rc=3, last="ex39", env=env, cwd=w.dir,
+                 shows=("note: provider exhausted: ex00",)),
+            Case([*esc, "--role", "orchestrator", "--coordination", "2", "--current", "claude:claude-opus-5-5@high",
+                  "--available", avail, *w.common(assets)], 6, ORCH_FINAL, rc=2, last="ex39", env=env, cwd=w.dir),
+        ]
         cases["status"] = [Case(["status", "claude", "low", *w.common()], 3, re.compile(r"^claude: low$"), env=env, cwd=w.dir)]
         cases["exhaust"] = [
             Case(["exhaust", "claude", "You've hit your weekly limit · resets Nov 23, 3am (America/New_York)", *w.common()],

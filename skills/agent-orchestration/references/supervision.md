@@ -1,6 +1,6 @@
 # Batching, durable state, and supervision loop
 
-Use these rules when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, or deferring work until a provider renews.
+Use these rules when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, deferring work until a provider renews, or escalating a role whose work falls short.
 
 ## Conflict-aware batching
 
@@ -85,6 +85,21 @@ Without Python, map how the child failed to the next action:
 After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count. `failure` counts ledger lines carrying that `--ref` and a `--failure-class` of `context-cap`, `tool`, or `unknown`, and restarts the count at an `--outcome ok` completion without `--failure-class`; give each item its own `--ref`.
 
 *Done when*: each failed child's next action is taken from the `action:` line (or the table), its outcome is logged, and any item past two failed retries is reported to the user with evidence.
+
+## Quality escalation (`orch.py escalate`)
+
+Escalate any role (implementer, reviewer, or orchestrator) when its work falls short, on any one trigger: `outcome: rework`; three or more important review findings (`preferences.escalation.findings`; for the orchestrator, findings its brief or pre-review notes had not flagged, `preferences.orchestrator.unflagged_findings`); or a child's `STATUS: ESCALATE` (`references/brief-template.md`).
+
+Run `python3 scripts/orch.py escalate --role <role> --ref <item> --current <provider:model@effort> --cause rework|findings|status --available <provider:model,...> [--findings N]`, adding `--complexity`/`--risk` for workers, `--implementer` for a reviewer, or `--coordination` for the orchestrator, and follow its `action:` line. It logs the escalation with its cause. After the switch, log the new rung with `log --event select` (`references/improvement.md`) and re-review the change as a delta (`references/selection.md`, Re-reviews).
+
+Without Python:
+
+1. **Order**: the next higher rated effort of the same model first, then the next model up (same provider first, at its lowest effort that scores higher). The target always scores strictly higher than the current rung: an escalation never steps down.
+2. **Cap**: at most two escalations per item and role (`preferences.escalation.max`; orchestrator `preferences.orchestrator.max_escalations`). At the cap, report the item to the user with the evidence.
+3. **Providers**: workers cross providers as a routine decision. The orchestrator climbs its own provider's ladder (effort capped at `high`, `references/selection.md`) and asks the user before a provider switch, at a phase boundary only.
+4. **Exclusions**: a reviewer escalates only to a model other than the implementer's; emergency efforts and models, pay-per-use, `policy: avoid`, and exhausted pools stay out. When only emergency models or efforts score higher, ask the user once (`SKILL.md` Step 7).
+
+*Done when*: every trigger went through `orch.py escalate` (or the rules above), its `action:` line was followed, the escalation is logged with its cause, and the change got a delta re-review.
 
 ## Confirm stop before replacement
 

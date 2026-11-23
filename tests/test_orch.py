@@ -5255,5 +5255,332 @@ class TestLaunchSpec(unittest.TestCase):
         self.assertIn("effort_key", out6)
 
 
+
+class TestQualityEscalation(unittest.TestCase):
+    """`orch.py escalate`, `log --unflagged`, `select --role orchestrator --phase`, `history --by`, and their preferences."""
+
+    PROVIDERS = (
+        "providers:\n"
+        "  - id: antigravity\n    status: ok\n"
+        "  - id: claude\n    status: ok\n"
+        "  - id: claudeAgent\n    status: ok\n"
+        "  - id: codex\n    status: ok\n"
+    )
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.assets = os.path.join(self.dir, "assets.yaml")
+        self.ledger = os.path.join(self.dir, "ledger.jsonl")
+        _write(self.assets, "version: 1\n" + self.PROVIDERS)
+
+    def prefs(self, text):
+        ap = os.path.join(self.dir, "prefs.yaml")
+        _write(ap, "version: 1\npreferences:\n" + text + self.PROVIDERS)
+        return ap
+
+    def esc(self, current, available, cause="rework", role="implementer", ref="PR-7", **kw):
+        base = dict(
+            assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", ledger=self.ledger, role=role, ref=ref,
+            current=current, cause=cause, available=available, findings=None, complexity=None, risk=None,
+            coordination=None, implementer=None, dry_run=False, repo="demo-app", full=False,
+        )
+        if role in ("implementer", "reviewer"):
+            base.update(complexity="standard", risk="low")
+        else:
+            base.update(coordination=2)
+        base.update(kw)
+        rc, out = _run(orch.escalate_cmd, _Args(**base))
+        return rc, out.rstrip("\n").split("\n")
+
+    def rows(self):
+        if not os.path.exists(self.ledger):
+            return []
+        with open(self.ledger, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def seed(self, *entries):
+        with open(self.ledger, "a", encoding="utf-8") as fh:
+            for e in entries:
+                fh.write(json.dumps(e) + "\n")
+
+    # ---------- escalate: rungs ----------
+    def test_effort_step_first_logs_the_row_with_its_cause(self):
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol,claude:claude-opus-5-5")
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines, [
+            "escalate: implementer codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high (cause rework; escalation 1 of 2)",
+            "action: switch the implementer in place to codex/gpt-6-2-sol @ high (references/harnesses.md, Switch model in place) "
+            "and continue; re-review after the change",
+        ])
+        self.assertEqual(self.rows(), [{
+            "ts": "2026-11-20T21:00:00+00:00", "event": "escalate", "repo": "demo-app", "role": "implementer", "ref": "PR-7",
+            "from": "codex:gpt-6-2-sol@medium", "to": "codex:gpt-6-2-sol@high", "cause": "rework",
+        }])
+
+    def test_model_step_prefers_the_same_provider_then_crosses_providers(self):
+        # sonnet@xhigh has no higher non-emergency effort: the same-provider opus@high (51.84 > 49.92) beats the better-ranked neon
+        rc, lines = self.esc("claude:claude-sonnet-5-5@xhigh", "claude:claude-sonnet-5-5,claude:claude-opus-5-5,antigravity:gemini-4-neon")
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines[0], "escalate: implementer claude/claude-sonnet-5-5 @ xhigh -> claude/claude-opus-5-5 @ high (cause rework; escalation 1 of 2)")
+        # no same-provider model scores higher than sol@xhigh (55.74): workers cross providers without asking
+        rc2, lines2 = self.esc("codex:gpt-6-2-sol@xhigh", "codex:gpt-6-2-sol,codex:gpt-6-1-terra,antigravity:gemini-4-neon", ref="PR-8")
+        self.assertEqual(rc2, 0, lines2)
+        self.assertEqual(lines2[-1], "action: switch the implementer in place to antigravity/gemini-4-neon @ high "
+                                     "(references/harnesses.md, Switch model in place) and continue; re-review after the change")
+        self.assertEqual(self.rows()[-1]["to"], "antigravity:gemini-4-neon@high")
+
+    def test_model_step_when_the_current_model_is_no_longer_usable(self):
+        ap = os.path.join(self.dir, "codex-out.yaml")
+        _write(ap, "version: 1\nproviders:\n  - id: antigravity\n    status: ok\n  - id: codex\n    status: exhausted\n"
+                   "    exhausted_until: 2026-11-23T08:00:00+00:00\n")
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol,antigravity:gemini-4-neon", assets=ap)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> antigravity/gemini-4-neon @ medium (cause rework", lines[0])  # lowest neon effort above sol@medium (52.68)
+
+    def test_never_steps_down_and_reports_when_no_higher_rung_exists(self):
+        rc, lines = self.esc("antigravity:gemini-4-neon@xhigh", "antigravity:gemini-4-neon,claude:claude-opus-5-5,codex:gpt-6-2-sol")
+        self.assertEqual(rc, 2, lines)
+        self.assertEqual(lines[-1], "action: no higher rung: report it to the user with the evidence")
+        self.assertEqual(self.rows(), [])
+        for current, avail in (("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol,claude:claude-haiku-5-5,codex:gpt-6-luna"),
+                               ("claude:claude-sonnet-5-5@high", "claude:claude-sonnet-5-5,codex:gpt-6-1-terra,antigravity:gemini-4-neon")):
+            target = orch.escalation_target(
+                orch.load_catalog_with_local(CATALOG_PATH, self.assets), orch.load_file(self.assets), avail.split(","),
+                dict(orch.FLOORS), "T2", orch.get_now("2026-11-20T21:00:00Z"), orch._parse_pme(current),
+            )
+            self.assertIsNotNone(target, current)
+            self.assertGreater(target["score"], target["from_score"], current)
+
+    def test_emergency_only_higher_rung_asks_the_user_once(self):
+        for current, avail in (("claude:claude-opus-5-5@xhigh", "claude:claude-opus-5-5,codex:gpt-6-2-sol"),
+                               ("antigravity:gemini-4-neon@xhigh", "antigravity:gemini-4-neon,codex:gpt-6-2-astra")):
+            rc, lines = self.esc(current, avail)
+            self.assertEqual(rc, 3, lines)
+            self.assertEqual(lines[-1], "action: ask the user once (only emergency models or efforts are higher)")
+        self.assertEqual(self.rows(), [])
+
+    def test_reviewer_never_lands_on_the_implementer_model(self):
+        rc, lines = self.esc("claude:claude-sonnet-5-5@xhigh", "claude:claude-sonnet-5-5,claude:claude-opus-5-5,antigravity:gemini-4-neon",
+                             role="reviewer", implementer="claude:claude-opus-5-5")
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines[0], "escalate: reviewer claude/claude-sonnet-5-5 @ xhigh -> antigravity/gemini-4-neon @ medium (cause rework; escalation 1 of 2)")
+        rc2, lines2 = self.esc("claude:claude-sonnet-5-5@xhigh", "claude:claude-sonnet-5-5,claude:claude-opus-5-5",
+                               role="reviewer", implementer="claude-opus-5-5", ref="PR-9")
+        self.assertEqual(rc2, 3, lines2)  # only sonnet@max (emergency) is higher once the implementer's opus is excluded
+        self.assertEqual(self.rows()[-1]["ref"], "PR-7")
+
+    # ---------- escalate: triggers and cap ----------
+    def test_triggers_and_below_threshold(self):
+        cur, avail = "codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol"
+        rc, lines = self.esc(cur, avail, cause="findings", findings=2)
+        self.assertEqual((rc, lines), (0, ["action: no escalation (findings below threshold: 2 < 3); continue on codex/gpt-6-2-sol @ medium"]))
+        self.assertEqual(self.rows(), [])
+        rc, lines = self.esc(cur, avail, cause="findings", findings=3)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("(cause findings; escalation 1 of 2)", lines[0])
+        self.assertEqual(self.rows()[-1]["findings"], 3)
+        rc, lines = self.esc(cur, avail, cause="status", ref="PR-8")
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.rows()[-1]["cause"], "status")
+        self.assertNotIn("findings", self.rows()[-1])
+        # configurable thresholds: workers read preferences.escalation.findings, the orchestrator unflagged_findings
+        ap = self.prefs("  escalation: {findings: 5, max: 2}\n  orchestrator:\n    unflagged_findings: 2\n")
+        rc, lines = self.esc(cur, avail, cause="findings", findings=4, assets=ap, ref="PR-9")
+        self.assertEqual(lines[-1], "action: no escalation (findings below threshold: 4 < 5); continue on codex/gpt-6-2-sol @ medium")
+        rc, lines = self.esc("antigravity:gemini-4-argon@high", "antigravity:gemini-4-argon,antigravity:gemini-4-neon",
+                             role="orchestrator", cause="findings", findings=2, assets=ap, ref="PR-9")
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> antigravity/gemini-4-neon @ medium", lines[0])
+        # validation
+        rc, lines = self.esc(cur, avail, cause="findings")
+        self.assertEqual(rc, 1, lines)
+        self.assertIn("--findings", lines[-1])
+
+    def test_cap_counts_earlier_escalations_per_ref_and_role(self):
+        row = {"event": "escalate", "from": "codex:gpt-6-2-sol@low", "to": "codex:gpt-6-2-sol@medium", "cause": "rework"}
+        self.seed({**row, "ref": "PR-7", "role": "implementer"}, {**row, "ref": "PR-7", "role": "implementer"},
+                  {**row, "ref": "PR-7", "role": "reviewer"}, {**row, "ref": "PR-8", "role": "implementer"},
+                  {"event": "select", "ref": "PR-7", "role": "implementer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "low"})
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol", ref="PR 7")
+        self.assertEqual((rc, lines), (3, ["action: escalation cap reached (2 of 2) for PR-7: report it to the user with the evidence"]))
+        self.assertEqual(len(self.rows()), 5)
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol,antigravity:gemini-4-neon", role="reviewer",
+                             implementer="claude-opus-5-5", ref="PR-7")
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("escalation 2 of 2", lines[0])
+        ap = self.prefs("  escalation: {findings: 3, max: 1}\n")
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol", ref="PR-8", assets=ap)
+        self.assertEqual(lines[-1], "action: escalation cap reached (1 of 1) for PR-8: report it to the user with the evidence")
+
+    def test_dry_run_logs_nothing(self):
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", "codex:gpt-6-2-sol", dry_run=True)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("note: dry run: nothing logged", lines)
+        self.assertTrue(lines[-1].startswith("action: switch the implementer in place to codex/gpt-6-2-sol @ high"))
+        self.assertEqual(self.rows(), [])
+
+    def test_argument_validation_and_ignored_cross_role_flags(self):
+        avail = "codex:gpt-6-2-sol"
+        cases = (
+            dict(role="reviewer"),  # no --implementer
+            dict(complexity=None),  # implementer without --complexity
+            dict(role="orchestrator", coordination=None),
+            dict(current="codex:gpt-6-2-sol"),  # no @effort
+            dict(available="codex"),
+            dict(role="reviewer", implementer="no-such-model"),
+        )
+        for kw in cases:
+            rc, lines = self.esc(kw.pop("current", "codex:gpt-6-2-sol@medium"), kw.pop("available", avail), **kw)
+            self.assertEqual(rc, 1, (kw, lines))
+            self.assertTrue(lines[-1].startswith("action: fix "), lines)
+        rc, lines = self.esc("codex:gpt-6-2-sol@medium", avail, coordination=1, implementer="gpt-6-2-sol", dry_run=True)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("note: ignored for --role implementer: --coordination, --implementer", lines)
+
+    # ---------- escalate: orchestrator ----------
+    def test_orchestrator_climbs_its_same_provider_ladder(self):
+        avail = "antigravity:gemini-4-argon,antigravity:gemini-4-neon,claudeAgent:claude-opus-5-5"
+        rc, lines = self.esc("antigravity:gemini-4-argon@high", avail, role="orchestrator", cause="status", complexity="hard")
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines, [
+            "note: ignored for --role orchestrator: --complexity",
+            "escalate: orchestrator antigravity/gemini-4-argon @ high -> antigravity/gemini-4-neon @ medium (cause status; escalation 1 of 2)",
+            "action: switch the orchestrator in place to antigravity/gemini-4-neon @ medium (references/harnesses.md, Switch model in place) "
+            "and continue; re-review after the change",
+        ])
+        self.assertEqual(self.rows()[-1]["role"], "orchestrator")
+
+    def test_orchestrator_provider_switch_asks_and_logs_nothing(self):
+        rc, lines = self.esc("antigravity:gemini-4-argon@high", "antigravity:gemini-4-argon,codex:gpt-6-2-sol", role="orchestrator")
+        self.assertEqual(rc, 3, lines)
+        self.assertEqual(lines[-1], "action: ask the user once before switching the orchestrator's provider to codex/gpt-6-2-sol @ medium (phase boundary only)")
+        self.assertEqual(self.rows(), [])
+        # the orchestrator's effort cap (high) holds: neon@high is the top of its ladder, opus@high scores lower
+        rc2, lines2 = self.esc("antigravity:gemini-4-neon@high", "antigravity:gemini-4-neon,claudeAgent:claude-opus-5-5", role="orchestrator")
+        self.assertEqual(rc2, 2, lines2)
+
+    # ---------- log --unflagged ----------
+    def test_log_records_unflagged_only_when_given(self):
+        args = dict(assets=self.assets, ledger=self.ledger, now="2026-11-20T21:00:00Z", event=None, complexity="hard", risk="high",
+                    ui=False, provider="codex", model="gpt-6-2-sol", effort="high", reviewer=None, outcome="ok", findings=4,
+                    repo="demo", provisional=False, role="orchestrator", rubric=None, requested=None, effective=None)
+        self.assertEqual(_run(orch.log_cmd, _Args(**args, unflagged=3))[0], 0)
+        self.assertEqual(_run(orch.log_cmd, _Args(**args))[0], 0)
+        rows = self.rows()
+        self.assertEqual(rows[0]["unflagged"], 3)
+        self.assertNotIn("unflagged", rows[1])
+
+    # ---------- select --role orchestrator --phase ----------
+    def phase(self, phase, current, assets=None, avail="antigravity:gemini-4-neon,claudeAgent:claude-opus-5-5", **kw):
+        rc, out = _run(orch.select, _sel(assets or self.assets, avail, role="orchestrator", coordination=2, complexity=None,
+                                          risk=None, phase=phase, current=current, full=False, **kw))
+        return rc, out.rstrip("\n").split("\n")
+
+    def test_phase_effort_off_keeps_the_ladder_output_and_adds_one_note(self):
+        rc0, base = self.phase(None, None)
+        rc, lines = self.phase("review", "antigravity:gemini-4-neon@medium")
+        self.assertEqual((rc0, rc), (0, 0))
+        self.assertEqual(lines, base[:-1] + ["note: phase effort is off (preferences.orchestrator.phase_effort); stay on antigravity/gemini-4-neon @ medium", base[-1]])
+
+    def test_phase_effort_on_plan_review_supervise_with_cap_and_floor(self):
+        ap = self.prefs("  orchestrator:\n    phase_effort: on\n")
+        rc, lines = self.phase("review", "antigravity:gemini-4-neon@medium", assets=ap)
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines[-2:], ["phase effort: review -> antigravity/gemini-4-neon @ high",
+                                      "action: at this phase boundary switch the orchestrator in place to antigravity/gemini-4-neon @ high"])
+        self.assertTrue(lines[0].startswith("orchestrator tier T3"), lines)
+        rc, lines = self.phase("supervise", "antigravity:gemini-4-neon@medium", assets=ap)
+        self.assertEqual(lines[-2:], ["phase effort: supervise -> antigravity/gemini-4-neon @ low",
+                                      "action: at this phase boundary switch the orchestrator in place to antigravity/gemini-4-neon @ low"])
+        rc, lines = self.phase("plan", "antigravity:gemini-4-neon@medium", assets=ap)
+        self.assertEqual(lines[-2:], ["phase effort: plan -> antigravity/gemini-4-neon @ medium", "action: stay on antigravity/gemini-4-neon @ medium"])
+        rc, lines = self.phase("review", "antigravity:gemini-4-neon@high", assets=ap)  # xhigh is above max_effort high
+        self.assertEqual(lines[-1], "action: stay on antigravity/gemini-4-neon @ high")
+        rc, lines = self.phase("supervise", "codex:gpt-6-1-terra@low", assets=ap, avail="codex:gpt-6-2-sol")  # never below low
+        self.assertEqual(lines[-1], "action: stay on codex/gpt-6-1-terra @ low")
+        capped = self.prefs("  orchestrator:\n    phase_effort: on\n    max_effort: medium\n")
+        rc, lines = self.phase("review", "antigravity:gemini-4-neon@medium", assets=capped)
+        self.assertEqual(lines[-1], "action: stay on antigravity/gemini-4-neon @ medium")
+
+    def test_phase_flags_validation_and_workers_ignore_them(self):
+        rc, lines = self.phase("review", None)
+        self.assertEqual(rc, 1, lines)
+        self.assertTrue(lines[-1].startswith("action: fix --phase/--current"), lines)
+        rc, lines = self.phase("review", "not-a-rung")
+        self.assertEqual(rc, 1, lines)
+        rc, out = _run(orch.select, _sel(self.assets, "codex:gpt-6-2-sol", complexity="standard", risk="low", phase="review",
+                                         current="codex:gpt-6-2-sol@high", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("note: ignored for --role implementer: --phase, --current", out)
+
+    # ---------- history --by ----------
+    def by(self, role="implementer", by="model,effort", full=False, **kw):
+        rc, out = _run(orch.history_cmd, _Args(ledger=self.ledger, assets=self.assets, ref=None, last=None, now="2026-11-20T21:00:00Z",
+                                               full=full, role=role, by=by, **kw))
+        return rc, out.rstrip("\n").split("\n")
+
+    def test_history_by_model_effort_aggregates_attempts(self):
+        sol = {"provider": "codex", "model": "gpt-6-2-sol"}
+        self.seed(
+            {"event": "select", "ref": "PR-1", **sol, "effort": "medium"},
+            {"event": "complete", "ref": "PR-1", **sol, "effort": "medium", "outcome": "rework", "findings": 4},
+            {"event": "escalate", "ref": "PR-1", "role": "implementer", "from": "codex:gpt-6-2-sol@medium", "to": "codex:gpt-6-2-sol@high", "cause": "rework"},
+            {"event": "select", "ref": "PR-1", **sol, "effort": "high"},
+            {"event": "complete", "ref": "PR-1", **sol, "effort": "high", "outcome": "ok", "findings": 1},
+            {"event": "select", "ref": "PR-2", **sol, "effort": "medium", "role": "implementer"},
+            {"event": "complete", "ref": "PR-2", **sol, "effort": "medium", "outcome": "ok", "findings": 0},
+            {"event": "select", "ref": "PR-3", "provider": "claude", "model": "Claude Opus 5.5", "effort": "high"},
+            {"event": "complete", "ref": "PR-3", "provider": "claude", "model": "claude-opus-5-5", "effort": "high", "outcome": "ok", "findings": 2},
+            {"event": "select", "ref": "PR-1", "role": "reviewer", "provider": "claude", "model": "claude-opus-5-5", "effort": "high"},
+            {"event": "select", "ref": "PR-1", "role": "orchestrator", "provider": "antigravity", "model": "gemini-4-neon", "effort": "medium"},
+            {"event": "complete", "ref": "PR-1", "role": "orchestrator", "provider": "antigravity", "model": "gemini-4-neon", "effort": "medium",
+             "outcome": "ok", "findings": 3, "unflagged": 1},
+            {"event": "complete", "ref": "PR-4", "provider": "mystery", "model": "m1", "effort": "low", "outcome": "rework"},
+        )
+        rc, lines = self.by()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines, [
+            "codex:gpt-6-2-sol@medium: 2 item(s); rework 50%; findings avg 2.0; escalations 1; cost normal",
+            "claude:claude-opus-5-5@high: 1 item(s); rework 0%; findings avg 2.0; escalations 0; cost expensive",
+            "codex:gpt-6-2-sol@high: 1 item(s); rework 0%; findings avg 1.0; escalations 0; cost normal",
+            "mystery:m1@low: 1 item(s); rework 100%; findings avg n/a; escalations 0; cost ?",
+            "ok: 4 combination(s) for role implementer",
+        ])
+        rc, lines = self.by(role="orchestrator")
+        self.assertEqual(lines, [
+            "antigravity:gemini-4-neon@medium: 1 item(s); rework 0%; findings avg 3.0; unflagged avg 1.0; escalations 0; cost normal",
+            "ok: 1 combination(s) for role orchestrator",
+        ])
+
+    def test_history_by_caps_and_validates(self):
+        self.seed(*({"event": "select", "ref": "item-%02d" % i, "provider": "claude", "model": "m%02d" % i, "effort": "high"} for i in range(15)))
+        rc, lines = self.by()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(len(lines), 12)
+        self.assertEqual(lines[-2:], ["… 5 more (rerun with --full)", "ok: 15 combination(s) for role implementer"])
+        self.assertEqual(len(self.by(full=True)[1]), 16)
+        rc, lines = self.by(role=None)
+        self.assertEqual(rc, 1, lines)
+        self.assertTrue(lines[-1].startswith("error: 1 problem(s); action: rerun history with --role"), lines)
+        rc, lines = self.by(by="model")
+        self.assertEqual(rc, 1, lines)
+
+    # ---------- check ----------
+    def test_check_validates_escalation_and_phase_preferences(self):
+        bad = self.prefs("  escalation: {findings: 0, max: 4}\n  orchestrator:\n    unflagged_findings: x\n    phase_effort: maybe\n")
+        rc, out = _run(orch.check, _Args(assets=bad, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", full=True))
+        self.assertEqual(rc, 1, out)
+        for key in ("escalation.findings", "escalation.max", "orchestrator.unflagged_findings", "orchestrator.phase_effort"):
+            self.assertIn(key, out)
+        good = self.prefs("  escalation: {findings: 3, max: 0}\n  orchestrator:\n    unflagged_findings: 3\n    phase_effort: off\n")
+        rc, out = _run(orch.check, _Args(assets=good, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", full=True))
+        self.assertEqual(rc, 0, out)
+        notmap = self.prefs("  escalation: 3\n")
+        rc, out = _run(orch.check, _Args(assets=notmap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", full=True))
+        self.assertEqual(rc, 1, out)
+
+
 if __name__ == "__main__":
     unittest.main()
