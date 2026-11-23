@@ -3375,19 +3375,19 @@ def history_cmd(a):
         keys = [k for k in keys if k[0] == want]
     if want_role:
         keys = [k for k in keys if k[1] == want_role]
-    if last is not None:
-        keys = keys[: max(last, 0)]
-    shown = []  # refs whose pending follow-ups are listed (once, on the ref's most recent line)
+    if last is not None:  # the N most recent refs, with every role line of each
+        keep = set(list(dict.fromkeys(ref for ref, _ in keys))[: max(last, 0)])
+        keys = [k for k in keys if k[0] in keep]
+    shown = set()  # refs whose pending follow-ups are listed (once, on the ref's most recent line)
     lines = []
     for ref, role in keys:
         fus = pending.get(ref) if ref not in shown else None
-        if ref not in shown:
-            shown.append(ref)
+        shown.add(ref)
         lines.append(history_line(ref, runs[(ref, role)], fus, role))
     logged = {k[0] for k in runs}
     for ref in sorted(pending):  # follow-ups whose item has no ledger entry
         if ref not in logged and (not want or ref == want) and last is None and not want_role:
-            shown.append(ref)
+            shown.add(ref)
             lines.append(f"{ref}: no ledger entry; pending " + ", ".join(str(fu.get("kind", "review")) for fu in pending[ref]))
     if want and not lines:
         print(f"error: no ledger entry or follow-up for ref {want}")

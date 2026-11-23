@@ -3619,6 +3619,19 @@ class TestHistoryCommand(unittest.TestCase):
         self.assertEqual(lines[0], "PR-42: claude:claude-opus-5-5 @ high; reviewer none; ok, 1 finding(s)")
         self.assertEqual(lines[-1], "ok: 1 ref(s); 0 pending follow-up(s)")
 
+    def test_last_counts_refs_not_role_lines(self):
+        self.write_ledger([
+            {"event": "select", "ref": "PR-41", "provider": "codex", "model": "gpt-6-2-sol", "effort": "low"},
+            {"event": "select", "ref": "PR-42", "provider": "claude", "model": "claude-opus-5-5", "effort": "high"},
+            {"event": "select", "ref": "PR-42", "role": "reviewer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "high"},
+        ])
+        _, lines = self.history(last=1)
+        self.assertEqual([l.split(";")[0] for l in lines[:-1]], ["PR-42: codex:gpt-6-2-sol @ high", "PR-42: claude:claude-opus-5-5 @ high"])
+        self.assertTrue(lines[-1].startswith("ok: 1 ref(s);"))
+        _, lines = self.history(last=2)
+        self.assertEqual(len(lines) - 1, 3)
+        self.assertTrue(lines[-1].startswith("ok: 2 ref(s);"))
+
     def test_ref_filter_and_last(self):
         _, lines = self.history(ref="PR-1")
         self.assertEqual([l.split(":")[0] for l in lines], ["PR-1", "ok"])
