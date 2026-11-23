@@ -9,5 +9,5 @@ rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coo
 ladder: auto                       # auto | [provider:model@effort, ...] (orchestrator: overrides preferences.orchestrator.ladder)
 # implementer: antigravity:gemini-4-neon   # required only for role reviewer
 available: [codex:gpt-6.2-sol, claudeAgent:claude-opus-5-5]   # optional; --available on the CLI wins
-workspace: {strategy: worktree, base: origin/main, children: shared}   # strategy worktree|root|existing_worktree; base required for worktree; children shared|worktree; worktree_path required for existing_worktree
+workspace: {strategy: worktree, base: origin/main, children: shared}   # strategy worktree|root|existing_worktree; base required for worktree (optional branch -> workspaceStrategy.branch); children shared|worktree; worktree_path required for existing_worktree
 caps: {max_escalations: 2, max_children_per_pool: 2, budget: {antigravity: 10, claudeAgent: 4}}   # budget = max child runs per provider pool; all optional

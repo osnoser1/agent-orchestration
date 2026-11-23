@@ -1143,10 +1143,23 @@ def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_l
     return None
 
 
+def _reviewer_why(rt, pick, impl_model, floor):
+    stage, c, below = pick
+    if stage == 1:
+        return None
+    fam = impl_model["family"]
+    reasons = {
+        2: f"no different-family candidate meets {rt}; using same family {fam}, different model, fresh context",
+        3: f"no different-family or same-family candidate meets {rt}; using the best different-family score",
+        4: f"no different-family candidate usable; using same family {fam}, different model, fresh context",
+        5: "no other model usable; using the implementer's model in a fresh conversation",
+    }
+    return reasons[stage] + (f" (below {rt}: score {c['score']} < {floor})" if below else "")
+
+
 def print_reviewer(rt, pick, impl_model, floor, always=False):
     """Print the reviewer lines; the degradation note shows in compact mode only when the reviewer is the output (`always`)."""
     stage, c, below = pick
-    fam = impl_model["family"]
     labels = {
         1: "different family",
         2: "same family, different model, fresh context",
@@ -1155,20 +1168,10 @@ def print_reviewer(rt, pick, impl_model, floor, always=False):
         5: "same model, fresh conversation",
     }
     _detail(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
-    if stage == 1:
-        return
-    if stage == 2:
-        why = f"no different-family candidate meets {rt}; using same family {fam}, different model, fresh context"
-    elif stage == 3:
-        why = f"no different-family or same-family candidate meets {rt}; using the best different-family score"
-    elif stage == 4:
-        why = f"no different-family candidate usable; using same family {fam}, different model, fresh context"
-    else:
-        why = "no other model usable; using the implementer's model in a fresh conversation"
-    if below:
-        why += f" (below {rt}: score {c['score']} < {floor})"
-    if always or _FULL:
+    why = _reviewer_why(rt, pick, impl_model, floor)
+    if why and (always or _FULL):
         print(f"[note] reviewer degraded: {why}. State this in the report.")
+    return why
 
 
 def _resume_ref(ref_arg, assets_exists):
@@ -2091,7 +2094,16 @@ def _validate_launch_spec(spec_path, cli_available, catalog):
     }
 
 
-def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws, rubric_str, complexity, risk):
+def _cleanup_stale_payload(out_path):
+    if out_path and os.path.isfile(out_path):
+        try:
+            os.remove(out_path)
+            print(f"note: removed stale payload {out_path}")
+        except OSError:
+            pass
+
+
+def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws, rubric_str, complexity, risk, deg_line=None):
     lines = [f"{role.upper()} — repeat this block, updated, at every phase boundary"]
     if role == "orchestrator":
         lines.append(f"model: {_launch_ref(cand)} (rung 1 of {len(same_rungs)})")
@@ -2105,6 +2117,8 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
         )
     else:
         lines.append(f"model: {_launch_ref(cand)}")
+        if deg_line:
+            lines.append(deg_line)
     cap_parts = ([f"children per pool {caps['max_children_per_pool']}"] if caps.get("max_children_per_pool") is not None else []) + (
         ["budget " + ", ".join(f"{k} {v}" for k, v in caps["budget"].items())] if caps.get("budget") else []
     )
@@ -2116,7 +2130,7 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
         lines.append(f"workspace: {ws_txt}" + (f"; children {ws['children']}" if ws.get("children") else ""))
     lines.append(f"rubric: {rubric_str} ({complexity}/{risk})")
     lines.append("verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)")
-    return [l[:200] for l in lines]
+    return lines
 
 
 def launch_cmd(a):
@@ -2124,49 +2138,64 @@ def launch_cmd(a):
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
     cat_path = _opt_str(a, "catalog") or DEF_CATALOG
+    out_path = _opt_str(a, "out") or _default_payload_path(a.spec)
     catalog = load_catalog_with_local(cat_path, ap)
     errs, parsed = _validate_launch_spec(a.spec, _opt_str(a, "available"), catalog)
     if errs:
         for line in _capped(["error: " + e for e in errs]):
             print(line)
+        _cleanup_stale_payload(out_path)
         print(f"error: {len(errs)} problem(s); action: fix {a.spec} and rerun launch")
         return 1
 
     avail = parsed["available"]
+    pre_notes = []
     if not _opt_bool(a, "no_probe"):
-        import contextlib, io
-        probe_ns = argparse.Namespace(
-            assets=ap, catalog=cat_path, now=_opt_str(a, "now"), provider=None,
-            low_threshold=None, exhausted_threshold=None, available=",".join(avail), fresh=False, full=False,
-        )
-        with contextlib.redirect_stdout(io.StringIO()):
-            if os.path.exists(ap):
-                _probe(probe_ns, ap)
-            else:
-                tmp_dir = tempfile.mkdtemp(prefix="orch-probe-")
-                try:
-                    _probe(probe_ns, os.path.join(tmp_dir, "assets.yaml"), cache_home=ap, unsaved=True)
-                finally:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
+        if not os.path.exists(ap):
+            pre_notes.append("note: no assets file: probe skipped (run orch.py probe --init)")
+        else:
+            import contextlib, io
+            probe_ns = argparse.Namespace(
+                assets=ap, catalog=cat_path, now=_opt_str(a, "now"), provider=None,
+                low_threshold=None, exhausted_threshold=None, available=",".join(avail), fresh=False, full=False,
+            )
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    p_rc = _probe(probe_ns, ap)
+                if p_rc:
+                    pre_notes.append(f"note: probe failed (exit {p_rc}); resolving on the last known quota")
+            except Exception as exc:
+                reason = str(exc).splitlines()[0][:80] if str(exc) else exc.__class__.__name__
+                pre_notes.append(f"note: probe failed ({reason}); resolving on the last known quota")
 
     assets = load_file(ap) if os.path.exists(ap) else None
     prefs = (assets or {}).get("preferences") or {}
     floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     role, rubric = parsed["role"], parsed["rubric"]
+    if role != "orchestrator":
+        ign = [k for k, v in (("ladder", parsed["ladder"] is not None), ("caps.max_escalations", parsed["caps"]["max_escalations"] is not None)) if v]
+        if ign:
+            pre_notes.append(f"note: ignored for role {role}: {', '.join(ign)}")
     complexity, risk, orch_tier, _, rubric_str = _classify_rubric(rubric, assets)
     avail_csv = ",".join(avail)
     avail_arg = avail_csv if len(avail_csv) <= 80 else "<available>"
 
-    same_rungs, switch_rung, max_esc, notes = [], None, 2, []
+    def _fail_non_dispatch(notes_list, sel_cmd):
+        for pn in pre_notes:
+            print(pn)
+        _print_notes(notes_list)
+        _cleanup_stale_payload(out_path)
+        _action(f"run {sel_cmd} and follow its action line; launch only resolves a dispatchable model")
+        return 3
+
+    same_rungs, switch_rung, max_esc, notes, rev_pick, rev_rt, rev_impl = [], None, 2, [], None, None, None
     if role == "orchestrator":
         cand, same_rungs, switch_rung, notes, info = _compute_orchestrator_ladder(
             catalog, assets, avail, floors, rubric["coordination"], now,
             ladder_override=parsed["ladder"], max_escalations_override=parsed["caps"]["max_escalations"],
         )
         if info["rc"] != 0 or not cand:
-            _print_notes(notes)
-            _action(f"run select --role orchestrator --coordination {rubric['coordination']} --available {avail_arg} and follow its action line; launch only resolves a dispatchable model")
-            return 3
+            return _fail_non_dispatch(notes, f"select --role orchestrator --coordination {rubric['coordination']} --available {avail_arg}")
         max_esc = info["max_escalations"]
         role_head = f"role: orchestrator · {complexity}/{risk} · tier {orch_tier} (coordination {rubric['coordination']})"
     elif role == "implementer":
@@ -2174,32 +2203,31 @@ def launch_cmd(a):
         cands, notes, _ = candidates(catalog, assets, avail, floors[tier], floors, now)
         cands.sort(key=lambda c: c["key"])
         if not cands:
-            _print_notes(notes)
-            _action(f"run select --complexity {complexity} --risk {risk} --available {avail_arg} and follow its action line; launch only resolves a dispatchable model")
-            return 3
+            return _fail_non_dispatch(notes, f"select --complexity {complexity} --risk {risk} --available {avail_arg}")
         cand, role_head = cands[0], f"role: implementer · {complexity}/{risk} · tier {tier}"
     else:
-        tier, rt = TIER[complexity][risk], reviewer_tier(TIER[complexity][risk], risk)
-        impl_m = resolve_implementer(catalog, parsed["implementer"])
+        tier, rev_rt = TIER[complexity][risk], reviewer_tier(TIER[complexity][risk], risk)
+        rev_impl = resolve_implementer(catalog, parsed["implementer"])
         emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
-        pick, _ = choose_reviewer(
-            catalog, assets, avail, floors, rt, now, impl_m, False, risk,
-            prefs.get("below_tier") or "stage", impl_below_tier=best_effort(impl_m, floors[tier], emerg) is None,
+        rev_pick, _ = choose_reviewer(
+            catalog, assets, avail, floors, rev_rt, now, rev_impl, False, risk,
+            prefs.get("below_tier") or "stage", impl_below_tier=best_effort(rev_impl, floors[tier], emerg) is None,
         )
-        _, notes, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, task_floor=floors[rt])
-        if not pick:
-            _print_notes(notes)
-            _action(f"run select --role reviewer --complexity {complexity} --risk {risk} --implementer {parsed['implementer']} --available {avail_arg} and follow its action line; launch only resolves a dispatchable model")
-            return 3
-        cand, role_head = pick[1], f"role: reviewer · {complexity}/{risk} · tier {rt} (implementer {impl_m['id']})"
+        _, notes, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, task_floor=floors[rev_rt])
+        if not rev_pick:
+            return _fail_non_dispatch(notes, f"select --role reviewer --complexity {complexity} --risk {risk} --implementer {parsed['implementer']} --available {avail_arg}")
+        cand, role_head = rev_pick[1], f"role: reviewer · {complexity}/{risk} · tier {rev_rt} (implementer {rev_impl['id']})"
 
     prov = cand["provider"]
     effort_key = _effort_option_key(assets, prov)
     if not effort_key:
         print(f"error: no effort option key for {prov}: set effort_key on it in assets.yaml")
+        _cleanup_stale_payload(out_path)
         print(f"error: 1 problem(s); action: set effort_key on {prov} in assets.yaml and rerun launch")
         return 1
 
+    deg_why = _reviewer_why(rev_rt, rev_pick, rev_impl, floors[rev_rt]) if rev_pick else None
+    deg_header = f"reviewer degraded: {deg_why} (step {rev_pick[0]}); state it in the report" if deg_why else None
     h_mid = _harness_mid(cand)
     options = [{"id": effort_key, "value": cand["effort"]}] + ([{"id": "serviceTier", "value": "default"}] if prov.startswith("codex") else [])
     ws = parsed["workspace"]
@@ -2210,23 +2238,31 @@ def launch_cmd(a):
     else:
         ws_strat = {"type": "root"}
 
-    header_lines = _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, parsed["caps"], ws, rubric_str, complexity, risk)
+    header_lines = _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, parsed["caps"], ws, rubric_str, complexity, risk, deg_line=deg_header)
     slug = norm(parsed["title"])[:48].strip("-") or "task"
+    ts_tag = now.astimezone(timezone.utc).strftime("%Y%m%d%H%M")
     payload = {
         "title": parsed["title"],
         "message": "\n".join(header_lines) + "\n\n" + parsed["brief_text"],
         "modelSelection": {"instanceId": prov, "model": h_mid, "options": options},
         "workspaceStrategy": ws_strat,
-        "clientRequestId": f"launch-{slug}-{prov}-{h_mid}-{cand['effort']}",
+        "clientRequestId": f"launch-{slug}-{prov}-{h_mid}-{cand['effort']}-{ts_tag}",
     }
-    out_path = _opt_str(a, "out") or _default_payload_path(a.spec)
-    if os.path.dirname(os.path.abspath(out_path)):
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2)
-        fh.write("\n")
+    try:
+        if os.path.dirname(os.path.abspath(out_path)):
+            os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+            fh.write("\n")
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        print(f"error: cannot write payload to {out_path}: {reason}")
+        _cleanup_stale_payload(out_path)
+        print("error: 1 problem(s); action: pass a writable file path to --out and rerun launch")
+        return 1
 
     req_str = f"{prov}:{h_mid}@{cand['effort']}"
+    repo_base = os.path.basename(os.path.normpath((parsed["repo"] or os.getcwd()).rstrip("/\\"))) or "unknown"
     print(role_head)
     print(f"requested: {req_str}")
     if role == "orchestrator":
@@ -2235,16 +2271,26 @@ def launch_cmd(a):
             _detail(f"  rung: {_fmt_cand(r)}")
         if _FULL and switch_rung:
             _detail(f"  switch: {_fmt_cand(switch_rung)}")
+    elif role == "reviewer":
+        print_reviewer(rev_rt, rev_pick, rev_impl, floors[rev_rt], always=True)
     else:
         _detail(f"  candidate: {_fmt_cand(cand)}")
+    for pn in pre_notes:
+        print(pn)
     _print_notes(notes)
     print(f"payload: {out_path}")
-    out_label = out_path if len(out_path) <= 24 else os.path.basename(out_path)
-    _action(
-        f"call t3_thread_launch with the JSON in {out_label}; then read the new thread's model "
-        f"(t3_thread_configure with only threadId) and log --event select --role {role} "
-        f"--rubric {rubric_str} --requested {req_str} --effective <what it reports>"
+    log_line = (
+        f"log: orch.py log --event select --role {role} --complexity {complexity} --risk {risk} "
+        f"--provider {prov} --model {h_mid} --effort {cand['effort']} --repo {repo_base} "
+        f"--rubric {rubric_str} --requested {req_str} --effective <what the thread reports>"
     )
+    # `--event select` is log's default without --outcome; drop it only to keep the line within the output contract.
+    print(log_line if len(log_line) <= 350 else log_line.replace(" --event select", "", 1))
+    deg_tail = "; state the reviewer degradation in the report" if deg_why else ""
+    act_full = f"call t3_thread_launch with the JSON in {out_path}; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective filled in{deg_tail}"
+    if len("action: " + act_full) > 350:
+        act_full = f"call t3_thread_launch with the JSON in the payload: path above; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective filled in{deg_tail}"
+    _action(act_full)
     return 0
 
 
@@ -5004,6 +5050,8 @@ def build_parser():
         usage = (
             "orch.py log [options] [--event select|complete] [--ui] [--surface subagent|conversation] [--repo NAME] [--assets F] [--ledger F] [--now ISO] [--full]"
             if n == "log"
+            else "orch.py launch <spec> [options]"
+            if n == "launch"
             else f"orch.py {n} [options]"
         )
         p = sub.add_parser(

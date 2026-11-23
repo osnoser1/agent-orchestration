@@ -4942,6 +4942,7 @@ class TestLaunchSpec(unittest.TestCase):
             "caps.budget",
         ):
             self.assertIn(expected, out)
+        self.assertIn("error: 10 problem(s); action: fix ", lines[-1])
         self.assertTrue(lines[-1].endswith("action: fix " + os.path.join(self.tmp.name, "broken.launch.yaml") + " and rerun launch"), lines[-1])
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "broken.payload.json")))
 
@@ -4980,11 +4981,32 @@ class TestLaunchSpec(unittest.TestCase):
         self.assertIn("requested: codex:gpt-6.2-sol@medium", out)
         self.assertIn("ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high ; provider switch: claudeAgent/claude-opus-5-5 @ high", out)
         self.assertIn(f"payload: {payload_path}", out)
-        self.assertIn(
-            "log --event select --role orchestrator --rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 "
-            "--requested codex:gpt-6.2-sol@medium --effective <what it reports>",
-            out.strip().splitlines()[-1],
+        expected_log = (
+            "log: orch.py log --event select --role orchestrator --complexity hard --risk medium "
+            "--provider codex --model gpt-6.2-sol --effort medium --repo agent-orchestration "
+            "--rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 "
+            "--requested codex:gpt-6.2-sol@medium --effective <what the thread reports>"
         )
+        self.assertIn(expected_log, out)
+        self.assertEqual(
+            out.strip().splitlines()[-1],
+            f"action: call t3_thread_launch with the JSON in {payload_path}; then read the new thread's model "
+            "(t3_thread_configure with only threadId) and run the log: line above with --effective filled in",
+        )
+
+        # Parse the emitted log: line, fill in <what the thread reports>, and run orch.py log with it
+        log_line = next(l for l in out.splitlines() if l.startswith("log: orch.py log "))
+        filled = log_line[len("log: orch.py "):].replace("<what the thread reports>", "codex:gpt-6.2-sol@medium")
+        ledger_path = os.path.join(self.tmp.name, "parsed-ledger.jsonl")
+        parsed_log_args = orch.build_parser().parse_args(filled.split() + ["--ledger", ledger_path, "--assets", self.assets, "--now", "2026-11-20T21:00:00Z"])
+        rc_l, out_l = _run(orch.log_cmd, parsed_log_args)
+        self.assertEqual(rc_l, 0, out_l)
+        with open(ledger_path, encoding="utf-8") as fh:
+            logged_row = json.loads(fh.read().strip())
+        self.assertEqual(logged_row["repo"], "agent-orchestration")
+        self.assertEqual(logged_row["role"], "orchestrator")
+        self.assertEqual(logged_row["requested"], "codex:gpt-6-2-sol@medium")
+        self.assertEqual(logged_row["effective"], "codex:gpt-6-2-sol@medium")
 
         with open(payload_path, encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -5006,7 +5028,7 @@ class TestLaunchSpec(unittest.TestCase):
         )
         self.assertEqual(
             payload["clientRequestId"],
-            "launch-agent-orchestration-orchestrator-role-prs-codex-gpt-6.2-sol-medium",
+            "launch-agent-orchestration-orchestrator-role-prs-codex-gpt-6.2-sol-medium-202611202100",
         )
         msg = payload["message"]
         header, sep, body = msg.partition("\n\n")
@@ -5155,6 +5177,73 @@ class TestLaunchSpec(unittest.TestCase):
         self.assertEqual(rc2, 3, out2)
         self.assertIn("launch only resolves a dispatchable model", out2)
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "stage.payload.json")))
+
+    def test_degraded_reviewer_notes_header_and_action(self):
+        rev_deg = (
+            "version: 1\nrole: reviewer\ntitle: same-model review\nrepo: osnoser1/agent-orchestration\nbrief: brief.md\n"
+            "rubric: {size: 1, uncertainty: 1, deps: 1, consequences: 0, verification: 0, coordination: 0}\n"
+            "implementer: codex:gpt-6.2-sol\n"
+            "available: [codex:gpt-6.2-sol]\nworkspace: {strategy: root}\n"
+        )
+        rc, out = self._launch(rev_deg, name="deg-rev.launch.yaml")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("[note] reviewer degraded: no other model usable; using the implementer's model in a fresh conversation. State this in the report.", out)
+        self.assertTrue(out.strip().splitlines()[-1].endswith("; state the reviewer degradation in the report"), out)
+        with open(os.path.join(self.tmp.name, "deg-rev.payload.json"), encoding="utf-8") as fh:
+            p_deg = json.load(fh)
+        h_deg = p_deg["message"].partition("\n\n")[0].splitlines()
+        self.assertTrue(any(l.startswith("reviewer degraded: ") and l.endswith("; state it in the report") for l in h_deg), h_deg)
+
+    def test_no_assets_probe_skip_probe_failure_note_unwritable_out_stale_cleanup_and_ignored_keys(self):
+        spec = (
+            "version: 1\nrole: implementer\ntitle: worker\nbrief: brief.md\n"
+            "rubric: {size: 1, uncertainty: 0, deps: 0, consequences: 0, verification: 0, coordination: 0}\n"
+            "ladder: auto\ncaps: {max_escalations: 1}\n"
+            "available: [claudeAgent:claude-sonnet-5-5]\nworkspace: {strategy: root}\n"
+        )
+        # 1. Missing assets file without --no-probe -> skips probe with note, plus notes ignored ladder/max_escalations for implementer
+        missing_assets = os.path.join(self.tmp.name, "no-such-assets.yaml")
+        rc1, out1 = self._launch(spec, name="w1.launch.yaml", assets=missing_assets, no_probe=False)
+        self.assertEqual(rc1, 0, out1)
+        self.assertIn("note: no assets file: probe skipped (run orch.py probe --init)", out1)
+        self.assertIn("note: ignored for role implementer: ladder, caps.max_escalations", out1)
+        self.assertFalse(os.path.exists(missing_assets))
+
+        # 2. Existing assets file whose providers have no probe settings, run WITHOUT --no-probe -> succeeds
+        no_probe_cfg_assets = os.path.join(self.tmp.name, "no-probe-cfg.yaml")
+        _write(no_probe_cfg_assets, "version: 1\nproviders:\n  - id: claudeAgent\n    status: ok\n")
+        rc2, out2 = self._launch(spec, name="w2.launch.yaml", assets=no_probe_cfg_assets, no_probe=False)
+        self.assertEqual(rc2, 0, out2)
+        self.assertNotIn("probe failed", out2)
+
+        # 3. Probe raises or exits non-zero -> prints note: probe failed (...); resolving on the last known quota
+        with mock.patch("orch._probe", side_effect=RuntimeError("boom")):
+            rc3, out3 = self._launch(spec, name="w3.launch.yaml", assets=no_probe_cfg_assets, no_probe=False)
+        self.assertEqual(rc3, 0, out3)
+        self.assertIn("note: probe failed (boom); resolving on the last known quota", out3)
+
+        # 4. --out pointing to a directory -> clean error, exit 1, no traceback
+        rc4, out4 = self._launch(spec, name="w4.launch.yaml", out=self.tmp.name)
+        self.assertEqual(rc4, 1, out4)
+        self.assertIn(f"error: cannot write payload to {self.tmp.name}:", out4)
+        self.assertTrue(out4.strip().splitlines()[-1].startswith("error: 1 problem(s); action:"), out4)
+
+        # 5. Stale payload at --out is deleted on exit 3 (and on validation error) with a note line
+        stale_payload = os.path.join(self.tmp.name, "w1.payload.json")
+        self.assertTrue(os.path.isfile(stale_payload))
+        ex_assets = os.path.join(self.tmp.name, "ex-only.yaml")
+        _write(ex_assets, "version: 1\nproviders:\n  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-25T00:00:00+00:00\n")
+        rc5, out5 = self._launch(spec, name="w1.launch.yaml", assets=ex_assets)
+        self.assertEqual(rc5, 3, out5)
+        self.assertFalse(os.path.exists(stale_payload))
+        self.assertIn(f"note: removed stale payload {stale_payload}", out5)
+
+        # 6. check rejects bad provider effort_key
+        bad_ek = os.path.join(self.tmp.name, "bad-ek.yaml")
+        _write(bad_ek, "version: 1\nproviders:\n  - id: customProv\n    effort_key: 123\n")
+        rc6, out6 = _run(orch.check, _Args(assets=bad_ek, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+        self.assertEqual(rc6, 1, out6)
+        self.assertIn("effort_key", out6)
 
 
 if __name__ == "__main__":
