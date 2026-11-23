@@ -4,18 +4,18 @@
   orch.py check     [--available provider:model[,...]] [--catalog F] [--assets F] [--now ISO] [--lockfile F]
   orch.py probe     [--fresh] [--provider P] [--low-threshold N] [--exhausted-threshold N] [--available ...] [--assets F] [--now ISO]
   orch.py classify  --size N --uncertainty N --deps N --consequences N --verification N --coordination N [--assets F]
-  orch.py select    [--role implementer|orchestrator] [--complexity C --risk R | --coordination 0|1|2]
+  orch.py select    [--role implementer|reviewer|orchestrator] [--complexity C --risk R | --coordination 0|1|2]
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
                     [--fallback proceed|defer|ask] [--below-tier stage|wait|proceed]
                     [--ref TEXT] [--fail-on-low] [--implementer M] [--catalog F] [--assets F] [--now ISO]
   orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
                     [--available ...] [--catalog F] [--assets F] [--now ISO]
   orch.py log       --complexity C --risk R --provider P --model M --effort E
-                    [--role implementer|reviewer|orchestrator] [--rubric R] [--requested P:M@E] [--effective P:M@E]
+                    [--role implementer|reviewer|orchestrator] [--rubric K=N,...] [--requested P:M@E] [--effective P:M@E]
                     [--ui] [--reviewer R] [--surface subagent|conversation] [--event select|complete]
                     [--outcome ok|failed|quota|stall|rework] [--findings N] [--repo NAME] [--provisional]
                     [--ref ITEM] [--failure-class C] [--assets F] [--ledger F] [--now ISO]
-  orch.py history   [--ref ITEM] [--last N] [--ledger F] [--assets F]
+  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator] [--ledger F] [--assets F]
   orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
@@ -1318,19 +1318,36 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
     return 2
 
 
-def _parse_pme(val):
-    """Parse `provider:model@effort` -> `(provider, model, effort)` or None."""
+def _parse_pme(val, allow_slash=False):
+    """Parse `provider:model@effort` (and `provider/model @ effort` if `allow_slash`) -> `(provider, model, effort)` or None."""
     if not isinstance(val, str) or not val.strip() or not val.isprintable() or ";" in val:
         return None
     pair, sep, eff = val.strip().rpartition("@")
     if not sep:
         return None
-    prov, psep, mid = pair.partition(":")
-    prov, mid, eff = prov.strip(), mid.strip(), eff.strip()
+    pair = pair.strip()
+    if ":" in pair:
+        prov, _, mid = pair.partition(":")
+    elif allow_slash and "/" in pair:
+        prov, _, mid = pair.partition("/")
+    else:
+        return None
+    prov, mid, eff = prov.strip(), mid.strip(), eff.strip().lower()
     all_efforts = set(EFFORT_ORDER) | {"max", "ultra"}
-    if not psep or not prov or not mid or not eff or any(c.isspace() for c in prov) or eff not in all_efforts:
+    if not prov or not mid or not eff or any(c.isspace() for c in prov) or eff not in all_efforts:
         return None
     return prov, mid, eff
+
+
+def _canon_pme(val, catalog):
+    """Parse and normalise `--requested`/`--effective` to canonical `provider:model-id@effort`, or None."""
+    parsed = _parse_pme(val, allow_slash=True)
+    if not parsed:
+        return None
+    prov, mid, eff = parsed
+    names = _catalog_name_map(catalog)
+    canon_mid = norm(names.get(norm(mid), mid))
+    return f"{norm(prov)}:{canon_mid}@{eff}"
 
 
 def _parse_rubric(val):
@@ -1368,11 +1385,11 @@ def _orchestrator_prefs(assets):
     if isinstance(raw.get("tiers"), dict):
         for k, v in raw["tiers"].items():
             ik = _parse_orch_tier_key(k)
-            if ik is not None and v in FLOORS:
+            if ik is not None and isinstance(v, str) and v in FLOORS:
                 tiers[ik] = v
     max_effort = "high"
     if raw.get("max_effort") is not None:
-        if raw["max_effort"] in ORCH_EFFORTS:
+        if isinstance(raw["max_effort"], str) and raw["max_effort"] in ORCH_EFFORTS:
             max_effort = raw["max_effort"]
         else:
             notes.append(f"preferences.orchestrator.max_effort: value {raw['max_effort']!r} invalid or above high -> capped at high")
@@ -1380,7 +1397,7 @@ def _orchestrator_prefs(assets):
         for k, v in raw["defaults"].items():
             if not isinstance(k, str) or not k.strip():
                 continue
-            if v not in ORCH_EFFORTS:
+            if not isinstance(v, str) or v not in ORCH_EFFORTS:
                 notes.append(f"preferences.orchestrator.defaults[{k}]: invalid effort {v!r} -> ignored")
             elif EFFORT_ORDER[v] > EFFORT_ORDER[max_effort]:
                 notes.append(f"preferences.orchestrator.defaults[{k}]: {v!r} exceeds max_effort {max_effort} -> capped at {max_effort}")
@@ -1482,6 +1499,17 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
     floor = floors[tier]
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     fail_on_low, ref_arg = bool(a.fail_on_low), _opt_str(a, "ref")
+    ignored = [
+        flag for flag, present in (
+            ("--complexity", bool(_opt_str(a, "complexity"))),
+            ("--risk", bool(_opt_str(a, "risk"))),
+            ("--ui", _opt_bool(a, "ui")),
+            ("--prefer-family", bool(_opt_str(a, "prefer_family"))),
+            ("--fallback", bool(_opt_str(a, "fallback"))),
+            ("--below-tier", bool(_opt_str(a, "below_tier"))),
+        ) if present
+    ]
+    ignored_line = f"note: ignored for --role orchestrator: {', '.join(ignored)}" if ignored else None
 
     same_rungs, switch_rung, extra_notes = [], None, list(pref_notes)
     if oprefs["ladder"] != "auto":
@@ -1491,7 +1519,7 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
         extra_notes.extend(exp_notes)
         if surviving:
             start_prov = surviving[0]["provider"]
-            same_rungs = [r for r in surviving if r["provider"] == start_prov]
+            same_rungs = [r for r in surviving if r["provider"] == start_prov][: oprefs["max_escalations"] + 1]
             switch_rung = next((r for r in surviving if r["provider"] != start_prov), None)
         else:
             extra_notes.append("explicit orchestrator ladder had no usable entry; falling back to auto")
@@ -1504,14 +1532,18 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
         cands.sort(key=lambda c: c["key"])
         extra_notes.extend(notes)
         if not cands:
-            saw_ex_tier, earliest_dt, resume_needs, _ = exhausted_tier_candidates(
+            saw_ex_tier, earliest_dt, resume_needs, ex_cands = exhausted_tier_candidates(
                 catalog, assets, avail, tier, floor, now, max_effort=max_effort, exclude_coordinator=True,
             )
+            if ignored_line:
+                print(ignored_line)
             if _FULL:
                 print("NO CANDIDATE:", *extra_notes, sep="\n  ")
             else:
                 _print_notes(extra_notes)
             if saw_ex_tier and reasons["threshold"] == 0:
+                if not resume_needs.lower().startswith("provider:") and ex_cands:
+                    resume_needs = f"provider:{ex_cands[0]['provider']}/{ex_cands[0]['model']['id']}"
                 sched_iso = _schedule_resume(f"orchestrator {tier} candidates", earliest_dt)
                 rec = _record_resume(ap, _resume_ref(ref_arg, assets_exists), resume_needs, sched_iso, now, fail_on_low=fail_on_low)
                 _stop_action(4, sched_iso, recorded=rec)
@@ -1532,9 +1564,9 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
 
         same_rungs, cur_max = [{**start_c, "effort": start_e, "score": start_sc}], start_sc
         for e, sc in rated_start:
-            if EFFORT_ORDER[e] > EFFORT_ORDER[start_e] and sc >= cur_max:
+            if EFFORT_ORDER[e] > EFFORT_ORDER[start_e] and sc > cur_max:
                 same_rungs.append({**start_c, "effort": e, "score": sc})
-                cur_max = max(cur_max, sc)
+                cur_max = sc
         for c in cands[1:]:
             if c["provider"] != start_prov or c["pair"] == start_c["pair"]:
                 continue
@@ -1544,10 +1576,19 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
                     cur_max = sc
         same_rungs = same_rungs[: oprefs["max_escalations"] + 1]
 
-        other = next((c for c in cands if c["provider"] != start_prov), None)
-        te = top_effort(other["model"], emerg, max_effort=max_effort) if other else None
-        if other and te:
-            switch_rung = {**other, "effort": te[0], "score": te[1]}
+        ladder_top = max(r["score"] for r in same_rungs)
+        others = [c for c in cands if c["provider"] != start_prov]
+        for c in others:
+            hit = next(((e, sc) for e, sc in _rated_efforts(c["model"], emerg, max_effort=max_effort) if sc > ladder_top), None)
+            if hit:
+                switch_rung = {**c, "effort": hit[0], "score": hit[1]}
+                break
+        if not switch_rung and others:
+            scored = [(te[1], -idx, c, te[0]) for idx, c in enumerate(others) for te in [top_effort(c["model"], emerg, max_effort=max_effort)] if te]
+            if scored:
+                sc, _, c, e = max(scored)
+                switch_rung = {**c, "effort": e, "score": sc}
+                extra_notes.append(f"provider switch is not an escalation (score {sc} <= ladder top {ladder_top})")
 
     print(f"orchestrator tier {tier} (>= {floor}; coordination {coord})")
     print("ladder: " + " -> ".join(_cand_ref(r) for r in same_rungs))
@@ -1558,6 +1599,8 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
             _detail(f"  rung: {_fmt_cand(r)}")
         if switch_rung:
             _detail(f"  switch: {_fmt_cand(switch_rung)}")
+    if ignored_line:
+        print(ignored_line)
     _print_notes(extra_notes)
     _action(
         f"launch the orchestrator on {_cand_ref(same_rungs[0])}; "
@@ -1584,22 +1627,33 @@ def select(a):
         print("note: --available entries are not provider:model: " + ", ".join(_capped([_show_entry(x) for x in bad])))
         _action("fix --available (comma-separated <provider>:<model-id> pairs as discovery lists them) and rerun select; dispatch only the model its action line names")
         return 1
-    role = _opt_str(a, "role") or "implementer"
-    if role == "orchestrator":
+    raw_role = _opt_str(a, "role")
+    impl_id = _opt_str(a, "implementer")
+    if raw_role == "orchestrator":
         return select_orchestrator(a, catalog, assets, avail, floors, now, ap=ap, assets_exists=assets_exists)
+    if raw_role == "implementer" and impl_id:
+        print("error: --implementer cannot be used with --role implementer")
+        _action("fix select arguments (use --role reviewer with --implementer, or drop --implementer) and rerun select")
+        return 1
+    if raw_role == "reviewer" and not impl_id:
+        print("error: --implementer is required for --role reviewer")
+        _action("fix --implementer (required for --role reviewer) and rerun select")
+        return 1
+    eff_role = raw_role or ("reviewer" if impl_id else "implementer")
     complexity = _opt_str(a, "complexity")
     risk = _opt_str(a, "risk")
     if not complexity or not risk:
-        print("error: --complexity and --risk are required for --role implementer")
-        _action("fix --complexity/--risk (required for --role implementer) and rerun select")
+        print(f"error: --complexity and --risk are required for --role {eff_role}")
+        _action(f"fix --complexity/--risk (required for --role {eff_role}) and rerun select")
         return 1
     tier = TIER[complexity][risk]
     prefer_family = _opt_str(a, "prefer_family")
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
     below_tier_mode = _opt_str(a, "below_tier") or prefs.get("below_tier") or "stage"
     ref_arg = _opt_str(a, "ref")
+    if _opt_int(a, "coordination") is not None:
+        print(f"note: ignored for --role {eff_role}: --coordination")
 
-    impl_id = _opt_str(a, "implementer")
     if impl_id:
         return select_reviewer_only(
             a,
@@ -3190,13 +3244,12 @@ def log_cmd(a):
             _action("rerun log with --failure-class " + "|".join(VALID_FAILURE_CLASSES))
             return 1
         entry["failure_class"] = fclass
-    role = _opt_str(a, "role")
-    if role is not None:
-        if role not in VALID_ROLES:
-            print(f"error: invalid role: {role}")
-            _action("rerun log with --role " + "|".join(VALID_ROLES))
-            return 1
-        entry["role"] = role
+    role = _opt_str(a, "role") or "implementer"
+    if role not in VALID_ROLES:
+        print(f"error: invalid role: {role}")
+        _action("rerun log with --role " + "|".join(VALID_ROLES))
+        return 1
+    entry["role"] = role
     rubric_raw = _opt_str(a, "rubric")
     if rubric_raw is not None:
         rubric = _parse_rubric(rubric_raw)
@@ -3206,19 +3259,25 @@ def log_cmd(a):
             return 1
         entry["rubric"] = rubric
     requested = _opt_str(a, "requested")
+    effective = _opt_str(a, "effective")
+    cat = None
+    if requested is not None or effective is not None:
+        cat_path = _opt_str(a, "catalog") or DEF_CATALOG
+        cat = load_catalog_with_local(cat_path, ap) if os.path.exists(cat_path) else {"models": []}
     if requested is not None:
-        if not _parse_pme(requested):
-            print(f"error: invalid --requested: {requested} (expected provider:model@effort)")
+        canon_req = _canon_pme(requested, cat)
+        if not canon_req:
+            print(f"error: invalid --requested: {requested} (expected provider:model@effort or provider/model @ effort)")
             _action("rerun log with --requested provider:model@effort")
             return 1
-        entry["requested"] = requested.strip()
-    effective = _opt_str(a, "effective")
+        entry["requested"] = canon_req
     if effective is not None:
-        if not _parse_pme(effective):
-            print(f"error: invalid --effective: {effective} (expected provider:model@effort)")
+        canon_eff = _canon_pme(effective, cat)
+        if not canon_eff:
+            print(f"error: invalid --effective: {effective} (expected provider:model@effort or provider/model @ effort)")
             _action("rerun log with --effective provider:model@effort")
             return 1
-        entry["effective"] = effective.strip()
+        entry["effective"] = canon_eff
     mismatch_msg = None
     if "requested" in entry and "effective" in entry and entry["effective"] != entry["requested"]:
         entry["mismatch"] = True
@@ -3295,6 +3354,7 @@ def history_cmd(a):
     ledger_path = _opt_str(a, "ledger") or def_ledger(ap)
     want = _clean_ref(_opt_str(a, "ref")) if _opt_str(a, "ref") else None
     last = _opt_int(a, "last")
+    want_role = _opt_str(a, "role")
     runs, unreferenced = read_ledger_refs(ledger_path)
     try:
         assets = load_file(ap) if os.path.exists(ap) else {}
@@ -3307,12 +3367,17 @@ def history_cmd(a):
     refs = sorted(runs, key=lambda r: runs[r]["pos"], reverse=True)  # most recent first
     if want:
         refs = [r for r in refs if r == want]
+    if want_role:
+        refs = [
+            r for r in refs
+            if ((runs[r].get("select") or {}).get("role") or (runs[r].get("complete") or {}).get("role") or "implementer") == want_role
+        ]
     if last is not None:
         refs = refs[: max(last, 0)]
     lines = [history_line(r, runs[r], pending.get(r)) for r in refs]
     shown = set(refs)  # pending follow-ups are counted for the refs listed below
     for ref in sorted(pending):  # follow-ups whose item has no ledger entry
-        if ref not in runs and (not want or ref == want) and last is None:
+        if ref not in runs and (not want or ref == want) and last is None and not want_role:
             shown.add(ref)
             lines.append(f"{ref}: no ledger entry; pending " + ", ".join(str(fu.get("kind", "review")) for fu in pending[ref]))
     if want and not lines:
@@ -3820,9 +3885,9 @@ def check(a):
                     for k, v in ot.items():
                         if _parse_orch_tier_key(k) is None:
                             errs.append(f"assets preferences.orchestrator.tiers: bad key {k} (expected 0|1|2)")
-                        if v not in FLOORS:
+                        if not (isinstance(v, str) and v in FLOORS):
                             errs.append(f"assets preferences.orchestrator.tiers[{k}]: bad tier {v} (expected T1|T2|T3|T4)")
-                if ome is not None and ome not in ORCH_EFFORTS:
+                if ome is not None and not (isinstance(ome, str) and ome in ORCH_EFFORTS):
                     errs.append(f"assets preferences.orchestrator.max_effort: bad value {ome} (expected {'|'.join(ORCH_EFFORTS)})")
                 if od is not None and not isinstance(od, dict):
                     errs.append("assets preferences.orchestrator.defaults: must be a map")
@@ -3830,7 +3895,7 @@ def check(a):
                     for k, v in od.items():
                         if not isinstance(k, str) or not k.strip():
                             errs.append(f"assets preferences.orchestrator.defaults: bad provider key {k!r}")
-                        if v not in ORCH_EFFORTS:
+                        if not (isinstance(v, str) and v in ORCH_EFFORTS):
                             errs.append(f"assets preferences.orchestrator.defaults[{k}]: bad effort {v} (expected {'|'.join(ORCH_EFFORTS)})")
                 if oe is not None and (isinstance(oe, bool) or not isinstance(oe, int) or not (0 <= oe <= 3)):
                     errs.append(f"assets preferences.orchestrator.max_escalations: bad value {oe} (expected int 0..3)")
@@ -4571,7 +4636,7 @@ def build_parser():
     sub = ap.add_subparsers(dest="cmd", required=True)
     for n in ("check", "probe", "classify", "select", "followups", "log", "history", "exhaust", "status", "failure", "scope", "policy"):
         usage = (
-            "orch.py log [options] [--assets F] [--ledger F] [--now ISO] [--full]"
+            "orch.py log [options] [--event select|complete] [--ui] [--surface subagent|conversation] [--repo NAME] [--assets F] [--ledger F] [--now ISO] [--full]"
             if n == "log"
             else f"orch.py {n} [options]"
         )
@@ -4607,7 +4672,7 @@ def build_parser():
             for k in RUBRIC_KEYS:
                 p.add_argument(f"--{k}", type=int, required=True, choices=[0, 1, 2])
         if n == "select":
-            p.add_argument("--role", choices=["implementer", "orchestrator"], default="implementer")
+            p.add_argument("--role", choices=list(VALID_ROLES), default=None, help="implementer (default), reviewer, or orchestrator")
             p.add_argument("--complexity", choices=list(TIER))
             p.add_argument("--risk", choices=["low", "medium", "high"])
             p.add_argument("--coordination", type=int, choices=[0, 1, 2])
@@ -4635,30 +4700,31 @@ def build_parser():
             p.add_argument("--available")
         if n == "log":
             p.add_argument("--ledger", help=argparse.SUPPRESS)
-            p.add_argument("--event", choices=["select", "complete"])
+            p.add_argument("--event", choices=["select", "complete"], help=argparse.SUPPRESS)
             p.add_argument("--complexity", required=True, choices=list(TIER))
             p.add_argument("--risk", required=True, choices=["low", "medium", "high"])
-            p.add_argument("--ui", action="store_true")
-            p.add_argument("--surface", choices=list(VALID_SURFACES), default="subagent")
+            p.add_argument("--ui", action="store_true", help=argparse.SUPPRESS)
+            p.add_argument("--surface", choices=list(VALID_SURFACES), default="subagent", help=argparse.SUPPRESS)
             p.add_argument("--provider", required=True)
             p.add_argument("--model", required=True)
             p.add_argument("--effort", required=True)
             p.add_argument("--reviewer")
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
-            p.add_argument("--repo")
+            p.add_argument("--repo", help=argparse.SUPPRESS)
             p.add_argument("--provisional", action="store_true",
                            help="work ran below the required tier (below_tier or ui_fallback proceed); needs a tier-meeting re-review")
             p.add_argument("--ref", help="short item label (no paths); makes retries countable")
             p.add_argument("--failure-class", choices=list(VALID_FAILURE_CLASSES))
             p.add_argument("--role", choices=list(VALID_ROLES))
-            p.add_argument("--rubric")
-            p.add_argument("--requested")
-            p.add_argument("--effective")
+            p.add_argument("--rubric", metavar="K=N,...")
+            p.add_argument("--requested", metavar="P:M@E")
+            p.add_argument("--effective", metavar="P:M@E")
         if n == "history":
             p.add_argument("--ledger")
             p.add_argument("--ref", help="one item label (no paths)")
             p.add_argument("--last", type=int, metavar="N", help="only the N most recent refs")
+            p.add_argument("--role", choices=list(VALID_ROLES), help="filter to refs with this role")
         if n == "scope":
             p.add_argument("--base", required=True, help="git ref to diff against (the merge-base with HEAD is used)")
             p.add_argument("--max-files", type=int)

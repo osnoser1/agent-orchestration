@@ -8,11 +8,11 @@ Score all six criteria from `0` to `2`, then run `python3 scripts/orch.py classi
 
 | Criterion | 0 | 1 | 2 |
 |---|---|---|---|
-| `size` | one file / ≤50 lines | a few files / ≤300 lines | many files or >300 lines |
+| `size` | one file / ≤50 lines (fully specified, mechanical) | a few files / ≤300 lines | many files or >300 lines |
 | `uncertainty` | location and fix known | location known, approach open | root cause or location unknown |
 | `deps` | self-contained | one shared interface | cross-module / schema / migration |
 | `consequences` | local and easily reverted | shared behaviour other users or repos rely on | any Risk trigger or repo `High risk:` trigger |
-| `verification` | one test proves it | several tests or a manual check | a wrong answer is hard to detect |
+| `verification` | one test proves it (acceptance test clear up front) | several tests or a manual check | a wrong answer is costly and hard to detect |
 | `coordination` | one phase and one child | two phases or 2–3 children | three or more phases, four or more children, a dependency chain (stacked PRs), or multi-repo |
 
 Without Python, map the scores directly:
@@ -33,12 +33,6 @@ Tiers are Artificial Analysis Intelligence Index floors (higher = smarter) from 
 
 ## Risk triggers (any one → high)
 Destructive or irreversible operations, security/auth/secrets, production data or infra, publishing/releases, or billing/money, plus any extra triggers listed under `High risk:` in repo policy (`references/repo-policy.md`). High risk bumps the reviewer tier by one (capped at T4) and requires one user approval before the irreversible step (`SKILL.md` Step 7).
-
-## Complexity hints
-- `trivial`: fully specified, mechanical.
-- `standard`: acceptance test is clear up front.
-- `hard`: change location or root cause is not yet known.
-- `frontier`: a wrong answer is costly and hard to detect.
 
 ## Effort knee and missing efforts
 Evaluate rated non-emergency efforts in order (`none < low < medium < high < xhigh`), excluding `emergency_efforts` (`max`, `ultra`).
@@ -105,7 +99,7 @@ With no usable model at any tier, every mode behaves like `wait` (exit `4` when 
 
 ## Reviewer and review gate
 - **Tier**: equal to the implementer's tier; `high` risk bumps the reviewer one tier up (capped at T4).
-- **Chosen at step start**: models a plan names ahead of time are tentative. When each role's step starts (implementer, then reviewer), run `scripts/orch.py probe`, then `select` from the models usable at that moment. At the reviewer step pass `--implementer <model-id>` so the reviewer is ranked against the model that actually implemented.
+- **Chosen at step start**: models a plan names ahead of time are tentative. When each role's step starts (implementer, then reviewer), run `scripts/orch.py probe`, then `select` from the models usable at that moment. At the reviewer step pass `--role reviewer --implementer <model-id>` (bare `--implementer` also selects a reviewer) so the reviewer is ranked against the model that actually implemented.
 - **Fallback order** (the first step with a usable model wins and steps 2-5 are noted in the report; it never blocks, except for **High-risk reviewer** under `stage` and `proceed` in **Below-tier handling**). Capability comes before independence: a below-tier reviewer misses defects, while a same-family tier-meeting reviewer with fresh context still catches most of them.
   1. Different family meeting the reviewer tier. On a UI/UX task the primary already carries `ui-ux-review`, so this reviewer needs no `ui-ux-review`.
   2. Same family, different model, meeting the reviewer tier, with fresh context.
@@ -121,12 +115,13 @@ With no usable model at any tier, every mode behaves like `wait` (exit `4` when 
 
 ## Orchestrator role (`select --role orchestrator`)
 
-Run `python3 scripts/orch.py select --role orchestrator --coordination <0|1|2> --available <provider:model,...>` and follow its `action:` line. Without Python, apply these rules (rubric and effort→model ladder adapted from [claude-code-multi-agent-orchestrator](https://github.com/mdharastani-pixel/claude-code-multi-agent-orchestrator)):
+When you open (or are) a coordinating conversation that will delegate children, choose its model with `python3 scripts/orch.py select --role orchestrator --coordination <0|1|2> --available <provider:model,...>` and follow its `action:` line. Without Python, apply these rules (rubric and effort→model ladder adapted from [claude-code-multi-agent-orchestrator](https://github.com/mdharastani-pixel/claude-code-multi-agent-orchestrator)):
 
-- **Tier and stops**: `coordination` maps through `preferences.orchestrator.tiers` (default `0 → T1`, `1 → T2`, `2 → T3`). When every tier-meeting model is exhausted, hold until renewal (exit `4`) instead of staging below tier.
-- **Filters and effort cap**: apply the worker filters above, exclude models marked `coordinator: true` in `catalog.yaml` (adds a second coordinator under yours), and cap efforts at `preferences.orchestrator.max_effort` (default `high`, maximum `high`).
-- **Ranking and ladder**: rank cost before effort and score. Start on the ranked first candidate's tier-meeting effort (or a higher rated `preferences.orchestrator.defaults[<provider>]` up to `max_effort`), climb that model's higher rated efforts up to `max_effort`, then higher-scoring same-provider candidates in rank order (keeping at most `max_escalations + 1` rungs, default 3). An explicit `preferences.orchestrator.ladder` list (`[provider:model@effort, ...]`) overrides `auto` after filtering to available, usable rungs (falling back to `auto` if none survive). Climb from the start rung only on an escalation trigger (repeated review rework, stalled cross-module design, or multi-phase coordination breakdown).
-- **Provider switch**: raising effort within the same provider is cheap; switch providers only at a phase boundary, because `t3_thread_configure` across providers hands the context over through a lossy summary; ask the user before a provider switch.
+- **Tier and stops**: `coordination` maps through `preferences.orchestrator.tiers` (default `0 → T1`, `1 → T2`, `2 → T3`). When every tier-meeting model is exhausted, hold until renewal (exit `4`) instead of staging below tier, recording a provider-scoped `resume` follow-up (`provider:<id>/<model-id>` when ungrouped).
+- **Filters and effort cap**: apply the worker filters above, exclude models marked `coordinator: true` in `catalog.yaml` (adds a second coordinator under yours), and cap efforts at `preferences.orchestrator.max_effort` (default `high`, maximum `high`). The effort cap `high` applies only to the orchestrator role; workers keep the normal effort rules (e.g., an implementer may need `xhigh`).
+- **Start rung**: rank remaining candidates with the worker ranking order above (quota health, policy, reset, cost, effort). Start on the ranked first candidate's tier-meeting effort (effort knee applies), or a higher rated `preferences.orchestrator.defaults[<provider>]` up to `max_effort`.
+- **Climb (same provider)**: add the start model's strictly higher-scoring rated efforts up to `max_effort`, then each higher-scoring effort (`<= max_effort`) of other same-provider candidates in rank order, keeping at most `max_escalations + 1` rungs (default 3). An explicit `preferences.orchestrator.ladder` list (`[provider:model@effort, ...]`) overrides `auto` after filtering to available, usable rungs and capping to `max_escalations + 1` (falling back to `auto` if none survive). Climb only on an escalation trigger (repeated review rework, stalled cross-module design, or multi-phase coordination breakdown): the orchestrator itself (or the user/agent who launched it) switches the conversation's model in place (`references/harnesses.md`, Switch model in place).
+- **Provider switch**: among other-provider candidates in rank order, pick the first with a rated effort (`<= max_effort`) scoring above the ladder's top score at its lowest such effort; if none exceeds the top, pick the highest-scoring other-provider rung (`<= max_effort`) and note it is not an escalation. Raising effort within the same provider is cheap; switch providers only at a phase boundary, because a cross-provider in-place switch hands the context over through a lossy summary (`references/harnesses.md`); ask the user before a provider switch.
 
 ## Tool needs
 Check `references/harnesses.md` before choosing a provider when the task requires browser, device, or network tools.

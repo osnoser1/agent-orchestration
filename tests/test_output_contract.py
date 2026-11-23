@@ -148,6 +148,8 @@ class OrchContract(unittest.TestCase):
                      hides=("reviewer degraded",)),  # the reviewer is chosen later: its degradation belongs to that step
                 Case(["select", "--role", "orchestrator", "--coordination", "2", "--available", avail, *w.common(assets)],
                      6, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("orchestrator tier T3", "ladder:")),
+                Case(["select", "--role", "reviewer", "--complexity", "standard", "--risk", "high", "--available", avail, "--implementer", "gpt-6-2-sol", *w.common(assets)],
+                     5, ORCH_FINAL, env=env, cwd=w.dir, shows=("dispatch reviewer",)),
                 Case(["select", "--complexity", "standard", "--risk", "high", "--available", avail, "--implementer", "no-such-model", *w.common(assets)],
                      5, ORCH_FINAL, rc=1, env=env, cwd=w.dir),
             ],
@@ -164,6 +166,8 @@ class OrchContract(unittest.TestCase):
                 fh.write(json.dumps({"event": "select", "ref": "item-%02d" % i, "provider": "claude", "model": "claude-opus-5-5", "effort": "high"}) + "\n")
         cases["history"] = [
             Case(["history", "--ledger", hist, *w.common(assets)], 14, re.compile(r"^ok: 40 ref\(s\); 30 pending follow-up\(s\)$"),
+                 last="item-00", env=env, cwd=w.dir),
+            Case(["history", "--ledger", hist, "--role", "implementer", *w.common(assets)], 14, re.compile(r"^ok: 40 ref\(s\); 30 pending follow-up\(s\)$"),
                  last="item-00", env=env, cwd=w.dir),
             Case(["history", "--ledger", hist, "--ref", "no-such-item", *w.common(assets)], 3, CHECK_FINAL, rc=1, env=env, cwd=w.dir),
         ]

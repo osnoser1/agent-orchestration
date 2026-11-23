@@ -4371,13 +4371,13 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         )
 
     def _orch_sel(self, available, coordination=2, assets=None, full=False, **kw):
+        kw.setdefault("complexity", None)
+        kw.setdefault("risk", None)
         return _run(
             orch.select,
             _sel(
                 assets or self.assets,
                 available,
-                complexity=None,
-                risk=None,
                 role="orchestrator",
                 coordination=coordination,
                 full=full,
@@ -4722,6 +4722,134 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         ):
             rc_b, _ = _run(orch.log_cmd, _Args(**{**base_log, "role": None, "rubric": None, "requested": None, "effective": None, **bad_kw}))
             self.assertEqual(rc_b, 1, bad_kw)
+
+    def test_non_string_tier_value_does_not_crash(self):
+        ap = os.path.join(self.tmp.name, "list-tier.yaml")
+        _write(ap, "version: 1\npreferences:\n  orchestrator:\n    tiers: {2: [T3]}\nproviders:\n  - id: codex\n    status: ok\n")
+        rc_c, out_c = self._classify(2, 1, 2, 1, 1, 2, assets=ap)
+        self.assertEqual(rc_c, 0, out_c)
+        self.assertIn("orchestrator: T3 (coordination 2)", out_c)
+        rc_s, out_s = self._orch_sel("codex:gpt-6-2-sol", coordination=2, assets=ap)
+        self.assertEqual(rc_s, 0, out_s)
+        rc_k, out_k = _run(orch.check, _Args(assets=ap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile=""))
+        self.assertEqual(rc_k, 1, out_k)
+        self.assertIn("tiers[2]", out_k)
+
+    def test_provider_switch_picks_escalation_or_notes_non_escalation(self):
+        # Branch 2 (no other provider exceeds ladder top 54.89): picks opus@high (51.84), not sonnet@high (41.52), and notes non-escalation
+        ap = os.path.join(self.tmp.name, "sw.yaml")
+        _write(ap, "version: 1\nproviders:\n  - id: codex\n    policy: spend-first\n    status: ok\n  - id: claude\n    policy: normal\n    status: ok\n  - id: antigravity\n    policy: normal\n    status: ok\n")
+        rc1, out1 = self._orch_sel("codex:gpt-6-2-sol,claude:claude-sonnet-5-5,claude:claude-opus-5-5", coordination=1, assets=ap)
+        self.assertEqual(rc1, 0, out1)
+        self.assertIn("provider switch (phase boundary, ask the user first): claude/claude-opus-5-5 @ high", out1)
+        self.assertIn("provider switch is not an escalation (score 51.84 <= ladder top 54.89)", out1)
+
+        # Branch 1 (other provider exceeds ladder top 54.89): picks lowest such effort (gemini-4-neon @ medium = 55), no non-escalation note
+        rc2, out2 = self._orch_sel("codex:gpt-6-2-sol,antigravity:gemini-4-argon,antigravity:gemini-4-neon", coordination=1, assets=ap)
+        self.assertEqual(rc2, 0, out2)
+        self.assertIn("provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium", out2)
+        self.assertNotIn("not an escalation", out2)
+
+    def test_explicit_ladder_respects_max_escalations(self):
+        ap = os.path.join(self.tmp.name, "exp-cap.yaml")
+        _write(
+            ap,
+            "version: 1\npreferences:\n  orchestrator:\n    max_escalations: 1\n"
+            "    ladder: [codex:gpt-6-2-sol@low, codex:gpt-6-2-sol@medium, codex:gpt-6-2-sol@high]\n"
+            "providers:\n  - id: codex\n    status: ok\n",
+        )
+        rc, out = self._orch_sel("codex:gpt-6-2-sol", coordination=1, assets=ap)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ladder: codex/gpt-6-2-sol @ low -> codex/gpt-6-2-sol @ medium\n", out)
+        self.assertNotIn("@ high", out)
+
+    def test_orchestrator_hold_records_provider_scoped_needs_not_spurious_due(self):
+        ap = os.path.join(self.tmp.name, "hold-t4.yaml")
+        _write(
+            ap,
+            "version: 1\npreferences:\n  orchestrator:\n    tiers: {2: T4}\nproviders:\n"
+            "  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: claude\n    status: ok\n",
+        )
+        avail = "antigravity:gemini-4-neon,claude:claude-opus-5-5"
+        rc, out = self._orch_sel(avail, coordination=2, assets=ap, ref="orch-t4")
+        self.assertEqual(rc, 4, out)
+        self.assertIn("needs provider:antigravity/gemini-4-neon", out)
+        rc_f, out_f = _run(orch.followups_cmd, _fu(ap, due=True, available=avail, full=False))
+        self.assertEqual(rc_f, 0, out_f)
+        _assert_none_due(self, out_f)
+
+    def test_log_requested_effective_normalization_and_select_format(self):
+        ledger = os.path.join(self.tmp.name, "norm-ledger.jsonl")
+        rc, out = _run(
+            orch.log_cmd,
+            _Args(
+                assets=self.assets, ledger=ledger, now="2026-11-20T21:00:00Z", event="select",
+                complexity="hard", risk="low", ui=False, surface="conversation",
+                provider="claudeAgent", model="claude-opus-5-5", effort="high",
+                reviewer=None, outcome=None, findings=None, repo="demo", provisional=False,
+                ref="NORM-1", failure_class=None, role=None, rubric=None,
+                requested="claudeAgent/claude-opus-5-5 @ high",
+                effective="ClaudeAgent:Claude Opus 5.5@HIGH",
+            ),
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("warning:", out)
+        with open(ledger, encoding="utf-8") as fh:
+            row = json.loads(fh.read().strip())
+        self.assertEqual(row["role"], "implementer")
+        self.assertEqual(row["requested"], "claudeagent:claude-opus-5-5@high")
+        self.assertEqual(row["effective"], "claudeagent:claude-opus-5-5@high")
+        self.assertNotIn("mismatch", row)
+
+    def test_select_warns_on_ignored_other_role_flags_and_equal_score_rung(self):
+        rc1, out1 = self._orch_sel("codex:gpt-6-2-sol", coordination=1, complexity="hard", ui=True, below_tier="wait")
+        self.assertEqual(rc1, 0, out1)
+        self.assertIn("note: ignored for --role orchestrator: --complexity, --ui, --below-tier", out1)
+
+        rc2, out2 = _run(orch.select, _sel(self.assets, "codex:gpt-6-2-sol", complexity="standard", risk="low", coordination=2, full=False))
+        self.assertEqual(rc2, 0, out2)
+        self.assertIn("note: ignored for --role implementer: --coordination", out2)
+
+        rc3, out3 = _run(orch.select, _sel(self.assets, "codex:gpt-6-2-sol,claudeAgent:claude-opus-5-5", complexity="standard", risk="low", role="reviewer", implementer="gpt-6-2-sol", coordination=1, full=False))
+        self.assertEqual(rc3, 0, out3)
+        self.assertIn("note: ignored for --role reviewer: --coordination", out3)
+
+        # A10: equal-score higher effort on start model must not consume a rung
+        flat_cat = os.path.join(self.tmp.name, "flat-cat.yaml")
+        _write(flat_cat, "version: 1\nindex_versions:\n  v1: {name: v1}\nmodels:\n  - id: flat-m\n    name: Flat\n    family: f\n    cost: normal\n    rating: rated\n    source: v1\n    scores: {medium: 52, high: 52}\n")
+        rc4, out4 = self._orch_sel("codex:flat-m", coordination=2, catalog=flat_cat)
+        self.assertEqual(rc4, 0, out4)
+        self.assertIn("ladder: codex/flat-m @ medium\n", out4)
+        self.assertNotIn("@ high", out4)
+
+    def test_role_annex_select_history_and_log_help(self):
+        avail = "codex:gpt-6-2-sol,claudeAgent:claude-opus-5-5"
+        rc_m, out_m = _run(orch.select, _sel(self.assets, avail, complexity="standard", risk="low", role="reviewer", implementer=None, full=False))
+        self.assertEqual(rc_m, 1, out_m)
+        self.assertIn("--implementer", out_m)
+        rc_b, out_b = _run(orch.select, _sel(self.assets, avail, complexity="standard", risk="low", role="implementer", implementer="gpt-6-2-sol", full=False))
+        self.assertEqual(rc_b, 1, out_b)
+
+        ledger = os.path.join(self.tmp.name, "roles.jsonl")
+        _write(ledger, "\n".join(json.dumps(e) for e in (
+            {"event": "select", "ref": "OLD-1", "provider": "codex", "model": "gpt-6-2-sol", "effort": "medium"},
+            {"event": "select", "ref": "ORCH-1", "provider": "antigravity", "model": "gemini-4-neon", "effort": "high", "role": "orchestrator"},
+            {"event": "select", "ref": "REV-1", "provider": "claude", "model": "claude-opus-5-5", "effort": "high", "role": "reviewer"},
+        )) + "\n")
+        rc_o, out_o = _run(orch.history_cmd, _Args(ledger=ledger, assets=self.assets, ref=None, last=None, role="orchestrator", full=False))
+        self.assertEqual(rc_o, 0, out_o)
+        self.assertIn("ORCH-1:", out_o)
+        self.assertNotIn("OLD-1:", out_o)
+        rc_i, out_i = _run(orch.history_cmd, _Args(ledger=ledger, assets=self.assets, ref=None, last=None, role="implementer", full=False))
+        self.assertEqual(rc_i, 0, out_i)
+        self.assertIn("OLD-1:", out_i)
+        self.assertNotIn("ORCH-1:", out_i)
+
+        help_out = subprocess.run([sys.executable, "-I", os.path.join(SCRIPTS_DIR, "orch.py"), "log", "--help"], stdout=subprocess.PIPE, universal_newlines=True).stdout
+        self.assertLessEqual(len(help_out.splitlines()), 22, help_out)
+        self.assertIn("K=N,...", help_out)
+        self.assertIn("P:M@E", help_out)
 
 
 if __name__ == "__main__":
