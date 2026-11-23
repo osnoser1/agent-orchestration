@@ -1,0 +1,13 @@
+# Example launch spec for `python3 scripts/orch.py launch <name>.launch.yaml`.
+# Keep real launch specs and briefs in ~/.config/agent-orchestration/plans/ (outside git).
+version: 1
+role: orchestrator                 # orchestrator | implementer | reviewer
+title: "agent-orchestration: orchestrator role PRs"
+repo: osnoser1/agent-orchestration # label only (ledger --repo basename)
+brief: brief.md                    # path relative to the spec file; required, must exist and be non-empty
+rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}   # all six keys, 0..2
+ladder: auto                       # auto | [provider:model@effort, ...] (orchestrator: overrides preferences.orchestrator.ladder)
+# implementer: antigravity:gemini-4-neon   # required only for role reviewer
+available: [codex:gpt-6.2-sol, claudeAgent:claude-opus-5-5]   # optional; --available on the CLI wins
+workspace: {strategy: worktree, base: origin/main, children: shared}   # strategy worktree|root|existing_worktree; base required for worktree (optional branch -> workspaceStrategy.branch); children shared|worktree; worktree_path required for existing_worktree
+caps: {max_escalations: 2, max_children_per_pool: 2, budget: {antigravity: 10, claudeAgent: 4}}   # budget = max child runs per provider pool; all optional

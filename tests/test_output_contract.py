@@ -155,6 +155,7 @@ class OrchContract(unittest.TestCase):
             ],
         }
         cases["select"] += self.select_scenarios(w)
+        cases["launch"] = self.launch_cases(w, assets, avail)
         cases["followups"] = [Case(["followups", "--due", "--available", "claude:claude-opus-5-5", *w.common(assets)], 3, ORCH_FINAL,
                                    last="item-29", env=env, cwd=w.dir)]
         cases["log"] = [Case(["log", "--complexity", "standard", "--risk", "low", "--provider", "claude", "--model", "claude-opus-5-5",
@@ -238,6 +239,56 @@ class OrchContract(unittest.TestCase):
             case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "proceed", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-proceed-wait"), 4,
                  r"^action: hold the review until \S+; follow-up (?:recorded|in place): schedule its wakeup$",
                  "followup recorded: [resume] a-rev-proceed-wait"),
+        ]
+
+    def launch_cases(self, w, assets, avail):
+        w.write("GOAL: Contract test brief.\n", "brief.md")
+        ok_spec = w.write(
+            "version: 1\nrole: orchestrator\ntitle: contract launch\nbrief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\n"
+            "workspace: {strategy: worktree, base: origin/main, children: shared}\n",
+            "ok.launch.yaml",
+        )
+        bad_lines = ["version: 2", "role: bad", "brief: no-such.md", "rubric: {}", "workspace: {strategy: bad}"]
+        for i in range(15):
+            bad_lines.append("extra%02d: 1" % i)
+        bad_spec = w.write("\n".join(bad_lines) + "\n", "bad.launch.yaml")
+        long_dir = os.path.join(w.dir, "deeply-nested-launch-plan-directory-for-contract-test")
+        os.makedirs(long_dir, exist_ok=True)
+        with open(os.path.join(long_dir, "brief.md"), "w", encoding="utf-8") as fh:
+            fh.write("GOAL: Long path contract test.\n")
+        long_spec = os.path.join(long_dir, "orch-role-pr2-review-with-a-long-name.launch.yaml")
+        with open(long_spec, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\nrole: orchestrator\ntitle: long name contract launch\nrepo: osnoser1/agent-orchestration\nbrief: brief.md\n"
+                "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\n"
+                "workspace: {strategy: worktree, base: origin/main, children: shared}\n"
+            )
+        long_repo_spec = os.path.join(long_dir, "implementer-with-a-very-long-repository-basename.launch.yaml")
+        with open(long_repo_spec, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\nrole: implementer\ntitle: long repo contract launch\nrepo: osnoser1/a-very-long-repository-basename-for-tests\n"
+                "brief: brief.md\nrubric: {size: 1, uncertainty: 1, deps: 0, consequences: 0, verification: 0, coordination: 0}\n"
+            )
+        launch_avail = "claudeAgent:claude-opus-5-5," + avail.partition(",")[2]
+        long_avail = "claudeAgent_claude_extra:claude-opus-5-5," + avail.partition(",")[2]
+        return [
+            Case(
+                ["launch", ok_spec, "--no-probe", "--available", launch_avail, *w.common(assets)],
+                9, ORCH_FINAL, last="ex39", env=w.env, cwd=w.dir,
+                shows=("role: orchestrator", "requested: claudeAgent:claude-opus-5-5@high", "payload:", "log: orch.py log"),
+            ),
+            Case(
+                ["launch", long_spec, "--no-probe", "--available", long_avail, *w.common(assets)],
+                9, ORCH_FINAL, last="ex39", env=w.env, cwd=w.dir,
+                shows=("requested: claudeAgent_claude_extra:claude-opus-5-5@high", "log: orch.py log"),
+            ),
+            Case(  # medium effort + long instance id + long repo: the log: line still fits (optional flags dropped, noted)
+                ["launch", long_repo_spec, "--no-probe", "--available", "claudeAgent_claude_extra:claude-opus-5-5", *w.common(assets)],
+                9, ORCH_FINAL, env=w.env, cwd=w.dir,
+                shows=("requested: claudeAgent_claude_extra:claude-opus-5-5@medium", "log: orch.py log"),
+            ),
+            Case(["launch", bad_spec, "--no-probe", *w.common(assets)], 13, CHECK_FINAL, rc=1, last="extra14", env=w.env, cwd=w.dir),
         ]
 
     def scope_cases(self, w):
