@@ -3559,8 +3559,8 @@ def _scope(root, **kw):
     return rc, {k: v for k, _, v in (ln.partition(": ") for ln in lines)}, lines
 
 
-def _hist(ledger, assets=None, ref=None, last=None, full=True):
-    return _Args(ledger=ledger, assets=assets, ref=ref, last=last, now="2026-11-20T21:00:00Z", full=full)
+def _hist(ledger, assets=None, ref=None, last=None, full=True, role=None):
+    return _Args(ledger=ledger, assets=assets, ref=ref, last=last, now="2026-11-20T21:00:00Z", full=full, role=role)
 
 
 class TestHistoryCommand(unittest.TestCase):
@@ -3601,6 +3601,23 @@ class TestHistoryCommand(unittest.TestCase):
             "PR-9: no ledger entry; pending ui-review",
             "ok: 3 ref(s); 2 pending follow-up(s); 1 ledger entry has no ref (log with --ref to track them)",
         ])
+
+    def test_other_role_select_keeps_the_implementer_attempt(self):
+        self.write_ledger([
+            {"event": "select", "ref": "PR-42", "provider": "claude", "model": "claude-opus-5-5", "effort": "high"},
+            {"event": "complete", "ref": "PR-42", "provider": "claude", "model": "claude-opus-5-5", "effort": "high",
+             "outcome": "ok", "findings": 1},
+            {"event": "select", "ref": "PR-42", "role": "reviewer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "high"},
+        ])
+        _, lines = self.history(ref="PR-42")
+        self.assertEqual(lines, [
+            "PR-42: codex:gpt-6-2-sol @ high; reviewer none; open; role reviewer",
+            "PR-42: claude:claude-opus-5-5 @ high; reviewer none; ok, 1 finding(s)",
+            "ok: 1 ref(s); 0 pending follow-up(s)",
+        ])
+        _, lines = self.history(ref="PR-42", role="implementer")
+        self.assertEqual(lines[0], "PR-42: claude:claude-opus-5-5 @ high; reviewer none; ok, 1 finding(s)")
+        self.assertEqual(lines[-1], "ok: 1 ref(s); 0 pending follow-up(s)")
 
     def test_ref_filter_and_last(self):
         _, lines = self.history(ref="PR-1")
@@ -4477,7 +4494,7 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
             lines[-1],
             "action: launch the orchestrator on antigravity/gemini-4-argon @ high; "
             "climb the ladder only on an escalation trigger (references/selection.md); "
-            "ask the user before the provider switch",
+            "ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>",
         )
 
     def test_select_orchestrator_defaults_max_effort_cap_and_max_escalations(self):

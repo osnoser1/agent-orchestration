@@ -1606,6 +1606,7 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
         f"launch the orchestrator on {_cand_ref(same_rungs[0])}; "
         "climb the ladder only on an escalation trigger (references/selection.md)"
         + ("; ask the user before the provider switch" if switch_rung else "")
+        + "; log it with --role orchestrator --rubric <rubric>"
     )
     return 0
 
@@ -3295,7 +3296,12 @@ def log_cmd(a):
 
 
 def read_ledger_refs(ledger_path):
-    """`(runs, unreferenced)` from the ledger: per ref the latest attempt (a `select` starts a new one, dropping the earlier completion and reviewer) and its file position."""
+    """`(runs, unreferenced)` from the ledger: per `(ref, role)` the latest attempt and its file position.
+
+    A `select` starts a new attempt only for its own role (dropping that role's earlier completion and reviewer), so a
+    reviewer or orchestrator logged under the item's ref never hides the implementer's outcome. Entries without `role`
+    count as `implementer`.
+    """
     runs, unreferenced = {}, 0
     try:
         with open(ledger_path, encoding="utf-8") as fh:
@@ -3310,9 +3316,10 @@ def read_ledger_refs(ledger_path):
                 if not isinstance(ref, str) or not ref.strip():
                     unreferenced += 1
                     continue
-                r = runs.setdefault(_clean_ref(ref), {})
+                role = e.get("role") if e.get("role") in VALID_ROLES else "implementer"
+                r = runs.setdefault((_clean_ref(ref), role), {})
                 r["pos"] = pos
-                if e.get("event") == "select":  # a new attempt (retry, other model) starts clean
+                if e.get("event") == "select":  # a new attempt (retry, other model) of this role starts clean
                     r.pop("complete", None)
                     r.pop("reviewer", None)
                 if e.get("event") in ("select", "complete"):
@@ -3324,8 +3331,8 @@ def read_ledger_refs(ledger_path):
     return runs, unreferenced
 
 
-def history_line(ref, run, followups):
-    """One line per ref: implementer, reviewer, outcome, findings, provisional flag, pending follow-up kinds."""
+def history_line(ref, run, followups, role="implementer"):
+    """One line per ref and role: model, reviewer, outcome, findings, provisional flag, pending follow-up kinds."""
     sel, done = run.get("select") or {}, run.get("complete") or {}
     who = sel or done
     parts = [f"{who.get('provider')}:{who.get('model')} @ {who.get('effort')}" if who else "no select logged"]
@@ -3340,8 +3347,7 @@ def history_line(ref, run, followups):
         parts.append("provisional")
     if followups:
         parts.append("pending " + ", ".join(str(fu.get("kind", "review")) for fu in followups))
-    role = sel.get("role") or done.get("role")
-    if role and role != "implementer":
+    if role != "implementer":
         parts.append(f"role {role}")
     if sel.get("mismatch") or done.get("mismatch"):
         parts.append("effective differs")
@@ -3364,21 +3370,24 @@ def history_cmd(a):
     for fu in (assets or {}).get("followups") or []:
         if isinstance(fu, dict) and fu.get("ref") is not None:
             pending.setdefault(_clean_ref(str(fu["ref"])), []).append(fu)
-    refs = sorted(runs, key=lambda r: runs[r]["pos"], reverse=True)  # most recent first
+    keys = sorted(runs, key=lambda k: runs[k]["pos"], reverse=True)  # (ref, role), most recent first
     if want:
-        refs = [r for r in refs if r == want]
+        keys = [k for k in keys if k[0] == want]
     if want_role:
-        refs = [
-            r for r in refs
-            if ((runs[r].get("select") or {}).get("role") or (runs[r].get("complete") or {}).get("role") or "implementer") == want_role
-        ]
+        keys = [k for k in keys if k[1] == want_role]
     if last is not None:
-        refs = refs[: max(last, 0)]
-    lines = [history_line(r, runs[r], pending.get(r)) for r in refs]
-    shown = set(refs)  # pending follow-ups are counted for the refs listed below
+        keys = keys[: max(last, 0)]
+    shown = []  # refs whose pending follow-ups are listed (once, on the ref's most recent line)
+    lines = []
+    for ref, role in keys:
+        fus = pending.get(ref) if ref not in shown else None
+        if ref not in shown:
+            shown.append(ref)
+        lines.append(history_line(ref, runs[(ref, role)], fus, role))
+    logged = {k[0] for k in runs}
     for ref in sorted(pending):  # follow-ups whose item has no ledger entry
-        if ref not in runs and (not want or ref == want) and last is None and not want_role:
-            shown.add(ref)
+        if ref not in logged and (not want or ref == want) and last is None and not want_role:
+            shown.append(ref)
             lines.append(f"{ref}: no ledger entry; pending " + ", ".join(str(fu.get("kind", "review")) for fu in pending[ref]))
     if want and not lines:
         print(f"error: no ledger entry or follow-up for ref {want}")
@@ -3387,7 +3396,7 @@ def history_cmd(a):
     for line in _capped(lines):
         print(line)
     n_pending = sum(len(v) for k, v in pending.items() if k in shown)
-    tail = f"ok: {len(lines)} ref(s); {n_pending} pending follow-up(s)"
+    tail = f"ok: {len(shown)} ref(s); {n_pending} pending follow-up(s)"  # one line per ref and role
     if unreferenced and not want:
         tail += f"; {unreferenced} ledger entr{'y has' if unreferenced == 1 else 'ies have'} no ref (log with --ref to track them)"
     print(tail)
