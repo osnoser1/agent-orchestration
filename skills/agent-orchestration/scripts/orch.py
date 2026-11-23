@@ -1197,12 +1197,38 @@ def choose_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on
     return pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low), None
 
 
+def bad_available_entries(pairs):
+    """`--available` entries that are not one `provider:model` pair (no provider, empty part, or several pairs joined by spaces)."""
+    bad = []
+    for pair in pairs:
+        prov, sep, mid = pair.partition(":")
+        if not sep or not prov.strip() or not mid.strip() or re.search(r"\s\S+:", mid):
+            bad.append(pair)
+    return bad
+
+
+def resolve_implementer(catalog, impl_id):
+    """Catalog model for `--implementer`: a model id, name, or alias, optionally prefixed `provider:` or `provider/` as select prints it."""
+    names = _catalog_name_map(catalog)
+    by_id = {norm(x["id"]): x for x in catalog["models"]}
+    tries = [impl_id]
+    for sep in (":", "/"):
+        if sep in impl_id:
+            tries.append(impl_id.split(sep, 1)[1])
+    for t in tries:
+        t = t.split(" @ ")[0].strip()
+        mid = names.get(norm(t))
+        if mid and norm(mid) in by_id:
+            return by_id[norm(mid)]
+    return None
+
+
 def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage", assets_exists=False):
     """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
-    m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
+    m = resolve_implementer(catalog, impl_id)
     if not m:
         _detail(f"implementer {impl_id}: not in catalog")
-        _action(f"fix the --implementer id ({impl_id} is not in the catalog) and rerun select")
+        _action(f"fix the --implementer id ({impl_id} is not in the catalog; pass the implementing model id, e.g. gpt-6.2-sol) and rerun select; dispatch only the reviewer its action line names")
         return 1
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
@@ -1274,6 +1300,11 @@ def select(a):
     floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     tier = TIER[a.complexity][a.risk]
     avail = [x.strip() for x in a.available.split(",") if x.strip()]
+    bad = bad_available_entries(avail)
+    if bad:
+        print("note: --available entries are not provider:model: " + ", ".join(_capped(bad)))
+        _action("fix --available (comma-separated provider:model pairs from discovery, e.g. codex:gpt-6.2-sol) and rerun select; dispatch only the model its action line names")
+        return 1
     prefer_family = _opt_str(a, "prefer_family")
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
     below_tier_mode = _opt_str(a, "below_tier") or prefs.get("below_tier") or "stage"

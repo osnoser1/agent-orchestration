@@ -3328,7 +3328,7 @@ class TestSelectActionLine(unittest.TestCase):
     def test_unknown_implementer_asks_for_a_fix(self):
         self.sel(
             CLAUDE_LOW_API, "codex:gpt-6-2-sol", 1,
-            "action: fix the --implementer id (nope is not in the catalog) and rerun select",
+            "action: fix the --implementer id (nope is not in the catalog; pass the implementing model id, e.g. gpt-6.2-sol) and rerun select; dispatch only the reviewer its action line names",
             implementer="nope",
         )
 
@@ -4277,6 +4277,51 @@ class TestRepoPolicy(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("error: assets compat: removed in 0.14.0", out)
         self.assertIn("delete the key", out)
+
+
+class TestSelectIdFormats(unittest.TestCase):
+    """select accepts the ids discovery and its own output use, and rejects malformed --available before ranking."""
+
+    AVAIL = "codex:gpt-6.2-sol,claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,claudeAgent:claude-fable-5-2"
+
+    def setUp(self):
+        self.catalog = orch.load_file(CATALOG_PATH)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.assets = os.path.join(self.tmp.name, "assets.yaml")
+        with open(self.assets, "w", encoding="utf-8") as fh:
+            fh.write("providers:\n  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-24T10:00:00Z\n")
+
+    def select(self, available, implementer=None):
+        args = _Args(complexity="standard", risk="medium", available=available, implementer=implementer, assets=self.assets,
+                     now="2026-11-23T14:00:00Z", catalog=None, ui=False, prefer_family=None, fallback=None, below_tier=None,
+                     ref=None, fail_on_low=False, full=False)
+        return _run_orch(orch.select, args)
+
+    def test_resolve_implementer_forms(self):
+        for given in ("gpt-6.2-sol", "gpt-6-2-sol", "codex:gpt-6.2-sol", "codex/gpt-6-2-sol @ medium", "GPT-6.2 Sol"):
+            m = orch.resolve_implementer(self.catalog, given)
+            self.assertIsNotNone(m, given)
+            self.assertEqual(m["id"], "gpt-6-2-sol", given)
+        self.assertIsNone(orch.resolve_implementer(self.catalog, "no-such-model"))
+
+    def test_provider_prefixed_implementer_picks_non_emergency_reviewer(self):
+        rc, out = self.select(self.AVAIL, implementer="codex:gpt-6.2-sol")
+        self.assertEqual(rc, 0, out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(last, "action: dispatch reviewer claudeAgent/claude-sonnet-5-5 @ high now")
+        self.assertNotIn("fable", last)
+
+    def test_bad_available_entries(self):
+        self.assertEqual(orch.bad_available_entries(["codex:gpt-6.2-sol", "claude-sonnet-5-5", "a:b c:d", ":x", "p:"]),
+                         ["claude-sonnet-5-5", "a:b c:d", ":x", "p:"])
+
+    def test_malformed_available_errors_before_ranking(self):
+        for avail in ("claude-sonnet-5-5,claudeAgent:claude-opus-5-5", "claudeAgent:claude-sonnet-5-5 claudeAgent:claude-opus-5-5"):
+            rc, out = self.select(avail, implementer="gpt-6.2-sol")
+            self.assertEqual(rc, 1, out)
+            self.assertNotIn("research", out)
+            self.assertTrue(out.strip().splitlines()[-1].startswith("action: fix --available"), out)
 
 
 if __name__ == "__main__":
