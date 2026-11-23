@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.16.0"
+  version: "0.17.0"
 ---
 
 # Agent orchestration
@@ -28,12 +28,12 @@ Score the rubric in `references/selection.md` and run `scripts/orch.py classify`
 ## 3. Choose model + effort
 Run `scripts/orch.py select` (`--role implementer|reviewer|orchestrator`, `references/selection.md`) and follow its final `action:` line. Without Python, apply `references/selection.md`. When the user holds a batch until a provider renews, or `select` stages or holds work on renewal, record a `resume` follow-up and schedule its wakeup (`references/selection.md`, `references/supervision.md`). Apply model `quirks` (`catalog.yaml`, `references/harnesses.md`). Follow Step 7 before spending gated models/efforts/APIs, opening a new top-level conversation, or proceeding under `preferences.ui_fallback: ask`. Log each selection with its `--role` (`scripts/orch.py log --event select`, `references/improvement.md`). Orchestrator conversations: `select --role orchestrator` (`references/selection.md`). Models a plan names ahead are tentative: repeat this step for each role when its step starts, after a fresh `probe`.
 
-*Done when*: a primary `provider / model @ effort` (or staged Phase 1 + Phase 2 target), delegation surface, and (for reviewed work) a reviewer from `references/selection.md` are selected at their step starts (held only when `select` says to hold or ask, or the user holds the work) with quirks noted and logged.
+*Done when*: a primary `provider / model @ effort` (or staged Phase 1 + Phase 2 target), delegation surface, and (for reviewed work) a reviewer from `references/selection.md` are selected at step start (held only when `select` says hold or ask, or the user holds work) with quirks noted and logged.
 
 ## 4. Brief
-Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md`. Name the active phase's skills or commands from repo policy (`references/repo-policy.md`) explicitly and include proportional evidence and checkpoint triggers (`references/verification.md`). For staged work (`preferences.below_tier: stage`, `references/selection.md`) and multi-item batches, persist user-local durable state. Start the supervision loop for non-notifying children, and act on each completion notice in the same turn (`references/supervision.md`). Require every report to close with `## Obstacles / not verified`.
+Send one outcome per worker on the chosen surface (`references/harnesses.md`) using `references/brief-template.md`; after dispatch, verify requested vs effective model/effort (`references/orchestrator-launch.md`). Name the active phase's skills or commands from repo policy (`references/repo-policy.md`) explicitly and include proportional evidence and checkpoint triggers (`references/verification.md`). For staged work (`preferences.below_tier: stage`, `references/selection.md`) and multi-item batches, persist user-local durable state. Start the supervision loop for non-notifying children, and act on each completion notice in the same turn (`references/supervision.md`). Require every report to close with `## Obstacles / not verified`.
 
-*Done when*: the brief carries all known facts, any staged `PHASE` boundary, explicit repo phase skills/commands, proportional verification and checkpoint rules, doc review-loop instructions when applicable, and the closing section; staged runs and multi-item batches have user-local durable state, and every non-notifying child has an active supervision loop.
+*Done when*: the brief carries all known facts, any staged `PHASE` boundary, explicit repo phase skills/commands, proportional verification and checkpoint rules, doc review-loop instructions when applicable, and the closing section; requested vs effective model/effort is verified, staged runs and multi-item batches have user-local durable state, and every non-notifying child has an active supervision loop.
 
 ## 5. Quality gates
 1. **Red→green evidence**: require failing repro/test output before the fix and passing output after, scaled to the user's and repo's evidence priorities (`references/verification.md`).
@@ -63,8 +63,9 @@ Execute routine orchestration choices (including in-place model switches, staged
 
 ## References (load on demand)
 - `references/selection.md` — classification rubric, tier floors, risk triggers, effort knee, quota pools and tie-break order, orchestrator ladder, UI/UX and preferred-family fallback (`ui_fallback`), below-tier staging (`below_tier`), follow-up kinds and due rule, reviewer timing and fallback order, review gate.
-- `references/supervision.md` — conflict-aware batching, deferred launch on provider renewal, failure-mode retries, confirm-stop before replacement, user-local durable state, completion notices, recurring supervision loop for non-notifying children, and idempotent child messages.
-- `references/verification.md` — proportional evidence (`evidence`), scope check before review, agent-facing doc review, design checkpoints (`design_checkpoints`), final check before landing, single rerun for known infrastructure failures, and merge-state check for unstarted PR checks.
+- `references/orchestrator-launch.md` — launch spec (`*.launch.yaml`), `orch.py launch` payload/header, and post-launch requested-vs-effective check.
+- `references/supervision.md` — conflict-aware batching, deferred launch on provider renewal, failure-mode retries, confirm-stop before replacement, user-local durable state, completion notices, recurring supervision loop, and idempotent child messages.
+- `references/verification.md` — proportional evidence (`evidence`), scope check, agent-facing doc review, design checkpoints (`design_checkpoints`), pre-landing check, single rerun for known infra failures, and merge-state check for unstarted PR checks.
 - `references/repo-policy.md` — repo policy contract, precedence, and brief forwarding.
 - `references/harnesses.md` — delegation surface (`subagent` vs `conversation`), in-place model switching and scheduled resume on quota exhaustion, and alphabetical harness matrix.
 - `references/brief-template.md` — delegation brief layout, doc review-loop rule, and mandatory report sections.

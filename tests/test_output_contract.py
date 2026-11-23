@@ -155,6 +155,7 @@ class OrchContract(unittest.TestCase):
             ],
         }
         cases["select"] += self.select_scenarios(w)
+        cases["launch"] = self.launch_cases(w, assets, avail)
         cases["followups"] = [Case(["followups", "--due", "--available", "claude:claude-opus-5-5", *w.common(assets)], 3, ORCH_FINAL,
                                    last="item-29", env=env, cwd=w.dir)]
         cases["log"] = [Case(["log", "--complexity", "standard", "--risk", "low", "--provider", "claude", "--model", "claude-opus-5-5",
@@ -238,6 +239,28 @@ class OrchContract(unittest.TestCase):
             case(base(exhausted, both, "--complexity", "hard", "--risk", "high", "--below-tier", "proceed", "--implementer", "gpt-6-2-sol", "--ref", "a-rev-proceed-wait"), 4,
                  r"^action: hold the review until \S+; follow-up (?:recorded|in place): schedule its wakeup$",
                  "followup recorded: [resume] a-rev-proceed-wait"),
+        ]
+
+    def launch_cases(self, w, assets, avail):
+        w.write("GOAL: Contract test brief.\n", "brief.md")
+        ok_spec = w.write(
+            "version: 1\nrole: orchestrator\ntitle: contract launch\nbrief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\n"
+            "workspace: {strategy: worktree, base: origin/main, children: shared}\n",
+            "ok.launch.yaml",
+        )
+        bad_lines = ["version: 2", "role: bad", "brief: no-such.md", "rubric: {}", "workspace: {strategy: bad}"]
+        for i in range(15):
+            bad_lines.append("extra%02d: 1" % i)
+        bad_spec = w.write("\n".join(bad_lines) + "\n", "bad.launch.yaml")
+        launch_avail = "claudeAgent:claude-opus-5-5," + avail.partition(",")[2]
+        return [
+            Case(
+                ["launch", ok_spec, "--no-probe", "--available", launch_avail, *w.common(assets)],
+                8, ORCH_FINAL, last="ex39", env=w.env, cwd=w.dir,
+                shows=("role: orchestrator", "requested: claudeAgent:claude-opus-5-5@high", "payload:"),
+            ),
+            Case(["launch", bad_spec, "--no-probe", *w.common(assets)], 13, CHECK_FINAL, rc=1, last="extra14", env=w.env, cwd=w.dir),
         ]
 
     def scope_cases(self, w):

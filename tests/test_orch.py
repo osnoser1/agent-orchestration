@@ -4882,5 +4882,280 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         self.assertIn("P:M@E", help_out)
 
 
+class TestLaunchSpec(unittest.TestCase):
+    """`orch.py launch <spec>`: validation, effort option keys, harness model ids, headers, overrides, roles, non-dispatch."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.assets = os.path.join(self.tmp.name, "assets.yaml")
+        _write(
+            self.assets,
+            "version: 1\nproviders:\n"
+            "  - id: antigravity\n    policy: normal\n    status: ok\n"
+            "  - id: claudeAgent\n    policy: normal\n    status: ok\n"
+            "  - id: codex\n    policy: spend-first\n    status: ok\n",
+        )
+        self.brief = os.path.join(self.tmp.name, "brief.md")
+        _write(self.brief, "GOAL: Ship the orchestrator launch spec.\n")
+
+    def _launch(self, spec_text, name="task.launch.yaml", available=None, out=None, assets=None, full=False, no_probe=True):
+        spec_path = os.path.join(self.tmp.name, name)
+        _write(spec_path, spec_text)
+        args = _Args(
+            available=available,
+            no_probe=no_probe,
+            out=out,
+            assets=assets or self.assets,
+            catalog=CATALOG_PATH,
+            now="2026-11-20T21:00:00Z",
+            full=full,
+        )
+        args.spec = spec_path
+        return _run(orch.launch_cmd, args)
+
+    def test_validation_collects_multiple_errors_in_one_run(self):
+        bad_spec = (
+            "version: 1\n"
+            "unknown_top: 123\n"
+            "role: reviewer\n"
+            "brief: missing-brief.md\n"
+            "rubric: {size: 2, uncertainty: 5}\n"
+            "ladder: [not-a-pme]\n"
+            "available: [codex:gpt-6.2-sol]\n"
+            "workspace: {strategy: worktree, children: invalid_child}\n"
+            "caps: {max_escalations: 4, max_children_per_pool: -1, budget: {codex: -2}}\n"
+        )
+        rc, out = self._launch(bad_spec, name="broken.launch.yaml")
+        self.assertEqual(rc, 1, out)
+        lines = out.strip().splitlines()
+        for expected in (
+            "unknown_top",
+            "brief",
+            "rubric",
+            "ladder",
+            "implementer",
+            "workspace.base",
+            "workspace.children",
+            "caps.max_escalations",
+            "caps.max_children_per_pool",
+            "caps.budget",
+        ):
+            self.assertIn(expected, out)
+        self.assertTrue(lines[-1].endswith("action: fix " + os.path.join(self.tmp.name, "broken.launch.yaml") + " and rerun launch"), lines[-1])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "broken.payload.json")))
+
+        # Empty brief file and bad role also flagged
+        empty_brief = os.path.join(self.tmp.name, "empty.md")
+        _write(empty_brief, "   \n")
+        rc2, out2 = self._launch(
+            "version: 1\nrole: boss\nbrief: empty.md\n"
+            "rubric: {size: 1, uncertainty: 1, deps: 1, consequences: 1, verification: 1, coordination: 1}\n"
+            "available: [codex:gpt-6.2-sol]\nworkspace: {strategy: existing_worktree}\n",
+            name="bad2.launch.yaml",
+        )
+        self.assertEqual(rc2, 1, out2)
+        self.assertIn("role", out2)
+        self.assertIn("empty.md", out2)
+        self.assertIn("worktree_path", out2)
+
+    def test_orchestrator_payload_codex_service_tier_harness_id_and_header(self):
+        spec = (
+            "version: 1\n"
+            "role: orchestrator\n"
+            'title: "agent-orchestration: orchestrator role PRs"\n'
+            "repo: osnoser1/agent-orchestration\n"
+            "brief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\n"
+            "ladder: auto\n"
+            "available: [codex:gpt-6.2-sol, claudeAgent:claude-opus-5-5]\n"
+            "workspace: {strategy: worktree, base: origin/main, children: shared}\n"
+            "caps: {max_escalations: 2, max_children_per_pool: 2, budget: {antigravity: 10, claudeAgent: 4}}\n"
+        )
+        rc, out = self._launch(spec, name="orch.launch.yaml")
+        self.assertEqual(rc, 0, out)
+        payload_path = os.path.join(self.tmp.name, "orch.payload.json")
+        self.assertTrue(os.path.isfile(payload_path))
+        self.assertIn("role: orchestrator · hard/medium · tier T3 (coordination 2)", out)
+        self.assertIn("requested: codex:gpt-6.2-sol@medium", out)
+        self.assertIn("ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high ; provider switch: claudeAgent/claude-opus-5-5 @ high", out)
+        self.assertIn(f"payload: {payload_path}", out)
+        self.assertIn(
+            "log --event select --role orchestrator --rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 "
+            "--requested codex:gpt-6.2-sol@medium --effective <what it reports>",
+            out.strip().splitlines()[-1],
+        )
+
+        with open(payload_path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        self.assertEqual(payload["title"], "agent-orchestration: orchestrator role PRs")
+        self.assertEqual(
+            payload["modelSelection"],
+            {
+                "instanceId": "codex",
+                "model": "gpt-6.2-sol",
+                "options": [
+                    {"id": "reasoningEffort", "value": "medium"},
+                    {"id": "serviceTier", "value": "default"},
+                ],
+            },
+        )
+        self.assertEqual(
+            payload["workspaceStrategy"],
+            {"type": "worktree", "baseRef": "origin/main", "startFromOrigin": True},
+        )
+        self.assertEqual(
+            payload["clientRequestId"],
+            "launch-agent-orchestration-orchestrator-role-prs-codex-gpt-6.2-sol-medium",
+        )
+        msg = payload["message"]
+        header, sep, body = msg.partition("\n\n")
+        self.assertEqual(sep, "\n\n")
+        self.assertEqual(body, "GOAL: Ship the orchestrator launch spec.\n")
+        hlines = header.splitlines()
+        self.assertTrue(all(len(l) <= 200 for l in hlines), header)
+        self.assertEqual(
+            hlines,
+            [
+                "ORCHESTRATOR — repeat this block, updated, at every phase boundary",
+                "model: codex/gpt-6.2-sol @ medium (rung 1 of 2)",
+                "ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high",
+                "provider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high",
+                "escalate on: outcome rework | 3+ review findings your brief did not flag | a child's STATUS: ESCALATE; at most 2 escalations; never step down mid-phase",
+                "caps: children per pool 2; budget antigravity 10, claudeAgent 4",
+                "workspace: worktree from origin/main; children shared",
+                "rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)",
+                "verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)",
+            ],
+        )
+
+    def test_implementer_and_reviewer_option_keys_and_headers(self):
+        # Implementer on antigravity -> thought_level, no ladder/switch/escalate lines
+        impl_spec = (
+            "version: 1\n"
+            "role: implementer\n"
+            'title: "impl worker"\n'
+            "brief: brief.md\n"
+            "rubric: {size: 1, uncertainty: 1, deps: 1, consequences: 0, verification: 0, coordination: 0}\n"
+            "available: [antigravity:gemini-4-neon]\n"
+            "workspace: {strategy: root}\n"
+        )
+        out_impl = os.path.join(self.tmp.name, "custom-impl.json")
+        rc, out = self._launch(impl_spec, name="impl.launch.yaml", out=out_impl)
+        self.assertEqual(rc, 0, out)
+        with open(out_impl, encoding="utf-8") as fh:
+            p_impl = json.load(fh)
+        self.assertEqual(
+            p_impl["modelSelection"],
+            {"instanceId": "antigravity", "model": "gemini-4-neon", "options": [{"id": "thought_level", "value": "low"}]},
+        )
+        self.assertEqual(p_impl["workspaceStrategy"], {"type": "root"})
+        h_impl = p_impl["message"].partition("\n\n")[0].splitlines()
+        self.assertEqual(h_impl[0], "IMPLEMENTER — repeat this block, updated, at every phase boundary")
+        self.assertEqual(h_impl[1], "model: antigravity/gemini-4-neon @ low")
+        for forbidden in ("ladder:", "provider switch", "escalate on:", "caps:"):
+            self.assertFalse(any(l.startswith(forbidden) for l in h_impl), h_impl)
+
+        # Reviewer on claudeAgent_claude_extra -> effort, existing_worktree
+        rev_spec = (
+            "version: 1\n"
+            "role: reviewer\n"
+            'title: "cross-family review"\n'
+            "brief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 1, deps: 1, consequences: 1, verification: 1, coordination: 1}\n"
+            "implementer: antigravity:gemini-4-neon\n"
+            "available: [antigravity:gemini-4-neon, claudeAgent_claude_extra:claude-opus-5-5]\n"
+            "workspace: {strategy: existing_worktree, worktree_path: /tmp/wt}\n"
+        )
+        rc_r, out_r = self._launch(rev_spec, name="rev.launch.yaml")
+        self.assertEqual(rc_r, 0, out_r)
+        with open(os.path.join(self.tmp.name, "rev.payload.json"), encoding="utf-8") as fh:
+            p_rev = json.load(fh)
+        self.assertEqual(
+            p_rev["modelSelection"],
+            {"instanceId": "claudeAgent_claude_extra", "model": "claude-opus-5-5", "options": [{"id": "effort", "value": "high"}]},
+        )
+        self.assertEqual(p_rev["workspaceStrategy"], {"type": "existing_worktree", "worktreePath": "/tmp/wt"})
+        h_rev = p_rev["message"].partition("\n\n")[0].splitlines()
+        self.assertEqual(h_rev[0], "REVIEWER — repeat this block, updated, at every phase boundary")
+
+        # Unknown provider without effort_key fails with clear error; setting effort_key in assets succeeds
+        unk_spec = (
+            "version: 1\nrole: implementer\ntitle: unk\nbrief: brief.md\n"
+            "rubric: {size: 1, uncertainty: 0, deps: 0, consequences: 0, verification: 0, coordination: 0}\n"
+            "available: [customProv:gemini-4-neon]\nworkspace: {strategy: root}\n"
+        )
+        rc_u, out_u = self._launch(unk_spec, name="unk.launch.yaml")
+        self.assertEqual(rc_u, 1, out_u)
+        self.assertIn("no effort option key for customProv: set effort_key on it in assets.yaml", out_u)
+
+        ap_custom = os.path.join(self.tmp.name, "custom-assets.yaml")
+        _write(ap_custom, "version: 1\nproviders:\n  - id: customProv\n    effort_key: custom_effort\n    status: ok\n")
+        rc_u2, out_u2 = self._launch(unk_spec, name="unk.launch.yaml", assets=ap_custom)
+        self.assertEqual(rc_u2, 0, out_u2)
+        with open(os.path.join(self.tmp.name, "unk.payload.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["modelSelection"]["options"], [{"id": "custom_effort", "value": "low"}])
+
+    def test_spec_ladder_and_max_escalations_override_preferences(self):
+        ap = os.path.join(self.tmp.name, "prefs-orch.yaml")
+        _write(
+            ap,
+            "version: 1\npreferences:\n  orchestrator:\n"
+            "    max_escalations: 2\n"
+            "    ladder: [antigravity:gemini-4-argon@high, antigravity:gemini-4-neon@medium, antigravity:gemini-4-neon@high]\n"
+            "providers:\n  - id: antigravity\n    status: ok\n  - id: codex\n    status: ok\n",
+        )
+        spec = (
+            "version: 1\nrole: orchestrator\ntitle: override\nbrief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 1, deps: 1, consequences: 1, verification: 1, coordination: 2}\n"
+            "ladder: [codex:gpt-6.2-sol@medium, codex:gpt-6.2-sol@high, antigravity:gemini-4-neon@high]\n"
+            "caps: {max_escalations: 0}\n"
+            "workspace: {strategy: worktree, base: main}\n"
+        )
+        # CLI --available overrides spec available; max_escalations=0 caps same-provider ladder to 1 rung; base=main has startFromOrigin=False
+        rc, out = self._launch(
+            spec,
+            name="ovr.launch.yaml",
+            available="codex:gpt-6.2-sol,antigravity:gemini-4-neon",
+            assets=ap,
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("requested: codex:gpt-6.2-sol@medium", out)
+        self.assertIn("ladder: codex/gpt-6.2-sol @ medium ; provider switch: antigravity/gemini-4-neon @ high", out)
+        with open(os.path.join(self.tmp.name, "ovr.payload.json"), encoding="utf-8") as fh:
+            payload = json.load(fh)
+        self.assertEqual(payload["workspaceStrategy"], {"type": "worktree", "baseRef": "main", "startFromOrigin": False})
+        self.assertIn("model: codex/gpt-6.2-sol @ medium (rung 1 of 1)", payload["message"])
+        self.assertIn("at most 0 escalations", payload["message"])
+
+    def test_non_dispatch_outcome_exits_3_and_writes_no_payload(self):
+        ap_ex = os.path.join(self.tmp.name, "ex-assets.yaml")
+        _write(
+            ap_ex,
+            "version: 1\nproviders:\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-25T00:00:00+00:00\n",
+        )
+        spec = (
+            "version: 1\nrole: orchestrator\ntitle: blocked\nbrief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\n"
+            "available: [codex:gpt-6.2-sol]\nworkspace: {strategy: root}\n"
+        )
+        rc, out = self._launch(spec, name="blocked.launch.yaml", assets=ap_ex)
+        self.assertEqual(rc, 3, out)
+        self.assertIn("action: run select --role orchestrator --coordination 2 --available codex:gpt-6.2-sol and follow its action line; launch only resolves a dispatchable model", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "blocked.payload.json")))
+
+        # Implementer that would stage (tier-meeting exhausted, below-tier available) also exits 3 and writes no payload
+        impl_stage = (
+            "version: 1\nrole: implementer\ntitle: stage-blocked\nbrief: brief.md\n"
+            "rubric: {size: 2, uncertainty: 2, deps: 2, consequences: 2, verification: 1, coordination: 0}\n"
+            "available: [codex:gpt-6.2-sol, antigravity:gemini-4-argon]\nworkspace: {strategy: root}\n"
+        )
+        rc2, out2 = self._launch(impl_stage, name="stage.launch.yaml", assets=ap_ex)
+        self.assertEqual(rc2, 3, out2)
+        self.assertIn("launch only resolves a dispatchable model", out2)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "stage.payload.json")))
+
+
 if __name__ == "__main__":
     unittest.main()

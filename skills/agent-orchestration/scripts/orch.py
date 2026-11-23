@@ -8,6 +8,7 @@
                     --available provider:model[,provider:model...] [--ui] [--prefer-family F]
                     [--fallback proceed|defer|ask] [--below-tier stage|wait|proceed]
                     [--ref TEXT] [--fail-on-low] [--implementer M] [--catalog F] [--assets F] [--now ISO]
+  orch.py launch    <spec> [--available provider:model[,...]] [--no-probe] [--out FILE] [--assets F] [--catalog F] [--now ISO]
   orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
                     [--available ...] [--catalog F] [--assets F] [--now ISO]
   orch.py log       --complexity C --risk R --provider P --model M --effort E
@@ -30,7 +31,7 @@ Exit codes:
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy)
   4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
 
-`probe`, `classify`, `select`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+`probe`, `classify`, `select`, `launch`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
 `check` and `policy` end with `ok: …` or `error: N problem(s); action: …`.
 Every command is compact by default: lists stop at 10 items (`… N more (rerun with --full)`), repeated notes group by
 reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
@@ -58,6 +59,8 @@ VALID_ROLES = ("implementer", "reviewer", "orchestrator")
 ORCH_TIERS_DEFAULT = {0: "T1", 1: "T2", 2: "T3"}
 ORCH_EFFORTS = ("none", "low", "medium", "high")
 RUBRIC_KEYS = ("size", "uncertainty", "deps", "consequences", "verification", "coordination")
+LAUNCH_KEYS = ("version", "role", "title", "repo", "brief", "rubric", "ladder", "implementer", "available", "workspace", "caps")
+EFFORT_KEY_PREFIXES = (("claudeAgent", "effort"), ("codex", "reasoningEffort"), ("antigravity", "thought_level"))
 VALID_FAILURE_CLASSES = ("quota", "infra", "context-cap", "tool", "unknown")
 RETRY_CLASSES = ("context-cap", "tool", "unknown")  # the only classes that count toward the retry limit
 MAX_RETRIES = 2
@@ -1411,20 +1414,27 @@ def _orchestrator_prefs(assets):
     return {"tiers": tiers, "max_effort": max_effort, "defaults": defaults, "max_escalations": max_escalations, "ladder": ladder}, notes
 
 
+def _classify_rubric(rubric, assets=None):
+    """Pure rubric math shared by `classify` and `launch`: `(complexity, risk, orch_tier, total, rubric_str)`."""
+    oprefs, _ = _orchestrator_prefs(assets)
+    total = rubric["size"] + rubric["uncertainty"] + rubric["deps"] + rubric["verification"]
+    complexity = "trivial" if total <= 1 else "standard" if total <= 3 else "hard" if total <= 6 else "frontier"
+    risk = ("low", "medium", "high")[rubric["consequences"]]
+    orch_tier = oprefs["tiers"][rubric["coordination"]]
+    rubric_str = ",".join(f"{k}={rubric[k]}" for k in RUBRIC_KEYS)
+    return complexity, risk, orch_tier, total, rubric_str
+
+
 def classify_cmd(a):
     _begin(a)
     ap = _opt_str(a, "assets") or def_assets()
     assets = load_file(ap) if os.path.exists(ap) else None
-    oprefs, _ = _orchestrator_prefs(assets)
-    total = a.size + a.uncertainty + a.deps + a.verification
-    complexity = "trivial" if total <= 1 else "standard" if total <= 3 else "hard" if total <= 6 else "frontier"
-    risk = ("low", "medium", "high")[a.consequences]
-    orch_tier = oprefs["tiers"][a.coordination]
-    rubric = ",".join(f"{k}={getattr(a, k)}" for k in RUBRIC_KEYS)
+    rubric = {k: getattr(a, k) for k in RUBRIC_KEYS}
+    complexity, risk, orch_tier, total, rubric_str = _classify_rubric(rubric, assets)
     print(f"complexity: {complexity} (size {a.size} + uncertainty {a.uncertainty} + deps {a.deps} + verification {a.verification} = {total})")
     print(f"risk: {risk} (consequences {a.consequences})")
     print(f"orchestrator: {orch_tier} (coordination {a.coordination})")
-    print(f"rubric: {rubric}")
+    print(f"rubric: {rubric_str}")
     _action(
         f"select --complexity {complexity} --risk {risk} for workers and "
         f"select --role orchestrator --coordination {a.coordination} for the orchestrator; "
@@ -1483,33 +1493,18 @@ def _eval_explicit_ladder(ladder_items, catalog, assets, avail, tier, floor, flo
     return surviving, notes
 
 
-def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_exists=False):
-    """Select an orchestrator effort/model ladder and optional cross-provider switch."""
-    if _opt_str(a, "implementer"):
-        print("error: --implementer cannot be used with --role orchestrator")
-        _action("fix select arguments (drop --implementer for --role orchestrator) and rerun select")
-        return 1
-    coord = _opt_int(a, "coordination")
-    if coord is None or coord not in (0, 1, 2):
-        print("error: --coordination 0|1|2 is required for --role orchestrator")
-        _action("fix --coordination (0|1|2 required for --role orchestrator) and rerun select")
-        return 1
+def _compute_orchestrator_ladder(
+    catalog, assets, avail, floors, coord, now, fail_on_low=False, ladder_override=None, max_escalations_override=None
+):
+    """Pure orchestrator ladder solver -> `(start_rung, same_rungs, switch_rung, notes, stop)`."""
     oprefs, pref_notes = _orchestrator_prefs(assets)
+    if ladder_override is not None:
+        oprefs = {**oprefs, "ladder": ladder_override}
+    if max_escalations_override is not None:
+        oprefs = {**oprefs, "max_escalations": max_escalations_override}
     tier, max_effort = oprefs["tiers"][coord], oprefs["max_effort"]
     floor = floors[tier]
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
-    fail_on_low, ref_arg = bool(a.fail_on_low), _opt_str(a, "ref")
-    ignored = [
-        flag for flag, present in (
-            ("--complexity", bool(_opt_str(a, "complexity"))),
-            ("--risk", bool(_opt_str(a, "risk"))),
-            ("--ui", _opt_bool(a, "ui")),
-            ("--prefer-family", bool(_opt_str(a, "prefer_family"))),
-            ("--fallback", bool(_opt_str(a, "fallback"))),
-            ("--below-tier", bool(_opt_str(a, "below_tier"))),
-        ) if present
-    ]
-    ignored_line = f"note: ignored for --role orchestrator: {', '.join(ignored)}" if ignored else None
 
     same_rungs, switch_rung, extra_notes = [], None, list(pref_notes)
     if oprefs["ladder"] != "auto":
@@ -1535,24 +1530,13 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
             saw_ex_tier, earliest_dt, resume_needs, ex_cands = exhausted_tier_candidates(
                 catalog, assets, avail, tier, floor, now, max_effort=max_effort, exclude_coordinator=True,
             )
-            if ignored_line:
-                print(ignored_line)
-            if _FULL:
-                print("NO CANDIDATE:", *extra_notes, sep="\n  ")
-            else:
-                _print_notes(extra_notes)
             if saw_ex_tier and reasons["threshold"] == 0:
                 if not resume_needs.lower().startswith("provider:") and ex_cands:
                     resume_needs = f"provider:{ex_cands[0]['provider']}/{ex_cands[0]['model']['id']}"
-                sched_iso = _schedule_resume(f"orchestrator {tier} candidates", earliest_dt)
-                rec = _record_resume(ap, _resume_ref(ref_arg, assets_exists), resume_needs, sched_iso, now, fail_on_low=fail_on_low)
-                _stop_action(4, sched_iso, recorded=rec)
-                return 4
+                return None, [], None, extra_notes, {"rc": 4, "tier": tier, "floor": floor, "earliest_dt": earliest_dt, "resume_needs": resume_needs, "cause": ""}
             if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
-                _stop_action(3, None, "", _gate_cause(reasons))
-                return 3
-            _stop_action(2, None, notes=extra_notes)
-            return 2
+                return None, [], None, extra_notes, {"rc": 3, "tier": tier, "floor": floor, "earliest_dt": None, "resume_needs": None, "cause": _gate_cause(reasons)}
+            return None, [], None, extra_notes, {"rc": 2, "tier": tier, "floor": floor, "earliest_dt": None, "resume_needs": None, "cause": ""}
 
         start_c = cands[0]
         start_prov, start_e, start_sc = start_c["provider"], start_c["effort"], start_c["score"]
@@ -1589,6 +1573,55 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
                 sc, _, c, e = max(scored)
                 switch_rung = {**c, "effort": e, "score": sc}
                 extra_notes.append(f"provider switch is not an escalation (score {sc} <= ladder top {ladder_top})")
+
+    return same_rungs[0], same_rungs, switch_rung, extra_notes, {"rc": 0, "tier": tier, "floor": floor, "max_escalations": oprefs["max_escalations"]}
+
+
+def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_exists=False):
+    """Select an orchestrator effort/model ladder and optional cross-provider switch."""
+    if _opt_str(a, "implementer"):
+        print("error: --implementer cannot be used with --role orchestrator")
+        _action("fix select arguments (drop --implementer for --role orchestrator) and rerun select")
+        return 1
+    coord = _opt_int(a, "coordination")
+    if coord is None or coord not in (0, 1, 2):
+        print("error: --coordination 0|1|2 is required for --role orchestrator")
+        _action("fix --coordination (0|1|2 required for --role orchestrator) and rerun select")
+        return 1
+    fail_on_low, ref_arg = bool(a.fail_on_low), _opt_str(a, "ref")
+    ignored = [
+        flag for flag, present in (
+            ("--complexity", bool(_opt_str(a, "complexity"))),
+            ("--risk", bool(_opt_str(a, "risk"))),
+            ("--ui", _opt_bool(a, "ui")),
+            ("--prefer-family", bool(_opt_str(a, "prefer_family"))),
+            ("--fallback", bool(_opt_str(a, "fallback"))),
+            ("--below-tier", bool(_opt_str(a, "below_tier"))),
+        ) if present
+    ]
+    ignored_line = f"note: ignored for --role orchestrator: {', '.join(ignored)}" if ignored else None
+
+    _, same_rungs, switch_rung, extra_notes, info = _compute_orchestrator_ladder(
+        catalog, assets, avail, floors, coord, now, fail_on_low=fail_on_low
+    )
+    tier, floor, stop_rc = info["tier"], info["floor"], info["rc"]
+    if stop_rc != 0:
+        if ignored_line:
+            print(ignored_line)
+        if _FULL:
+            print("NO CANDIDATE:", *extra_notes, sep="\n  ")
+        else:
+            _print_notes(extra_notes)
+        if stop_rc == 4:
+            sched_iso = _schedule_resume(f"orchestrator {tier} candidates", info["earliest_dt"])
+            rec = _record_resume(ap, _resume_ref(ref_arg, assets_exists), info["resume_needs"], sched_iso, now, fail_on_low=fail_on_low)
+            _stop_action(4, sched_iso, recorded=rec)
+            return 4
+        if stop_rc == 3:
+            _stop_action(3, None, "", info["cause"])
+            return 3
+        _stop_action(2, None, notes=extra_notes)
+        return 2
 
     print(f"orchestrator tier {tier} (>= {floor}; coordination {coord})")
     print("ladder: " + " -> ".join(_cand_ref(r) for r in same_rungs))
@@ -1890,6 +1923,327 @@ def select(a):
         f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts"
         + ("; mark it provisional (log --provisional)" if provisional else "")
         + ("; no assets file, so no follow-up was recorded: queue the preferred-model review yourself" if skipped_followup else "")
+    )
+    return 0
+
+
+# ---------- launch spec & T3 payload ----------
+_harness_mid = lambda c: c["pair"].partition(":")[2].strip()
+_launch_ref = lambda c: f"{c['provider']}/{_harness_mid(c)} @ {c['effort']}"
+
+
+def _default_payload_path(spec_path):
+    base = os.path.abspath(spec_path)
+    for ext in (".launch.yaml", ".launch.yml", ".yaml", ".yml"):
+        if base.endswith(ext):
+            return base[: -len(ext)] + ".payload.json"
+    return base + ".payload.json"
+
+
+def _effort_option_key(assets, prov):
+    p = next((x for x in (assets or {}).get("providers", []) or [] if isinstance(x, dict) and x.get("id") == prov), {})
+    ek = p.get("effort_key")
+    return ek.strip() if isinstance(ek, str) and ek.strip() else next((key for pfx, key in EFFORT_KEY_PREFIXES if prov.startswith(pfx)), None)
+
+
+def _validate_launch_spec(spec_path, cli_available, catalog):
+    if not os.path.isfile(spec_path):
+        return [f"spec file not found: {spec_path}"], None
+    try:
+        spec = load_file(spec_path)
+    except OSError as exc:
+        return [f"cannot read {spec_path}: {exc}"], None
+    if not isinstance(spec, dict) or not spec:
+        return [f"{spec_path}: must be a non-empty YAML map"], None
+
+    errs = [f"unknown top-level key {k!r}" for k in spec if k not in LAUNCH_KEYS]
+    _is_str = lambda v: isinstance(v, str) and bool(v.strip())
+    _nonneg = lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0
+    ver = spec.get("version", 1)
+    if ver is not None and (isinstance(ver, bool) or ver != 1):
+        errs.append(f"version: bad value {ver!r} (expected 1)")
+    role = spec.get("role") if isinstance(spec.get("role"), str) and spec.get("role") in VALID_ROLES else None
+    if role is None:
+        errs.append(f"role: bad value {spec.get('role')!r} (expected {'|'.join(VALID_ROLES)})")
+    for k in ("title", "repo"):
+        if spec.get(k) is not None and not _is_str(spec.get(k)):
+            errs.append(f"{k}: must be a non-empty string")
+    title = spec["title"].strip() if _is_str(spec.get("title")) else os.path.basename(spec_path)
+
+    raw_brief, brief_text = spec.get("brief"), None
+    if not _is_str(raw_brief):
+        errs.append("brief: required relative path to a non-empty brief file")
+    else:
+        bpath = raw_brief.strip() if os.path.isabs(raw_brief.strip()) else os.path.join(os.path.dirname(os.path.abspath(spec_path)), raw_brief.strip())
+        if not os.path.isfile(bpath):
+            errs.append(f"brief: file not found: {raw_brief.strip()}")
+        else:
+            try:
+                with open(bpath, encoding="utf-8") as fh:
+                    brief_text = fh.read()
+            except OSError as exc:
+                errs.append(f"brief: cannot read {raw_brief.strip()}: {exc}")
+            if brief_text is not None and not brief_text.strip():
+                errs.append(f"brief: file is empty: {raw_brief.strip()}")
+
+    raw_rubric, rubric = spec.get("rubric"), None
+    if not isinstance(raw_rubric, dict) or set(raw_rubric.keys()) != set(RUBRIC_KEYS) or any(
+        isinstance(raw_rubric[k], bool) or not isinstance(raw_rubric[k], int) or raw_rubric[k] not in (0, 1, 2) for k in RUBRIC_KEYS
+    ):
+        errs.append(f"rubric: must be a map with all six keys ({', '.join(RUBRIC_KEYS)}) in 0..2")
+    else:
+        rubric = {k: raw_rubric[k] for k in RUBRIC_KEYS}
+
+    raw_ladder, ladder = spec.get("ladder"), None
+    if raw_ladder == "auto":
+        ladder = "auto"
+    elif raw_ladder is not None:
+        if not isinstance(raw_ladder, list) or not raw_ladder:
+            errs.append(f"ladder: bad value {raw_ladder!r} (expected auto or list of provider:model@effort)")
+        else:
+            bad_l = [idx for idx, item in enumerate(raw_ladder) if not _parse_pme(item)]
+            errs.extend(f"ladder[{idx}]: bad entry {raw_ladder[idx]!r} (expected provider:model@effort)" for idx in bad_l)
+            ladder = list(raw_ladder) if not bad_l else None
+
+    raw_impl = spec.get("implementer")
+    if role == "reviewer":
+        if not _is_str(raw_impl):
+            errs.append("implementer: required for role reviewer")
+        elif resolve_implementer(catalog, raw_impl) is None:
+            errs.append(f"implementer: {raw_impl!r} is not in catalog.yaml")
+    elif raw_impl is not None and not _is_str(raw_impl):
+        errs.append("implementer: must be a non-empty string")
+
+    avail, ra = [], spec.get("available")
+    if cli_available:
+        avail = [x.strip() for x in cli_available.split(",") if x.strip()]
+    elif isinstance(ra, list):
+        avail = [str(x).strip() for x in ra if str(x).strip()]
+    elif isinstance(ra, str):
+        avail = [x.strip() for x in ra.split(",") if x.strip()]
+    elif ra is not None:
+        errs.append("available: must be a list of provider:model pairs")
+    if not avail:
+        errs.append("available: provide available in the spec or --available on the CLI")
+    else:
+        bad_av = bad_available_entries(avail, catalog)
+        if bad_av:
+            errs.append("available: malformed provider:model entries: " + ", ".join(_show_entry(x) for x in bad_av))
+
+    raw_ws, ws = spec.get("workspace"), {"strategy": "root", "present": False}
+    if raw_ws is not None and not isinstance(raw_ws, dict):
+        errs.append("workspace: must be a map")
+    elif isinstance(raw_ws, dict):
+        ws["present"] = True
+        errs.extend(f"workspace: unknown key {wk!r}" for wk in raw_ws if wk not in ("strategy", "base", "children", "worktree_path", "branch"))
+        strat = raw_ws.get("strategy")
+        if strat not in ("worktree", "root", "existing_worktree"):
+            errs.append(f"workspace.strategy: bad value {strat!r} (expected worktree|root|existing_worktree)")
+        else:
+            ws["strategy"] = strat
+        for req_s, key in (("worktree", "base"), ("existing_worktree", "worktree_path")):
+            val = raw_ws.get(key)
+            if strat == req_s and not _is_str(val):
+                errs.append(f"workspace.{key}: required when strategy is {req_s}")
+            elif val is not None and not _is_str(val):
+                errs.append(f"workspace.{key}: must be a non-empty string")
+            elif _is_str(val):
+                ws[key] = val.strip()
+        ch = raw_ws.get("children")
+        if ch is not None and ch not in ("shared", "worktree"):
+            errs.append(f"workspace.children: bad value {ch!r} (expected shared|worktree)")
+        elif ch:
+            ws["children"] = ch
+        if raw_ws.get("branch") is not None:
+            if _is_str(raw_ws.get("branch")):
+                ws["branch"] = raw_ws["branch"].strip()
+            else:
+                errs.append("workspace.branch: must be a non-empty string")
+
+    raw_caps, caps = spec.get("caps"), {"max_escalations": None, "max_children_per_pool": None, "budget": None}
+    if raw_caps is not None and not isinstance(raw_caps, dict):
+        errs.append("caps: must be a map")
+    elif isinstance(raw_caps, dict):
+        errs.extend(f"caps: unknown key {ck!r}" for ck in raw_caps if ck not in ("max_escalations", "max_children_per_pool", "budget"))
+        me, mc, bg = raw_caps.get("max_escalations"), raw_caps.get("max_children_per_pool"), raw_caps.get("budget")
+        if me is not None and (not _nonneg(me) or me > 3):
+            errs.append(f"caps.max_escalations: bad value {me!r} (expected int 0..3)")
+        elif me is not None:
+            caps["max_escalations"] = me
+        if mc is not None and not _nonneg(mc):
+            errs.append(f"caps.max_children_per_pool: bad value {mc!r} (expected non-negative int)")
+        elif mc is not None:
+            caps["max_children_per_pool"] = mc
+        if bg is not None and (not isinstance(bg, dict) or not bg):
+            errs.append("caps.budget: must be a non-empty map of provider: non-negative int")
+        elif isinstance(bg, dict):
+            errs.extend(f"caps.budget[{bk}]: bad value {bv!r} (expected non-negative int)" for bk, bv in bg.items() if not _is_str(bk) or not _nonneg(bv))
+            if all(_is_str(bk) and _nonneg(bv) for bk, bv in bg.items()):
+                caps["budget"] = {bk.strip(): bv for bk, bv in bg.items()}
+
+    if errs:
+        return errs, None
+    return [], {
+        "role": role, "title": title, "repo": spec["repo"].strip() if _is_str(spec.get("repo")) else None,
+        "brief_text": brief_text, "rubric": rubric, "ladder": ladder,
+        "implementer": raw_impl.strip() if _is_str(raw_impl) else None,
+        "available": avail, "workspace": ws, "caps": caps,
+    }
+
+
+def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws, rubric_str, complexity, risk):
+    lines = [f"{role.upper()} — repeat this block, updated, at every phase boundary"]
+    if role == "orchestrator":
+        lines.append(f"model: {_launch_ref(cand)} (rung 1 of {len(same_rungs)})")
+        lines.append("ladder: " + " -> ".join(_launch_ref(r) for r in same_rungs))
+        if switch_rung:
+            lines.append(f"provider switch (phase boundary, ask the user first): {_launch_ref(switch_rung)}")
+        esc_noun = "escalation" if max_esc == 1 else "escalations"
+        lines.append(
+            "escalate on: outcome rework | 3+ review findings your brief did not flag | a child's STATUS: ESCALATE; "
+            f"at most {max_esc} {esc_noun}; never step down mid-phase"
+        )
+    else:
+        lines.append(f"model: {_launch_ref(cand)}")
+    cap_parts = ([f"children per pool {caps['max_children_per_pool']}"] if caps.get("max_children_per_pool") is not None else []) + (
+        ["budget " + ", ".join(f"{k} {v}" for k, v in caps["budget"].items())] if caps.get("budget") else []
+    )
+    if cap_parts:
+        lines.append("caps: " + "; ".join(cap_parts))
+    if ws.get("present"):
+        strat = ws["strategy"]
+        ws_txt = f"worktree from {ws['base']}" if strat == "worktree" else f"existing_worktree at {ws['worktree_path']}" if strat == "existing_worktree" else "root"
+        lines.append(f"workspace: {ws_txt}" + (f"; children {ws['children']}" if ws.get("children") else ""))
+    lines.append(f"rubric: {rubric_str} ({complexity}/{risk})")
+    lines.append("verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)")
+    return [l[:200] for l in lines]
+
+
+def launch_cmd(a):
+    _begin(a)
+    now = get_now(_opt_str(a, "now"))
+    ap = _opt_str(a, "assets") or def_assets()
+    cat_path = _opt_str(a, "catalog") or DEF_CATALOG
+    catalog = load_catalog_with_local(cat_path, ap)
+    errs, parsed = _validate_launch_spec(a.spec, _opt_str(a, "available"), catalog)
+    if errs:
+        for line in _capped(["error: " + e for e in errs]):
+            print(line)
+        print(f"error: {len(errs)} problem(s); action: fix {a.spec} and rerun launch")
+        return 1
+
+    avail = parsed["available"]
+    if not _opt_bool(a, "no_probe"):
+        import contextlib, io
+        probe_ns = argparse.Namespace(
+            assets=ap, catalog=cat_path, now=_opt_str(a, "now"), provider=None,
+            low_threshold=None, exhausted_threshold=None, available=",".join(avail), fresh=False, full=False,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            if os.path.exists(ap):
+                _probe(probe_ns, ap)
+            else:
+                tmp_dir = tempfile.mkdtemp(prefix="orch-probe-")
+                try:
+                    _probe(probe_ns, os.path.join(tmp_dir, "assets.yaml"), cache_home=ap, unsaved=True)
+                finally:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    assets = load_file(ap) if os.path.exists(ap) else None
+    prefs = (assets or {}).get("preferences") or {}
+    floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
+    role, rubric = parsed["role"], parsed["rubric"]
+    complexity, risk, orch_tier, _, rubric_str = _classify_rubric(rubric, assets)
+    avail_csv = ",".join(avail)
+    avail_arg = avail_csv if len(avail_csv) <= 80 else "<available>"
+
+    same_rungs, switch_rung, max_esc, notes = [], None, 2, []
+    if role == "orchestrator":
+        cand, same_rungs, switch_rung, notes, info = _compute_orchestrator_ladder(
+            catalog, assets, avail, floors, rubric["coordination"], now,
+            ladder_override=parsed["ladder"], max_escalations_override=parsed["caps"]["max_escalations"],
+        )
+        if info["rc"] != 0 or not cand:
+            _print_notes(notes)
+            _action(f"run select --role orchestrator --coordination {rubric['coordination']} --available {avail_arg} and follow its action line; launch only resolves a dispatchable model")
+            return 3
+        max_esc = info["max_escalations"]
+        role_head = f"role: orchestrator · {complexity}/{risk} · tier {orch_tier} (coordination {rubric['coordination']})"
+    elif role == "implementer":
+        tier = TIER[complexity][risk]
+        cands, notes, _ = candidates(catalog, assets, avail, floors[tier], floors, now)
+        cands.sort(key=lambda c: c["key"])
+        if not cands:
+            _print_notes(notes)
+            _action(f"run select --complexity {complexity} --risk {risk} --available {avail_arg} and follow its action line; launch only resolves a dispatchable model")
+            return 3
+        cand, role_head = cands[0], f"role: implementer · {complexity}/{risk} · tier {tier}"
+    else:
+        tier, rt = TIER[complexity][risk], reviewer_tier(TIER[complexity][risk], risk)
+        impl_m = resolve_implementer(catalog, parsed["implementer"])
+        emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
+        pick, _ = choose_reviewer(
+            catalog, assets, avail, floors, rt, now, impl_m, False, risk,
+            prefs.get("below_tier") or "stage", impl_below_tier=best_effort(impl_m, floors[tier], emerg) is None,
+        )
+        _, notes, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, task_floor=floors[rt])
+        if not pick:
+            _print_notes(notes)
+            _action(f"run select --role reviewer --complexity {complexity} --risk {risk} --implementer {parsed['implementer']} --available {avail_arg} and follow its action line; launch only resolves a dispatchable model")
+            return 3
+        cand, role_head = pick[1], f"role: reviewer · {complexity}/{risk} · tier {rt} (implementer {impl_m['id']})"
+
+    prov = cand["provider"]
+    effort_key = _effort_option_key(assets, prov)
+    if not effort_key:
+        print(f"error: no effort option key for {prov}: set effort_key on it in assets.yaml")
+        print(f"error: 1 problem(s); action: set effort_key on {prov} in assets.yaml and rerun launch")
+        return 1
+
+    h_mid = _harness_mid(cand)
+    options = [{"id": effort_key, "value": cand["effort"]}] + ([{"id": "serviceTier", "value": "default"}] if prov.startswith("codex") else [])
+    ws = parsed["workspace"]
+    if ws["strategy"] == "worktree":
+        ws_strat = {"type": "worktree", "baseRef": ws["base"], "startFromOrigin": "/" in ws["base"], **({"branch": ws["branch"]} if ws.get("branch") else {})}
+    elif ws["strategy"] == "existing_worktree":
+        ws_strat = {"type": "existing_worktree", "worktreePath": ws["worktree_path"]}
+    else:
+        ws_strat = {"type": "root"}
+
+    header_lines = _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, parsed["caps"], ws, rubric_str, complexity, risk)
+    slug = norm(parsed["title"])[:48].strip("-") or "task"
+    payload = {
+        "title": parsed["title"],
+        "message": "\n".join(header_lines) + "\n\n" + parsed["brief_text"],
+        "modelSelection": {"instanceId": prov, "model": h_mid, "options": options},
+        "workspaceStrategy": ws_strat,
+        "clientRequestId": f"launch-{slug}-{prov}-{h_mid}-{cand['effort']}",
+    }
+    out_path = _opt_str(a, "out") or _default_payload_path(a.spec)
+    if os.path.dirname(os.path.abspath(out_path)):
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+
+    req_str = f"{prov}:{h_mid}@{cand['effort']}"
+    print(role_head)
+    print(f"requested: {req_str}")
+    if role == "orchestrator":
+        print("ladder: " + " -> ".join(_launch_ref(r) for r in same_rungs) + (f" ; provider switch: {_launch_ref(switch_rung)}" if switch_rung else ""))
+        for r in (same_rungs if _FULL else ()):
+            _detail(f"  rung: {_fmt_cand(r)}")
+        if _FULL and switch_rung:
+            _detail(f"  switch: {_fmt_cand(switch_rung)}")
+    else:
+        _detail(f"  candidate: {_fmt_cand(cand)}")
+    _print_notes(notes)
+    print(f"payload: {out_path}")
+    out_label = out_path if len(out_path) <= 24 else os.path.basename(out_path)
+    _action(
+        f"call t3_thread_launch with the JSON in {out_label}; then read the new thread's model "
+        f"(t3_thread_configure with only threadId) and log --event select --role {role} "
+        f"--rubric {rubric_str} --requested {req_str} --effective <what it reports>"
     )
     return 0
 
@@ -3922,6 +4276,8 @@ def check(a):
                 errs.append(f"assets {p.get('id')}: bad policy")
             if p.get("status", "ok") not in ("ok", "low", "exhausted"):
                 errs.append(f"assets {p.get('id')}: bad status")
+            if p.get("effort_key") is not None and (not isinstance(p.get("effort_key"), str) or not p.get("effort_key").strip()):
+                errs.append(f"assets {p.get('id')}: effort_key must be a non-empty string")
             groups = p.get("groups")
             if groups is not None:
                 if not isinstance(groups, list):
@@ -4629,6 +4985,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
     "probe": "probe --available claude:claude-opus-5-5",
     "classify": "classify --size 2 --uncertainty 1 --deps 2 --consequences 1 --verification 1 --coordination 2",
     "select": "select --complexity standard --risk low --available claude:claude-opus-5-5,codex:gpt-6-2-sol",
+    "launch": "launch task.launch.yaml --available codex:gpt-6.2-sol,claudeAgent:claude-opus-5-5",
     "followups": "followups --due --available claude:claude-opus-5-5",
     "log": "log --complexity standard --risk low --provider claude --model claude-opus-5-5 --effort high",
     "history": "history --last 5",
@@ -4643,7 +5000,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "classify", "select", "followups", "log", "history", "exhaust", "status", "failure", "scope", "policy"):
+    for n in ("check", "probe", "classify", "select", "launch", "followups", "log", "history", "exhaust", "status", "failure", "scope", "policy"):
         usage = (
             "orch.py log [options] [--event select|complete] [--ui] [--surface subagent|conversation] [--repo NAME] [--assets F] [--ledger F] [--now ISO] [--full]"
             if n == "log"
@@ -4693,6 +5050,11 @@ def build_parser():
             p.add_argument("--ref")
             p.add_argument("--fail-on-low", action="store_true")
             p.add_argument("--implementer")
+        if n == "launch":
+            p.add_argument("spec", help="path to <name>.launch.yaml")
+            p.add_argument("--available", help="comma-separated provider:model pairs (overrides spec available)")
+            p.add_argument("--no-probe", action="store_true", help="skip quota refresh before resolving the model")
+            p.add_argument("--out", metavar="FILE", help="output JSON path (default: <spec without .launch.yaml>.payload.json)")
         if n == "followups":
             p.add_argument("--due", action="store_true")
             p.add_argument("--add", action="store_true")
@@ -4770,6 +5132,7 @@ def main():
         "probe": probe,
         "classify": classify_cmd,
         "select": select,
+        "launch": launch_cmd,
         "followups": followups_cmd,
         "log": log_cmd,
         "history": history_cmd,
