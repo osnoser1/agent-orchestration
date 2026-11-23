@@ -2094,8 +2094,18 @@ def _validate_launch_spec(spec_path, cli_available, catalog):
     }
 
 
+def _is_launch_payload(path):
+    """True only for a JSON payload an earlier `launch` wrote (so a mistyped --out never deletes a spec or brief)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "modelSelection" in data and "clientRequestId" in data
+
+
 def _cleanup_stale_payload(out_path):
-    if out_path and os.path.isfile(out_path):
+    if out_path and os.path.isfile(out_path) and _is_launch_payload(out_path):
         try:
             os.remove(out_path)
             print(f"note: removed stale payload {out_path}")
@@ -2173,7 +2183,7 @@ def launch_cmd(a):
     floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     role, rubric = parsed["role"], parsed["rubric"]
     if role != "orchestrator":
-        ign = [k for k, v in (("ladder", parsed["ladder"] is not None), ("caps.max_escalations", parsed["caps"]["max_escalations"] is not None)) if v]
+        ign = [k for k, v in (("ladder", parsed["ladder"] not in (None, "auto")), ("caps.max_escalations", parsed["caps"]["max_escalations"] is not None)) if v]
         if ign:
             pre_notes.append(f"note: ignored for role {role}: {', '.join(ign)}")
     complexity, risk, orch_tier, _, rubric_str = _classify_rubric(rubric, assets)
@@ -2279,17 +2289,27 @@ def launch_cmd(a):
         print(pn)
     _print_notes(notes)
     print(f"payload: {out_path}")
-    log_line = (
-        f"log: orch.py log --event select --role {role} --complexity {complexity} --risk {risk} "
-        f"--provider {prov} --model {h_mid} --effort {cand['effort']} --repo {repo_base} "
-        f"--rubric {rubric_str} --requested {req_str} --effective <what the thread reports>"
+    # Runnable as written once --effective is filled in. Optional flags (log defaults: --event select, --repo = cwd
+    # basename, --surface subagent) are dropped in this order only to keep the line within the output contract.
+    optional = [("--event", "select"), ("--surface", "conversation"), ("--repo", repo_base)]
+    required = (
+        f"--role {role} --complexity {complexity} --risk {risk} --provider {prov} --model {h_mid} "
+        f"--effort {cand['effort']} --rubric {rubric_str} --requested {req_str} --effective <P:M@E>"
     )
-    # `--event select` is log's default without --outcome; drop it only to keep the line within the output contract.
-    print(log_line if len(log_line) <= 350 else log_line.replace(" --event select", "", 1))
+    dropped = []
+    while True:
+        log_line = "log: orch.py log " + "".join(f"{k} {v} " for k, v in optional) + required
+        if len(log_line) <= 350 or not optional:
+            break
+        dropped.append(optional.pop(0))
+    lost = [f"{k} {v}" for k, v in dropped if k != "--event"]
+    if lost:
+        print("note: the log: line omits " + ", ".join(lost) + " to fit; add them when you run it")
+    print(log_line)
     deg_tail = "; state the reviewer degradation in the report" if deg_why else ""
-    act_full = f"call t3_thread_launch with the JSON in {out_path}; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective filled in{deg_tail}"
+    act_full = f"call t3_thread_launch with the JSON in {out_path}; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in{deg_tail}"
     if len("action: " + act_full) > 350:
-        act_full = f"call t3_thread_launch with the JSON in the payload: path above; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective filled in{deg_tail}"
+        act_full = f"call t3_thread_launch with the JSON in the payload: path above; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in{deg_tail}"
     _action(act_full)
     return 0
 

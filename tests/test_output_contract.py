@@ -264,6 +264,12 @@ class OrchContract(unittest.TestCase):
                 "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\n"
                 "workspace: {strategy: worktree, base: origin/main, children: shared}\n"
             )
+        long_repo_spec = os.path.join(long_dir, "implementer-with-a-very-long-repository-basename.launch.yaml")
+        with open(long_repo_spec, "w", encoding="utf-8") as fh:
+            fh.write(
+                "version: 1\nrole: implementer\ntitle: long repo contract launch\nrepo: osnoser1/a-very-long-repository-basename-for-tests\n"
+                "brief: brief.md\nrubric: {size: 1, uncertainty: 1, deps: 0, consequences: 0, verification: 0, coordination: 0}\n"
+            )
         launch_avail = "claudeAgent:claude-opus-5-5," + avail.partition(",")[2]
         long_avail = "claudeAgent_claude_extra:claude-opus-5-5," + avail.partition(",")[2]
         return [
@@ -276,6 +282,11 @@ class OrchContract(unittest.TestCase):
                 ["launch", long_spec, "--no-probe", "--available", long_avail, *w.common(assets)],
                 9, ORCH_FINAL, last="ex39", env=w.env, cwd=w.dir,
                 shows=("requested: claudeAgent_claude_extra:claude-opus-5-5@high", "log: orch.py log"),
+            ),
+            Case(  # medium effort + long instance id + long repo: the log: line still fits (optional flags dropped, noted)
+                ["launch", long_repo_spec, "--no-probe", "--available", "claudeAgent_claude_extra:claude-opus-5-5", *w.common(assets)],
+                9, ORCH_FINAL, env=w.env, cwd=w.dir,
+                shows=("requested: claudeAgent_claude_extra:claude-opus-5-5@medium", "log: orch.py log"),
             ),
             Case(["launch", bad_spec, "--no-probe", *w.common(assets)], 13, CHECK_FINAL, rc=1, last="extra14", env=w.env, cwd=w.dir),
         ]

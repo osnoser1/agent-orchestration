@@ -4982,21 +4982,21 @@ class TestLaunchSpec(unittest.TestCase):
         self.assertIn("ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high ; provider switch: claudeAgent/claude-opus-5-5 @ high", out)
         self.assertIn(f"payload: {payload_path}", out)
         expected_log = (
-            "log: orch.py log --event select --role orchestrator --complexity hard --risk medium "
-            "--provider codex --model gpt-6.2-sol --effort medium --repo agent-orchestration "
+            "log: orch.py log --event select --surface conversation --repo agent-orchestration --role orchestrator "
+            "--complexity hard --risk medium --provider codex --model gpt-6.2-sol --effort medium "
             "--rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 "
-            "--requested codex:gpt-6.2-sol@medium --effective <what the thread reports>"
+            "--requested codex:gpt-6.2-sol@medium --effective <P:M@E>"
         )
         self.assertIn(expected_log, out)
         self.assertEqual(
             out.strip().splitlines()[-1],
             f"action: call t3_thread_launch with the JSON in {payload_path}; then read the new thread's model "
-            "(t3_thread_configure with only threadId) and run the log: line above with --effective filled in",
+            "(t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in",
         )
 
         # Parse the emitted log: line, fill in <what the thread reports>, and run orch.py log with it
         log_line = next(l for l in out.splitlines() if l.startswith("log: orch.py log "))
-        filled = log_line[len("log: orch.py "):].replace("<what the thread reports>", "codex:gpt-6.2-sol@medium")
+        filled = log_line[len("log: orch.py "):].replace("<P:M@E>", "codex:gpt-6.2-sol@medium")
         ledger_path = os.path.join(self.tmp.name, "parsed-ledger.jsonl")
         parsed_log_args = orch.build_parser().parse_args(filled.split() + ["--ledger", ledger_path, "--assets", self.assets, "--now", "2026-11-20T21:00:00Z"])
         rc_l, out_l = _run(orch.log_cmd, parsed_log_args)
@@ -5206,7 +5206,7 @@ class TestLaunchSpec(unittest.TestCase):
         rc1, out1 = self._launch(spec, name="w1.launch.yaml", assets=missing_assets, no_probe=False)
         self.assertEqual(rc1, 0, out1)
         self.assertIn("note: no assets file: probe skipped (run orch.py probe --init)", out1)
-        self.assertIn("note: ignored for role implementer: ladder, caps.max_escalations", out1)
+        self.assertIn("note: ignored for role implementer: caps.max_escalations", out1)  # `ladder: auto` is the default
         self.assertFalse(os.path.exists(missing_assets))
 
         # 2. Existing assets file whose providers have no probe settings, run WITHOUT --no-probe -> succeeds
@@ -5227,6 +5227,15 @@ class TestLaunchSpec(unittest.TestCase):
         self.assertEqual(rc4, 1, out4)
         self.assertIn(f"error: cannot write payload to {self.tmp.name}:", out4)
         self.assertTrue(out4.strip().splitlines()[-1].startswith("error: 1 problem(s); action:"), out4)
+
+        # 4b. A mistyped --out that names the spec itself is never deleted (only launch payload JSON is)
+        spec_path = os.path.join(self.tmp.name, "w1.launch.yaml")
+        ex_assets0 = os.path.join(self.tmp.name, "ex-only0.yaml")
+        _write(ex_assets0, "version: 1\nproviders:\n  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-25T00:00:00+00:00\n")
+        rc4b, out4b = self._launch(spec, name="w1.launch.yaml", assets=ex_assets0, out=spec_path)
+        self.assertEqual(rc4b, 3, out4b)
+        self.assertTrue(os.path.isfile(spec_path))
+        self.assertNotIn("removed stale payload", out4b)
 
         # 5. Stale payload at --out is deleted on exit 3 (and on validation error) with a note line
         stale_payload = os.path.join(self.tmp.name, "w1.payload.json")
