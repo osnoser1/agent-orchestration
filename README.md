@@ -12,7 +12,7 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, preferences, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `select`, `followups`, `log`, `history`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `classify`, `select`, `followups`, `log`, `history`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
 
 Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
@@ -63,8 +63,11 @@ When a child hits a quota error mid-run, the skill parses the reset time (`orch.
 
 ```bash
 python3 skills/agent-orchestration/scripts/orch.py probe
+python3 skills/agent-orchestration/scripts/orch.py classify --size 2 --uncertainty 1 --deps 2 --consequences 1 --verification 1 --coordination 2
 python3 skills/agent-orchestration/scripts/orch.py select --complexity hard --risk high \
   --available antigravity:gemini-4-neon,claude:claude-opus-5-5,codex:gpt-6-2-sol
+python3 skills/agent-orchestration/scripts/orch.py select --role orchestrator --coordination 2 \
+  --available antigravity:gemini-4-argon,antigravity:gemini-4-neon,claude:claude-opus-5-5
 python3 skills/agent-orchestration/scripts/orch.py select --complexity standard --risk low --ui --ref "PR #42" \
   --available claude:claude-sonnet-5-5,antigravity:gemini-4-neon
 python3 skills/agent-orchestration/scripts/orch.py followups --due

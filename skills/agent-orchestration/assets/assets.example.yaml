@@ -13,6 +13,12 @@ preferences:
   # usage_cache_ttl_seconds: 300                  # optional: seconds `probe` reuses a cached Claude usage reading
   # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
+  # orchestrator:                                 # select --role orchestrator (references/selection.md)
+  #   tiers: {0: T1, 1: T2, 2: T3}                # coordination score -> orchestrator tier
+  #   max_effort: high                            # never above high
+  #   defaults: {codex: medium, claude: high}     # starting effort per provider id (raised to meet the tier)
+  #   ladder: auto                                # auto | [provider:model@effort, ...]
+  #   max_escalations: 2                          # ladder keeps max_escalations + 1 same-provider rungs
 providers:
   # id = provider id your harness uses for delegation.
   # policy: ending | spend-first | normal | preserve | avoid
