@@ -1197,12 +1197,46 @@ def choose_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on
     return pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low), None
 
 
+def _show_entry(pair):
+    """An --available entry on one output line: control characters escaped."""
+    return pair if pair.isprintable() else repr(pair)
+
+
+def bad_available_entries(pairs, catalog=None):
+    """`--available` entries that are not one `provider:model` pair: no provider, an empty part, a `;` or control character,
+    or a second pair or catalog model joined by spaces. Display names with spaces (`antigravity:Orchestrator (Neon)`) pass."""
+    known = set(_catalog_name_map(catalog)) if catalog else set()
+    bad = []
+    for pair in pairs:
+        prov, sep, mid = pair.partition(":")
+        mid = mid.strip()
+        extra = mid.split()[1:]
+        joined = any(":" in t or norm(t) in known for t in extra)
+        if not sep or not prov.strip() or not mid or ";" in pair or not pair.isprintable() or joined:
+            bad.append(pair)
+    return bad
+
+
+def resolve_implementer(catalog, impl_id):
+    """Catalog model for `--implementer`: a model id, name, or alias, optionally prefixed `provider:` or `provider/`
+    and suffixed `@ effort` as select prints it. Longer candidates win, so a slash model id beats its last segment."""
+    names = _catalog_name_map(catalog)
+    by_id = {norm(x["id"]): x for x in catalog["models"]}
+    base = re.sub(r"\s*@\s*\S+$", "", impl_id.strip())
+    tries = [base] + [base[i + 1:] for i, ch in enumerate(base) if ch in ":/"]
+    for t in tries:
+        mid = names.get(norm(t))
+        if mid and norm(mid) in by_id:
+            return by_id[norm(mid)]
+    return None
+
+
 def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage", assets_exists=False):
     """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
-    m = next((x for x in catalog["models"] if norm(x["id"]) == norm(impl_id)), None)
+    m = resolve_implementer(catalog, impl_id)
     if not m:
         _detail(f"implementer {impl_id}: not in catalog")
-        _action(f"fix the --implementer id ({impl_id} is not in the catalog) and rerun select")
+        _action(f"fix --implementer ({_show_entry(impl_id)} is not in the catalog; pass the implementing <model-id> as discovery lists it) and rerun select; dispatch only the reviewer its action line names")
         return 1
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
@@ -1274,6 +1308,11 @@ def select(a):
     floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     tier = TIER[a.complexity][a.risk]
     avail = [x.strip() for x in a.available.split(",") if x.strip()]
+    bad = bad_available_entries(avail, catalog)
+    if bad:
+        print("note: --available entries are not provider:model: " + ", ".join(_capped([_show_entry(x) for x in bad])))
+        _action("fix --available (comma-separated <provider>:<model-id> pairs as discovery lists them) and rerun select; dispatch only the model its action line names")
+        return 1
     prefer_family = _opt_str(a, "prefer_family")
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
     below_tier_mode = _opt_str(a, "below_tier") or prefs.get("below_tier") or "stage"
@@ -3305,10 +3344,13 @@ def check_available_notes(catalog, assets_path, loaded_assets, available):
 
     notes = []
     avail_models = {}
-    for pair in (x.strip() for x in available.split(",") if x.strip()):
+    pairs = [x.strip() for x in available.split(",") if x.strip()]
+    bad = set(bad_available_entries(pairs, catalog))
+    for pair in pairs:
         prov, sep, mid = pair.partition(":")
-        if not sep or not prov.strip() or not mid.strip():
-            notes.append(("--available entry is not provider:model; ignored", pair, f"[note] --available entry {pair} is not provider:model; ignored"))
+        if pair in bad:
+            shown = _show_entry(pair)
+            notes.append(("--available entry is not provider:model; ignored", shown, f"[note] --available entry {shown} is not provider:model; ignored"))
             continue
         avail_models.setdefault(norm(prov), set()).add(canon(mid))
     all_models = set().union(*avail_models.values()) if avail_models else set()
