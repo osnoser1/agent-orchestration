@@ -134,12 +134,24 @@ class OrchContract(unittest.TestCase):
         assets = w.select_assets()
         env = w.env
         sel = ["select", "--complexity", "standard", "--risk", "low", "--available", avail, *w.common(assets)]
-        cases = {"select": [
-            Case(sel, 5, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("note: provider exhausted: ex00, ex01",),
-                 hides=("reviewer degraded",)),  # the reviewer is chosen later: its degradation belongs to that step
-            Case(["select", "--complexity", "standard", "--risk", "high", "--available", avail, "--implementer", "no-such-model", *w.common(assets)],
-                 5, ORCH_FINAL, rc=1, env=env, cwd=w.dir),
-        ]}
+        cases = {
+            "classify": [
+                Case(
+                    ["classify", "--size", "2", "--uncertainty", "1", "--deps", "2",
+                     "--consequences", "1", "--verification", "1", "--coordination", "2", "--assets", assets],
+                    6, ORCH_FINAL, env=env, cwd=w.dir,
+                    shows=("complexity: hard", "risk: medium", "orchestrator: T3", "rubric: size=2,"),
+                ),
+            ],
+            "select": [
+                Case(sel, 5, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("note: provider exhausted: ex00, ex01",),
+                     hides=("reviewer degraded",)),  # the reviewer is chosen later: its degradation belongs to that step
+                Case(["select", "--role", "orchestrator", "--coordination", "2", "--available", avail, *w.common(assets)],
+                     6, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("orchestrator tier T3", "ladder:")),
+                Case(["select", "--complexity", "standard", "--risk", "high", "--available", avail, "--implementer", "no-such-model", *w.common(assets)],
+                     5, ORCH_FINAL, rc=1, env=env, cwd=w.dir),
+            ],
+        }
         cases["select"] += self.select_scenarios(w)
         cases["followups"] = [Case(["followups", "--due", "--available", "claude:claude-opus-5-5", *w.common(assets)], 3, ORCH_FINAL,
                                    last="item-29", env=env, cwd=w.dir)]

@@ -1,6 +1,24 @@
 # Selection and review rules
 
-Single source of truth for tier lookup, model ranking, effort selection, and the review gate. `scripts/orch.py select` implements these exact rules.
+Single source of truth for classification, tier lookup, model ranking, orchestrator ladders, effort selection, and the review gate. `scripts/orch.py classify` and `scripts/orch.py select` implement these exact rules.
+
+## Classification rubric (`orch.py classify`)
+
+Score all six criteria from `0` to `2`, then run `python3 scripts/orch.py classify --size N --uncertainty N --deps N --consequences N --verification N --coordination N` and follow its `action:` line (pass its `rubric:` value to `orch.py log --rubric`).
+
+| Criterion | 0 | 1 | 2 |
+|---|---|---|---|
+| `size` | one file / ≤50 lines | a few files / ≤300 lines | many files or >300 lines |
+| `uncertainty` | location and fix known | location known, approach open | root cause or location unknown |
+| `deps` | self-contained | one shared interface | cross-module / schema / migration |
+| `consequences` | local and easily reverted | shared behaviour other users or repos rely on | any Risk trigger or repo `High risk:` trigger |
+| `verification` | one test proves it | several tests or a manual check | a wrong answer is hard to detect |
+| `coordination` | one phase and one child | two phases or 2–3 children | three or more phases, four or more children, a dependency chain (stacked PRs), or multi-repo |
+
+Without Python, map the scores directly:
+- **Complexity** from `C = size + uncertainty + deps + verification`: `0–1` `trivial`, `2–3` `standard`, `4–6` `hard`, `7–8` `frontier`.
+- **Risk** from `consequences`: `0` `low`, `1` `medium`, `2` `high`.
+- **Orchestrator tier** from `coordination` via `preferences.orchestrator.tiers` (default `0 → T1`, `1 → T2`, `2 → T3`).
 
 ## Required tier (complexity × risk)
 
@@ -100,6 +118,15 @@ With no usable model at any tier, every mode behaves like `wait` (exit `4` when 
 - **Re-reviews**: after fixes, re-review as a delta (the fix commits plus their context). Continue the same reviewer's context when the harness can and its pool is usable (it stays independent of the implementer, so the fresh-context rule applies to the first review only); otherwise give a fresh reviewer from the fallback order the delta and the earlier findings.
 - **Mid-review quota exhaustion**: reviewer children follow the same switch-in-place, new-child, scheduled-resume order as implementers (`references/harnesses.md`).
 - **Shared evidence pack**: for multi-angle or cross-family reviews on large diffs, have a cheap model assemble one `path:line` evidence pack first, then hand the same pack and raw diff alone to each reviewer so judgments compare identical facts independently.
+
+## Orchestrator role (`select --role orchestrator`)
+
+Run `python3 scripts/orch.py select --role orchestrator --coordination <0|1|2> --available <provider:model,...>` and follow its `action:` line. Without Python, apply these rules (rubric and effort→model ladder adapted from [claude-code-multi-agent-orchestrator](https://github.com/mdharastani-pixel/claude-code-multi-agent-orchestrator)):
+
+- **Tier and stops**: `coordination` maps through `preferences.orchestrator.tiers` (default `0 → T1`, `1 → T2`, `2 → T3`). When every tier-meeting model is exhausted, hold until renewal (exit `4`) instead of staging below tier.
+- **Filters and effort cap**: apply the worker filters above, exclude models marked `coordinator: true` in `catalog.yaml` (adds a second coordinator under yours), and cap efforts at `preferences.orchestrator.max_effort` (default `high`, maximum `high`).
+- **Ranking and ladder**: rank cost before effort and score. Start on the ranked first candidate's tier-meeting effort (or a higher rated `preferences.orchestrator.defaults[<provider>]` up to `max_effort`), climb that model's higher rated efforts up to `max_effort`, then higher-scoring same-provider candidates in rank order (keeping at most `max_escalations + 1` rungs, default 3). An explicit `preferences.orchestrator.ladder` list (`[provider:model@effort, ...]`) overrides `auto` after filtering to available, usable rungs (falling back to `auto` if none survive). Climb from the start rung only on an escalation trigger (repeated review rework, stalled cross-module design, or multi-phase coordination breakdown).
+- **Provider switch**: raising effort within the same provider is cheap; switch providers only at a phase boundary, because `t3_thread_configure` across providers hands the context over through a lossy summary; ask the user before a provider switch.
 
 ## Tool needs
 Check `references/harnesses.md` before choosing a provider when the task requires browser, device, or network tools.

@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.15.0"
+  version: "0.16.0"
 ---
 
 # Agent orchestration
@@ -21,12 +21,12 @@ List available `provider:model` pairs using your harness's discovery mechanism (
 *Done when*: every available `provider:model` pair is mapped to the catalog, repo policy (if present) is loaded, quota status and follow-ups are checked (or noted unverified), and any needed unrated model is recorded once.
 
 ## 2. Classify
-Assign complexity (`trivial|standard|hard|frontier`), risk (`low|medium|high`, adding any repo `High risk:` triggers from `references/repo-policy.md`), UI/UX flag (`--ui`) or repo `Models:` preference, tool requirements (browser, device, network), delegation surface (`subagent` vs `conversation`, `references/harnesses.md`), and multi-item batching (`references/supervision.md`) using `references/selection.md`.
+Run `scripts/orch.py classify` with the rubric in `references/selection.md` and use its complexity and risk (repo `High risk:` triggers in `references/repo-policy.md` set `consequences` to `2`). Note `--ui` or repo `Models:` preference, tool needs, delegation surface (`references/harnesses.md`), and batching (`references/supervision.md`).
 
 *Done when*: complexity, risk, tier, strength/family, tools, surface, and batch order are stated before model selection.
 
 ## 3. Choose model + effort
-Run `python3 scripts/orch.py select` (arguments in `references/selection.md`) and follow its final `action:` line (it replaces exit codes; output is compact, `--full` adds detail). Without Python, apply the filter, tie-break, effort knee, `preferences.ui_fallback`, and `preferences.below_tier` rules in `references/selection.md`. When the user holds a batch until a specific provider renews, or `select` stages or holds work until a tier-meeting model renews, record a `resume` follow-up and schedule its wakeup (`references/selection.md`, `references/supervision.md`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs, opening a new top-level conversation, or proceeding under `preferences.ui_fallback: ask`. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). Models a plan names ahead are tentative: repeat this step for each role when its step starts, after a fresh `probe`.
+Run `python3 scripts/orch.py select` (`references/selection.md`) and follow its final `action:` line (replacing exit codes). Without Python, apply the rules in `references/selection.md`. When work is held or staged on renewal, record a `resume` follow-up and schedule its wakeup (`references/selection.md`, `references/supervision.md`). Apply the chosen model's `quirks` from `catalog.yaml` and `references/harnesses.md`. Follow Step 7 before spending gated models/efforts/APIs, opening a new top-level conversation, or proceeding under `preferences.ui_fallback: ask`. Log the selection to the local decision ledger (`scripts/orch.py log --event select`, `references/improvement.md`). For an orchestrator conversation, select its ladder with `scripts/orch.py select --role orchestrator --coordination <0|1|2>` and log it with `--role orchestrator --rubric`. Models a plan names ahead are tentative: repeat this step for each role when its step starts, after a fresh `probe`.
 
 *Done when*: a primary `provider / model @ effort` (or a staged Phase 1 model plus Phase 2 target under `preferences.below_tier: stage`), delegation surface, and (for reviewed work) a reviewer from `references/selection.md` are selected at their step starts (held only when `select` says to hold or ask, or the user holds the work) with quirks noted and logged.
 
@@ -62,7 +62,7 @@ Execute routine orchestration choices (including in-place model switches, staged
 *Done when*: routine decisions are reported one line each and every listed high-impact or taste gate waits for one explicit approval.
 
 ## References (load on demand)
-- `references/selection.md` — tier floors, risk triggers, effort knee, quota pools and tie-break order, UI/UX and preferred-family fallback (`ui_fallback`), below-tier staging (`below_tier`), follow-up kinds and due rule, reviewer timing and fallback order, review gate.
+- `references/selection.md` — classification rubric, tier floors, risk triggers, effort knee, quota pools and tie-break order, orchestrator ladder, UI/UX and preferred-family fallback (`ui_fallback`), below-tier staging (`below_tier`), follow-up kinds and due rule, reviewer timing and fallback order.
 - `references/supervision.md` — conflict-aware batching, deferred launch on provider renewal, failure-mode retries, confirm-stop before replacement, user-local durable state, completion notices, recurring supervision loop for non-notifying children, and idempotent child messages.
 - `references/verification.md` — proportional evidence (`evidence`), scope check before review, agent-facing doc review, design checkpoints (`design_checkpoints`), final check before landing, single rerun for known infrastructure failures, and merge-state check for unstarted PR checks.
 - `references/repo-policy.md` — repo policy contract, precedence, and brief forwarding.
