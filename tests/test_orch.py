@@ -3328,7 +3328,7 @@ class TestSelectActionLine(unittest.TestCase):
     def test_unknown_implementer_asks_for_a_fix(self):
         self.sel(
             CLAUDE_LOW_API, "codex:gpt-6-2-sol", 1,
-            "action: fix the --implementer id (nope is not in the catalog; pass the implementing model id, e.g. gpt-6.2-sol) and rerun select; dispatch only the reviewer its action line names",
+            "action: fix --implementer (nope is not in the catalog; pass the implementing <model-id> as discovery lists it) and rerun select; dispatch only the reviewer its action line names",
             implementer="nope",
         )
 
@@ -4299,11 +4299,15 @@ class TestSelectIdFormats(unittest.TestCase):
         return _run_orch(orch.select, args)
 
     def test_resolve_implementer_forms(self):
-        for given in ("gpt-6.2-sol", "gpt-6-2-sol", "codex:gpt-6.2-sol", "codex/gpt-6-2-sol @ medium", "GPT-6.2 Sol"):
+        for given in ("gpt-6.2-sol", "gpt-6-2-sol", "codex:gpt-6.2-sol", "codex/gpt-6-2-sol @ medium", "GPT-6.2 Sol",
+                      "gpt-6-2-sol@medium", "codex:gpt-6.2-sol@xhigh"):
             m = orch.resolve_implementer(self.catalog, given)
             self.assertIsNotNone(m, given)
             self.assertEqual(m["id"], "gpt-6-2-sol", given)
         self.assertIsNone(orch.resolve_implementer(self.catalog, "no-such-model"))
+        for given in ("codex_opencodex_api/openai-apikey/gpt-6-luna", "codex_opencodex_api:openai-apikey/gpt-6-luna"):
+            self.assertEqual(orch.resolve_implementer(self.catalog, given)["id"], "gpt-6-luna", given)
+        self.assertEqual(orch.resolve_implementer(self.catalog, "antigravity:Orchestrator (Neon) @ high")["id"], "gemini-pro-orchestrator-neon")
 
     def test_provider_prefixed_implementer_picks_non_emergency_reviewer(self):
         rc, out = self.select(self.AVAIL, implementer="codex:gpt-6.2-sol")
@@ -4313,8 +4317,20 @@ class TestSelectIdFormats(unittest.TestCase):
         self.assertNotIn("fable", last)
 
     def test_bad_available_entries(self):
-        self.assertEqual(orch.bad_available_entries(["codex:gpt-6.2-sol", "claude-sonnet-5-5", "a:b c:d", ":x", "p:"]),
-                         ["claude-sonnet-5-5", "a:b c:d", ":x", "p:"])
+        good = ["codex:gpt-6.2-sol", "codex: gpt-6.2-sol", "claudeAgent_claude_extra:claude-sonnet-5-5",
+                "codex_opencodex_api:openai-apikey/gpt-6-luna", "ollama:llama3:8b", "antigravity:Orchestrator (Neon)"]
+        bad = ["claude-sonnet-5-5", "a:b c:d", ":x", "p:", "claudeAgent:claude-opus-5-5 claude-sonnet-5-5",
+               "claudeAgent:claude-opus-5-5;codex:gpt-6.2-sol", "claudeAgent:claude-opus-5-5\ncodex:gpt-6.2-sol"]
+        self.assertEqual(orch.bad_available_entries(good + bad, self.catalog), bad)
+
+    def test_check_flags_the_same_entries_as_select(self):
+        notes = orch.check_available_notes(self.catalog, self.assets, None, "claudeAgent:claude-sonnet-5-5 claudeAgent:claude-opus-5-5")
+        self.assertIn("--available entry is not provider:model; ignored", [n[0] for n in notes])
+
+    def test_newline_entry_stays_on_one_line(self):
+        rc, out = self.select("claudeAgent:claude-opus-5-5\ncodex:gpt-6.2-sol", implementer="gpt-6.2-sol")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(len(out.strip().splitlines()), 2, out)
 
     def test_malformed_available_errors_before_ranking(self):
         for avail in ("claude-sonnet-5-5,claudeAgent:claude-opus-5-5", "claudeAgent:claude-sonnet-5-5 claudeAgent:claude-opus-5-5"):
