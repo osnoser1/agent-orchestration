@@ -17,9 +17,11 @@
                     [--ui] [--reviewer R] [--surface subagent|conversation] [--event select|complete]
                     [--outcome ok|failed|quota|stall|rework] [--findings N] [--unflagged N] [--repo NAME] [--provisional]
                     [--ref ITEM] [--failure-class C] [--assets F] [--ledger F] [--now ISO]
-  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator [--by model,effort]] [--ledger F] [--catalog F]
+  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator [--by model,effort]] [--ledger F] [--assets F]
+                    [--catalog F]
   orch.py escalate  --role R --ref ITEM --current P:M@E --cause rework|findings|status --available ... [--findings N]
                     [--complexity C --risk R | --coordination 0|1|2] [--implementer P:M] [--approved --to P:M@E] [--dry-run]
+                    [--ledger F] [--assets F] [--catalog F] [--now ISO]
   orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
@@ -4117,6 +4119,10 @@ def escalate_cmd(a):
         to_sc = _rung_score(m_to, to[2])
         if cur_sc is not None and to_sc is not None and to_sc <= cur_sc:
             return fix(f"--to {_show_entry(to_raw)} scores {to_sc}, not above the current {cur_sc}", "--to (a rung scoring above --current)")
+        if m_to["id"] == m_cur["id"] and EFFORT_ORDER.get(to[2], 99) <= EFFORT_ORDER.get(cur[2], 99):
+            return fix(f"--to {_show_entry(to_raw)} is the current model at the same or a lower effort", "--to (a higher effort or another model)")
+        if not any(norm(pr.partition(":")[0]) == norm(to[0]) for pr in avail + [f"{cur[0]}:{cur[1]}"]):
+            return fix(f"--to provider {to[0]} is not in --available", "--to (a provider:model@effort from --available)")
         if impl and m_to["id"] == impl["id"]:
             return fix("--to is the implementer's model", "--to (a model other than the implementer's)")
     cross_role = {"implementer": ("coordination", "implementer"), "reviewer": ("coordination",), "orchestrator": ("complexity", "risk", "implementer")}
@@ -4124,7 +4130,7 @@ def escalate_cmd(a):
     if ignored:
         print(f"note: ignored for --role {role}: {', '.join(ignored)}")
     if not any(norm(p.partition(":")[0]) == norm(cur[0]) and (_rung_model(catalog, p.partition(":")[2]) or {}).get("id") == m_cur["id"] for p in avail):
-        avail.append(f"{cur[0]}:{cur[1]}")
+        avail.append(f"{cur[0]}:{m_cur['id']}")
         print("note: --current pair added to --available")
 
     here = f"{cur[0]}/{m_cur['id']} @ {cur[2]}"

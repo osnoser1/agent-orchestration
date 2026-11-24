@@ -5626,7 +5626,11 @@ class TestQualityEscalation(unittest.TestCase):
         n = len(self.rows())
         for kw in (dict(approved=True), dict(to="codex:gpt-6-2-sol@high"),  # the two go together
                    dict(approved=True, to="codex:gpt-6-2-sol@high", current="claude:claude-opus-5-5@xhigh"),  # 54.89 < 57.44: a step down
-                   dict(approved=True, to="claude:claude-opus-5-5@high", role="reviewer", implementer="claude-opus-5-5")):  # independence
+                   dict(approved=True, to="claude:claude-opus-5-5@high", role="reviewer", implementer="claude-opus-5-5"),  # independence
+                   dict(approved=True, to="claude:claude-opus-5-5@none", current="claude:claude-opus-5-5@high"),  # unrated lower effort
+                   dict(approved=True, to="claude:claude-fable-5-2@low", current="claude:claude-fable-5-2@xhigh"),  # unscored, lower
+                   dict(approved=True, to="claude:claude-fable-5-2@high", current="claude:claude-fable-5-2@high"),  # same rung
+                   dict(approved=True, to="nowhere:claude-opus-5-5@xhigh")):  # provider not offered
             rc, lines = self.esc(kw.pop("current", "codex:gpt-6-2-sol@medium"), "codex:gpt-6-2-sol,claude:claude-opus-5-5", ref="PR-9", **kw)
             self.assertEqual(rc, 1, (kw, lines))
             self.assertTrue(lines[-1].startswith("action: fix "), lines)
@@ -5635,6 +5639,10 @@ class TestQualityEscalation(unittest.TestCase):
         rc, lines = self.esc("claude:claude-fable-5-2@high", "claude:claude-fable-5-2", approved=True, to="claude:claude-opus-5-5@xhigh",
                              ref="PR-8", assets=ap)
         self.assertEqual(lines[-1], "action: escalation cap reached (1 of 1) for PR-8: report it to the user with the evidence")
+
+    def test_current_pair_added_by_catalog_id(self):
+        rc, lines = self.esc("antigravity:Orchestrator (Argon)@high", "antigravity:gemini-4-hydrogen", role="orchestrator", coordination=0)
+        self.assertNotIn("not in catalog", "\n".join(lines))
 
     def test_current_pair_missing_from_available_is_added(self):
         rc, lines = self.esc("codex:gpt-6-2-sol@medium", "claude:claude-opus-5-5")
