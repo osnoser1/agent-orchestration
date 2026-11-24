@@ -1,6 +1,6 @@
 # Batching, durable state, and supervision loop
 
-Use these rules when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, deferring work until a provider renews, or escalating a role whose work falls short.
+Use these rules when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, deferring work after a user hold or a `defer`/`select` hold, or escalating a role whose work falls short.
 
 ## Conflict-aware batching
 
@@ -8,22 +8,22 @@ Before launching items in parallel, compare each item's expected target paths, m
 
 1. **Detect overlap**: when repo policy (`references/repo-policy.md`) or repo scripts provide overlap tooling, run that tool; otherwise compare target paths and coupled modules directly.
 2. **Partition into batches**:
-   - **Independent items** (disjoint target areas) run in parallel in the current batch, by default at most two children per quota pool at once (a user or repo instruction may change the cap) so one batch does not drain a pool; place the rest on other pools or in the next batch.
+   - **Independent items** (disjoint target areas) run in parallel in the current batch, by default at most two children per quota pool at once (a user or repo instruction may change the cap) so one batch does not drain a pool; place the rest on other pools or in the next batch. Treat a full pool as a batch cap rather than a quota wait: run `scripts/orch.py defer --ref <item> --pool-busy <pool>=<n> --pool-cap <cap>` with the selection arguments — it queues when `select`'s pool is at cap and no free pool gives an equally good pick — and follow its `action:` line.
    - **Overlapping items** (touching the same files or coupled module) run sequentially across ordered batches. Keep dependent items queued in durable state and launch each one only after the earlier item lands (or its branch becomes the dependent item's base).
 
-*Done when*: every item sits in a batch, overlapping items are ordered across batches, and each batch's independent items stay within the pool cap.
+*Done when*: every item sits in a batch, overlapping items are ordered across batches, each batch's independent items stay within the pool cap, and items whose `select` pool is at cap with no equally good free pool are queued for the next batch via `defer --pool-busy`.
 
-## Deferred launch until a provider renews
+## Deferred launch (user hold or `defer`/`select` hold only)
 
-When the user holds work for a specific exhausted or renewing provider (rather than spending another provider now):
+Apply this flow only when the user explicitly holds work for a renewing provider, or when `scripts/orch.py defer` / `scripts/orch.py select` prints `hold until` (dispatch what `select` or `defer` names whenever a usable model exists):
 
-1. Record a `resume` follow-up in `assets.yaml` pairing the provider (and optional quota group) with a required tier or model (`references/selection.md`):
-   `python3 scripts/orch.py followups --add --kind resume --ref "<batch-or-task-ref>" --needs "provider:<provider-id>/<tier-or-model>" --after <reset_or_renews + 2m>`
-   (or `provider:<provider-id>/<group-name>/<tier>` on grouped providers). Add `--on-recovery` when the provider or group is exhausted, so the launch fires as soon as it renews early; omit it for a provider that renews on a schedule.
+1. **User hold**: record the `resume` follow-up through `defer`:
+   `python3 scripts/orch.py defer --ref "<batch-or-task-ref>" --user-hold --needs "provider:<provider-id>/<tier-or-model>" --after <reset_or_renews + 2m>`
+   (or `provider:<provider-id>/<group-name>/<tier>` on grouped providers; add `--on-recovery` when the provider or group is exhausted so it fires on early recovery). When `defer` or `select` already printed `hold until`, its `resume` follow-up is recorded.
 2. When the harness supports delayed scheduling (`Scheduled resume` in `references/harnesses.md`), schedule one wakeup at `reset_or_renews + 2m` to launch the batch; otherwise report the renewal timestamp to the user.
 3. Clear the entry with `python3 scripts/orch.py followups --done "<batch-or-task-ref>"` once the batch launches.
 
-*Done when*: the `resume` follow-up exists and its wakeup is scheduled (or the renewal time is reported), and the follow-up is cleared once the batch launches.
+*Done when*: the `resume` follow-up exists (from `defer --user-hold` or a `defer`/`select` hold) and its wakeup is scheduled (or the renewal time is reported), and the follow-up is cleared once the batch launches.
 
 ## Durable orchestration state
 

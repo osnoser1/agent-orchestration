@@ -192,10 +192,8 @@ class OrchContract(unittest.TestCase):
                   "--available", avail, *w.common(assets)], 6, ORCH_FINAL, rc=2, last="ex39", env=env, cwd=w.dir),
         ]
         cases["status"] = [Case(["status", "claude", "low", *w.common()], 3, re.compile(r"^claude: low$"), env=env, cwd=w.dir)]
-        cases["exhaust"] = [
-            Case(["exhaust", "claude", "You've hit your weekly limit · resets Nov 23, 3am (America/New_York)", *w.common()],
-                 3, re.compile(r"^claude: exhausted until \S"), env=env, cwd=w.dir),
-        ]
+        cases["exhaust"] = self.exhaust_cases(w, avail)
+        cases["defer"] = self.defer_cases(w, avail, assets)
         ledger = os.path.join(w.dir, "big-ledger.jsonl")
         with open(ledger, "w", encoding="utf-8") as fh:
             for i in range(500):
@@ -211,6 +209,77 @@ class OrchContract(unittest.TestCase):
         cases["probe"] = self.probe_cases(w)
         cases["policy"] = self.policy_cases(w)
         return cases
+
+    def exhaust_cases(self, w, avail):
+        env = w.env
+        msg = "You've hit your weekly limit · resets Nov 23, 3am (America/New_York)"
+        ctr = [0]
+
+        def fresh_assets(text):
+            ctr[0] += 1
+            return w.write(text, "exhaust-%d.yaml" % ctr[0])
+
+        def large_sel_assets():
+            lines = ["version: 1", "providers:", "  - id: claude", "    status: ok", "  - id: codex", "    status: ok"]
+            for i in range(40):
+                lines += ["  - id: ex%02d" % i, "    status: exhausted", "    exhausted_until: 2026-12-01T00:00:00+00:00"]
+            return fresh_assets("\n".join(lines) + "\n")
+
+        big_avail = avail + ",codex:gpt-6-2-sol"
+        return [
+            Case(lambda: ["exhaust", "claude", msg, *w.common(fresh_assets("version: 1\nproviders:\n  - id: claude\n    status: ok\n"))],
+                 3, ORCH_FINAL, env=env, cwd=w.dir, shows=("claude: exhausted until ",)),
+            Case(lambda: ["exhaust", "claude", msg, "--complexity", "standard", "--risk", "low", "--available", big_avail, *w.common(large_sel_assets())],
+                 6, ORCH_FINAL, last="ex39", env=env, cwd=w.dir, shows=("claude: exhausted until ", "dispatch codex/gpt-6-2-sol")),
+            Case(lambda: ["exhaust", "claude", msg, "--self", "--coordination", "2",
+                          "--available", "claude:claude-opus-5-5,codex:gpt-6-2-sol",
+                          *w.common(fresh_assets("version: 1\nproviders:\n  - id: claude\n    status: ok\n  - id: codex\n    status: ok\n"))],
+                 6, ORCH_FINAL, env=env, cwd=w.dir, shows=("claude: exhausted until ", "orchestrator tier T3", "switch this conversation to codex/gpt-6-2-sol")),
+            Case(lambda: ["exhaust", "claude", msg, "--self", "--coordination", "2",
+                          "--available", "claude:claude-opus-5-5,codex:gpt-6-2-sol",
+                          *w.common(fresh_assets("version: 1\nproviders:\n  - id: claude\n    status: ok\n  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-23T06:50:00+00:00\n"))],
+                 5, ORCH_FINAL, rc=4, env=env, cwd=w.dir, shows=("claude: exhausted until ", "orchestrator-self", "schedule this conversation's resume")),
+        ]
+
+    def defer_cases(self, w, avail, assets):
+        env = w.env
+        ctr = [0]
+
+        def fresh_assets(text):
+            ctr[0] += 1
+            return w.write(text, "defer-%d.yaml" % ctr[0])
+
+        hold_text = (
+            "version: 1\npreferences:\n  below_tier: wait\nproviders:\n"
+            "  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-23T09:00:00+00:00\n"
+        )
+        rev_text = (
+            "version: 1\nproviders:\n"
+            "  - id: claude\n    status: ok\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-23T08:00:00+00:00\n"
+        )
+        return [
+            Case(["defer", "--ref", "item-1", "--role", "implementer", "--complexity", "standard", "--risk", "low",
+                  "--available", avail, *w.common(assets)],
+                 5, ORCH_FINAL, rc=5, last="ex39", env=env, cwd=w.dir, shows=("do not defer item-1",)),
+            Case(["defer", "--ref", "item-cap", "--role", "implementer", "--complexity", "standard", "--risk", "low",
+                  "--available", avail, "--pool-busy", "claude=2", "--pool-cap", "2", *w.common(assets)],
+                 5, ORCH_FINAL, rc=0, last="ex39", env=env, cwd=w.dir, shows=("treat as a batch cap",)),
+            Case(lambda: ["defer", "--ref", "item-user", "--user-hold", "--needs", "provider:codex/T3",
+                          "--after", "2026-11-23T08:02:00+00:00", *w.common(fresh_assets("version: 1\nproviders:\n  - id: codex\n    status: ok\n"))],
+                 3, ORCH_FINAL, rc=0, env=env, cwd=w.dir, shows=("followup recorded: [resume] item-user", "hold item-user as the user asked")),
+            Case(lambda: ["defer", "--ref", "item-hold", "--role", "implementer", "--complexity", "hard", "--risk", "high",
+                          "--available", "claude:claude-opus-5-5,codex:gpt-6-2-sol", *w.common(fresh_assets(hold_text))],
+                 4, ORCH_FINAL, rc=0, env=env, cwd=w.dir, shows=("followup recorded: [resume] item-hold", "hold until 2026-11-23T08:02:00+00:00")),
+            Case(["defer", "--ref", "item-rev", "--role", "reviewer", "--complexity", "standard", "--risk", "medium",
+                  "--available", "claude:claude-opus-5-5,claude:claude-sonnet-5-5,codex:gpt-6-2-sol",
+                  "--implementer", "claude:claude-opus-5-5", *w.common(fresh_assets(rev_text))],
+                 4, ORCH_FINAL, rc=5, env=env, cwd=w.dir, shows=("[note] reviewer degraded:", "do not defer item-rev")),
+            Case(["defer", "--ref", "item-orch", "--role", "orchestrator", "--coordination", "2",
+                  "--available", avail, *w.common(assets)],
+                 6, ORCH_FINAL, rc=5, last="ex39", env=env, cwd=w.dir, shows=("orchestrator tier T3", "do not defer item-orch")),
+        ]
 
     def select_scenarios(self, w):
         """Every select outcome that records a follow-up or stops: compact keeps the recording line and ends on the action."""

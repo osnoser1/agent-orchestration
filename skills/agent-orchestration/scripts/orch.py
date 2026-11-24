@@ -10,6 +10,10 @@
                     [--ref TEXT] [--fail-on-low] [--implementer M] [--catalog F] [--assets F] [--now ISO]
                     [--phase plan|review|supervise --current P:M@E]   (orchestrator per-phase effort)
   orch.py launch    <spec> [--available provider:model[,...]] [--no-probe] [--out FILE] [--assets F] [--catalog F] [--now ISO]
+  orch.py defer     --ref ITEM [--role implementer|reviewer|orchestrator] [--complexity C --risk R | --coordination 0|1|2]
+                    --available ... [--implementer M] [--ui] [--prefer-family F] [--below-tier M]
+                    [--pool-busy POOL=N[,...]] [--pool-cap N]
+                    [--user-hold --needs N [--after ISO] [--on-recovery]] [--catalog F] [--assets F] [--now ISO]
   orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
                     [--available ...] [--catalog F] [--assets F] [--now ISO]
   orch.py log       --complexity C --risk R --provider P --model M --effort E
@@ -17,27 +21,30 @@
                     [--ui] [--reviewer R] [--surface subagent|conversation] [--event select|complete]
                     [--outcome ok|failed|quota|stall|rework] [--findings N] [--unflagged N] [--repo NAME] [--provisional]
                     [--ref ITEM] [--failure-class C] [--assets F] [--ledger F] [--now ISO]
-  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator [--by model,effort]] [--ledger F] [--assets F]
-                    [--catalog F]
+  orch.py history   [--ref ITEM] [--last N] [--role implementer|reviewer|orchestrator [--by model,effort]] [--ledger F] [--assets F] [--catalog F]
   orch.py escalate  --role R --ref ITEM --current P:M@E --cause rework|findings|status --available ... [--findings N]
                     [--complexity C --risk R | --coordination 0|1|2] [--implementer P:M] [--approved --to P:M@E] [--dry-run]
                     [--ledger F] [--assets F] [--catalog F] [--now ISO]
-  orch.py exhaust   <provider> "<quota error message>" [--group G | --model M] [--catalog F] [--assets F] [--now ISO]
+  orch.py exhaust   <provider> "<quota error message>" [--group G | --model M]
+                    [--self --coordination 0|1|2 --available ... | --role orchestrator --coordination 0|1|2 --available ...
+                     | --complexity C --risk R --available ... [--role implementer|reviewer] [--implementer M]]
+                    [--catalog F] [--assets F] [--now ISO]
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
   orch.py scope     --base REF [--max-files N] [--max-lines N] [--expect GLOB ...] [--repo DIR]
   orch.py policy    [--repo DIR] [--check] [--catalog F] [--assets F]
   Every command also takes --full.
 
-Exit codes:
+Exit codes (only the final `action:` line carries the decision):
   0  ok
   1  validation or invocation error
-  2  no candidate meets the required tier (select), no reviewer is usable (select --implementer), or no higher rung (escalate)
-  3  blocked by pre-flight quota threshold (probe >= low_threshold, or select blocked on low/gated/fallback policy),
+  2  no candidate meets the required tier (select / exhaust with selection args), no reviewer is usable, or no higher rung (escalate)
+  3  blocked by pre-flight quota threshold (probe >= low_threshold, or select / exhaust blocked on low/gated/fallback policy),
      or escalate stops at its cap or asks the user
-  4  quota hit (probe >= exhausted_threshold, or select found only exhausted providers)
+  4  quota hit (probe >= exhausted_threshold, or select / exhaust found only exhausted providers)
+  5  defer refused: a usable model exists (dispatch or stage now)
 
-`probe`, `classify`, `select`, `launch`, `escalate`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+`probe`, `classify`, `select`, `launch`, `defer`, `escalate`, `exhaust`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
 `check`, `policy` and `history` end with `ok: …` or `error: N problem(s); action: …`.
 Every command is compact by default: lists stop at 10 items (`… N more (rerun with --full)`), repeated notes group by
 reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
@@ -1078,12 +1085,12 @@ def _gate_cause(reasons):
     return "low" if reasons["threshold"] > 0 else "ask" if reasons["askable"] > 0 else "excluded"
 
 
-def _stop_action(rc, resume_iso, who="", cause="", notes=(), recorded=True):
-    """`action:` line for a `select` exit that dispatches nothing (2, 3 or 4); `who` names a held step such as the review."""
+def _stop_action_text(rc, resume_iso, who="", cause="", notes=(), recorded=True):
+    """`action:` text for a `select` exit that dispatches nothing (2, 3 or 4); `who` names a held step such as the review."""
     if rc == 2:
         research = any("research-unrated" in n for n in notes)
-        _action("no tier match: " + ("run references/research-unrated.md or ask the user" if research else "ask the user"))
-    elif rc == 4:
+        return "no tier match: " + ("run references/research-unrated.md or ask the user" if research else "ask the user")
+    if rc == 4:
         fu_msg = (
             "follow-up in place: schedule its wakeup"
             if recorded == "in_place"
@@ -1091,18 +1098,20 @@ def _stop_action(rc, resume_iso, who="", cause="", notes=(), recorded=True):
             if recorded
             else "no follow-up was recorded (no --ref): add one with followups --add --kind resume"
         )
-        _action(
-            f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; {fu_msg}"
-        )
-    elif cause == "low":
-        _action(
+        return f"hold {who + ' ' if who else ''}until {resume_iso or 'the earliest reset (time unknown)'}; {fu_msg}"
+    if cause == "low":
+        return (
             "rerun select without --fail-on-low and dispatch its " + ("reviewer" if who else "candidate")
             + " (hold only if the user asked to preserve this pool)"
         )
-    elif cause == "ask":
-        _action("ask the user once (only emergency or pay-per-use models remain, and spending them needs approval)")
-    else:
-        _action("no usable model: report to the user (pay-per-use under `never` and `policy: avoid` stay excluded)")
+    if cause == "ask":
+        return "ask the user once (only emergency or pay-per-use models remain, and spending them needs approval)"
+    return "no usable model: report to the user (pay-per-use under `never` and `policy: avoid` stay excluded)"
+
+
+def _stop_action(rc, resume_iso, who="", cause="", notes=(), recorded=True):
+    """Print the `action:` line for a `select` exit that dispatches nothing (2, 3 or 4)."""
+    _action(_stop_action_text(rc, resume_iso, who=who, cause=cause, notes=notes, recorded=recorded))
 
 
 def reviewer_tier(tier, risk):
@@ -1165,8 +1174,8 @@ def _reviewer_why(rt, pick, impl_model, floor):
     return reasons[stage] + (f" (below {rt}: score {c['score']} < {floor})" if below else "")
 
 
-def print_reviewer(rt, pick, impl_model, floor, always=False):
-    """Print the reviewer lines; the degradation note shows in compact mode only when the reviewer is the output (`always`)."""
+def _reviewer_lines(rt, pick, impl_model, floor, always=False):
+    """Reviewer lines; the degradation note shows in compact mode only when the reviewer is the output (`always`)."""
     stage, c, below = pick
     labels = {
         1: "different family",
@@ -1175,22 +1184,30 @@ def print_reviewer(rt, pick, impl_model, floor, always=False):
         4: "same family, different model, fresh context, below tier",
         5: "same model, fresh conversation",
     }
-    _detail(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
+    lines = []
+    if _FULL:
+        lines.append(f"reviewer ({rt}, {labels[stage]}{', below tier' if below and stage == 5 else ''}): {_fmt_cand(c)}")
     why = _reviewer_why(rt, pick, impl_model, floor)
     if why and (always or _FULL):
-        print(f"[note] reviewer degraded: {why}. State this in the report.")
-    return why
+        lines.append(f"[note] reviewer degraded: {why}. State this in the report.")
+    return lines
+
+
+def print_reviewer(rt, pick, impl_model, floor, always=False):
+    """Print the reviewer lines and return the degradation reason (None for a different-family reviewer)."""
+    for line in _reviewer_lines(rt, pick, impl_model, floor, always=always):
+        print(line)
+    return _reviewer_why(rt, pick, impl_model, floor)
 
 
 def _resume_ref(ref_arg, assets_exists):
     return ref_arg or ("current-task" if assets_exists else None)
 
 
-def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low=False):
-    """Record one `kind: resume` entry per ref; refresh it when its fields changed."""
+def _record_resume_lines(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low=False):
+    """Record one `kind: resume` entry per ref; return `(status, line)`."""
     if not ref:
-        print("[note] no assets file and no --ref; pass --ref to record the resume follow-up")
-        return False
+        return False, "[note] no assets file and no --ref; pass --ref to record the resume follow-up"
     entry = {"kind": "resume", "ref": ref, "needs": needs}
     if after_iso:
         entry["after"] = after_iso
@@ -1201,24 +1218,41 @@ def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low
     existing = find_existing_followup(ap, "resume", ref)
     after_txt = f", after {after_iso}" if after_iso else ""
     if existing and dict(existing) == entry:
-        print(f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})")
-        return "in_place"
+        return "in_place", f"followup already scheduled: [resume] {ref} (needs {needs}{after_txt})"
     record_followup(ap, entry, now=now)
     if existing:
-        print(f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup")
-        return "in_place"
-    print(f"followup recorded: [resume] {ref} (needs {needs}{after_txt})")
-    return "recorded"
+        return "in_place", f"followup updated: [resume] {ref} (needs {needs}{after_txt}); reschedule its wakeup"
+    return "recorded", f"followup recorded: [resume] {ref} (needs {needs}{after_txt})"
+
+
+def _record_resume(ap, ref, needs, after_iso, now, on_recovery=True, fail_on_low=False):
+    """Record one `kind: resume` entry per ref; refresh it when its fields changed."""
+    status, line = _record_resume_lines(
+        ap, ref, needs, after_iso, now, on_recovery=on_recovery, fail_on_low=fail_on_low
+    )
+    print(line)
+    return status
+
+
+def _schedule_resume_line(label, earliest_dt):
+    """Return `(resume_iso, optional_detail_line)` for SCHEDULE_RESUME."""
+    if not earliest_dt:
+        return None, (f"SCHEDULE_RESUME: all usable {label} exhausted (reset time unknown)." if _FULL else None)
+    earliest_iso = earliest_dt.isoformat(timespec="seconds")
+    resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
+    line = (
+        f"SCHEDULE_RESUME: all usable {label} exhausted (earliest reset: {earliest_iso}; schedule resume at {resume_iso})."
+        if _FULL
+        else None
+    )
+    return resume_iso, line
 
 
 def _schedule_resume(label, earliest_dt):
     """Print the SCHEDULE_RESUME line; return the resume time (earliest reset + margin) or None."""
-    if not earliest_dt:
-        _detail(f"SCHEDULE_RESUME: all usable {label} exhausted (reset time unknown).")
-        return None
-    earliest_iso = earliest_dt.isoformat(timespec="seconds")
-    resume_iso = (earliest_dt + RESUME_MARGIN).isoformat(timespec="seconds")
-    _detail(f"SCHEDULE_RESUME: all usable {label} exhausted (earliest reset: {earliest_iso}; schedule resume at {resume_iso}).")
+    resume_iso, line = _schedule_resume_line(label, earliest_dt)
+    if line:
+        print(line)
     return resume_iso
 
 
@@ -1268,40 +1302,77 @@ def resolve_implementer(catalog, impl_id):
     return None
 
 
-def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage", assets_exists=False):
-    """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
+def _eval_select_reviewer(
+    a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage", assets_exists=False, record_followups=True
+):
+    """Evaluate the reviewer step without printing; return structured result dict."""
+    lines = []
+    detail = lambda s: lines.append(s) if _FULL else None
     m = resolve_implementer(catalog, impl_id)
     if not m:
-        _detail(f"implementer {impl_id}: not in catalog")
-        _action(f"fix --implementer ({_show_entry(impl_id)} is not in the catalog; pass the implementing <model-id> as discovery lists it) and rerun select; dispatch only the reviewer its action line names")
-        return 1
+        detail(f"implementer {impl_id}: not in catalog")
+        return {
+            "rc": 1,
+            "kind": "error",
+            "lines": lines,
+            "action": f"fix --implementer ({_show_entry(impl_id)} is not in the catalog; pass the implementing <model-id> as discovery lists it) and rerun select; dispatch only the reviewer its action line names",
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
     rt = reviewer_tier(tier, a.risk)
     fail_on_low = bool(a.fail_on_low)
     ref = _resume_ref(_opt_str(a, "ref"), assets_exists)
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     impl_below_tier = best_effort(m, floors[tier], emerg) is None
-    _detail(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
-    _detail(f"implementer (given): {m['family']} / {m['id']}")
+    detail(f"tier {tier} (>= {floors[tier]}); reviewer tier {rt} (>= {floors[rt]})")
+    detail(f"implementer (given): {m['family']} / {m['id']}")
     pick, wait = choose_reviewer(
         catalog, assets, avail, floors, rt, now, m, fail_on_low, a.risk, below_tier_mode, impl_below_tier=impl_below_tier
     )
     if pick:
-        print_reviewer(rt, pick, m, floors[rt], always=True)
-        _action(
+        lines.extend(_reviewer_lines(rt, pick, m, floors[rt], always=True))
+        act = (
             f"dispatch reviewer {_cand_ref(pick[1])} now"
             + ("" if pick[0] == 1 else "; state the reviewer degradation in the report")
         )
-        return 0
+        return {
+            "rc": 0,
+            "kind": "dispatch_reviewer",
+            "lines": lines,
+            "action": act,
+            "candidate": pick[1],
+            "provider": pick[1]["provider"],
+            "reviewer_stage": pick[0],
+            "provisional": False,
+            "resume_iso": None,
+        }
     if wait:
         earliest_dt, needs = wait
-        _detail(
+        detail(
             f"NO REVIEWER: high-risk work under below_tier={below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
             "wait for one to renew"
         )
-        resume_iso = _schedule_resume(f"{rt} reviewers", earliest_dt)
-        rec = _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
-        _stop_action(4, resume_iso, "the review", recorded=rec)
-        return 4
+        resume_iso, sched_line = _schedule_resume_line(f"{rt} reviewers", earliest_dt)
+        if sched_line:
+            lines.append(sched_line)
+        rec = False
+        if record_followups:
+            rec, rline = _record_resume_lines(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
+            lines.append(rline)
+        return {
+            "rc": 4,
+            "kind": "hold",
+            "lines": lines,
+            "action": _stop_action_text(4, resume_iso, "the review", recorded=rec),
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": resume_iso,
+        }
     _, notes, reasons = candidates(
         catalog,
         assets,
@@ -1313,23 +1384,56 @@ def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, 
         pick_top=True,
         task_floor=floors[rt],
     )
-    _detail("NO REVIEWER: no non-excluded model remains (quota recovery order in references/harnesses.md)")
-    _print_notes(notes)
+    detail("NO REVIEWER: no non-excluded model remains (quota recovery order in references/harnesses.md)")
+    lines.extend(_note_lines(notes))
     if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["exhausted"] == 0):
-        _stop_action(3, None, "the review", _gate_cause(reasons))
-        return 3
+        cause = _gate_cause(reasons)
+        return {
+            "rc": 3,
+            "kind": "ask" if cause == "ask" else "stop",
+            "lines": lines,
+            "action": _stop_action_text(3, None, "the review", cause),
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
     if reasons["exhausted"] > 0:
         saw, earliest_dt, needs, _ = exhausted_tier_candidates(catalog, assets, avail, rt, floors[rt], now)
         label = f"{rt} reviewers"
         if not saw:
             _, earliest_dt, _, _ = exhausted_tier_candidates(catalog, assets, avail, "any", 0, now)
             needs, label = "any", "reviewers"
-        resume_iso = _schedule_resume(label, earliest_dt)
-        rec = _record_resume(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
-        _stop_action(4, resume_iso, "the review", recorded=rec)
-        return 4
-    _stop_action(2, None, notes=notes)
-    return 2
+        resume_iso, sched_line = _schedule_resume_line(label, earliest_dt)
+        if sched_line:
+            lines.append(sched_line)
+        rec = False
+        if record_followups:
+            rec, rline = _record_resume_lines(ap, ref, needs, resume_iso, now, fail_on_low=fail_on_low)
+            lines.append(rline)
+        return {
+            "rc": 4,
+            "kind": "hold",
+            "lines": lines,
+            "action": _stop_action_text(4, resume_iso, "the review", recorded=rec),
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": resume_iso,
+        }
+    return {
+        "rc": 2,
+        "kind": "stop",
+        "lines": lines,
+        "action": _stop_action_text(2, None, notes=notes),
+        "candidate": None,
+        "provider": None,
+        "reviewer_stage": None,
+        "provisional": False,
+        "resume_iso": None,
+    }
 
 
 def _parse_pme(val, allow_slash=False):
@@ -1605,23 +1709,41 @@ def _compute_orchestrator_ladder(
     return same_rungs[0], same_rungs, switch_rung, extra_notes, {"rc": 0, "tier": tier, "floor": floor, "max_escalations": oprefs["max_escalations"]}
 
 
-def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_exists=False):
-    """Select an orchestrator effort/model ladder and optional cross-provider switch."""
+def _orch_action_suffix(switch_rung):
+    """Suffixes of select's orchestrator `action:` line, reused by `defer` refusals and `exhaust --self`."""
+    return ("; ask the user before the provider switch" if switch_rung else "") + "; log it with --role orchestrator --rubric <rubric>"
+
+
+def _eval_select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_exists=False, record_followups=True):
+    """Evaluate orchestrator effort/model ladder and optional cross-provider switch without printing."""
+    lines = []
+    detail = lambda s: lines.append(s) if _FULL else None
+
+    def _stop(rc, kind, action, resume_iso=None):
+        return {
+            "rc": rc,
+            "kind": kind,
+            "lines": lines,
+            "action": action,
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": resume_iso,
+        }
+
     if _opt_str(a, "implementer"):
-        print("error: --implementer cannot be used with --role orchestrator")
-        _action("fix select arguments (drop --implementer for --role orchestrator) and rerun select")
-        return 1
+        lines.append("error: --implementer cannot be used with --role orchestrator")
+        return _stop(1, "error", "fix select arguments (drop --implementer for --role orchestrator) and rerun select")
     coord = _opt_int(a, "coordination")
     if coord is None or coord not in (0, 1, 2):
-        print("error: --coordination 0|1|2 is required for --role orchestrator")
-        _action("fix --coordination (0|1|2 required for --role orchestrator) and rerun select")
-        return 1
+        lines.append("error: --coordination 0|1|2 is required for --role orchestrator")
+        return _stop(1, "error", "fix --coordination (0|1|2 required for --role orchestrator) and rerun select")
     phase, cur_raw = _opt_str(a, "phase"), _opt_str(a, "current")
     cur = _parse_pme(cur_raw, allow_slash=True) if cur_raw else None
     if bool(phase) != bool(cur_raw) or (cur_raw and not cur):
-        print("error: --phase plan|review|supervise and --current provider:model@effort go together for --role orchestrator")
-        _action("fix --phase/--current (pass both; --current is the orchestrator's base rung) and rerun select")
-        return 1
+        lines.append("error: --phase plan|review|supervise and --current provider:model@effort go together for --role orchestrator")
+        return _stop(1, "error", "fix --phase/--current (pass both; --current is the orchestrator's base rung) and rerun select")
     fail_on_low, ref_arg = bool(a.fail_on_low), _opt_str(a, "ref")
     ignored = [
         flag for flag, present in (
@@ -1641,47 +1763,62 @@ def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_
     tier, floor, stop_rc = info["tier"], info["floor"], info["rc"]
     if stop_rc != 0:
         if ignored_line:
-            print(ignored_line)
+            lines.append(ignored_line)
         if _FULL:
-            print("NO CANDIDATE:", *extra_notes, sep="\n  ")
+            lines.append("NO CANDIDATE:" + "".join("\n  " + n for n in extra_notes))
         else:
-            _print_notes(extra_notes)
+            lines.extend(_note_lines(extra_notes))
         if stop_rc == 4:
-            sched_iso = _schedule_resume(f"orchestrator {tier} candidates", info["earliest_dt"])
-            rec = _record_resume(ap, _resume_ref(ref_arg, assets_exists), info["resume_needs"], sched_iso, now, fail_on_low=fail_on_low)
-            _stop_action(4, sched_iso, recorded=rec)
-            return 4
+            sched_iso, sched_line = _schedule_resume_line(f"orchestrator {tier} candidates", info["earliest_dt"])
+            if sched_line:
+                lines.append(sched_line)
+            rec = False
+            if record_followups:
+                rec, rline = _record_resume_lines(
+                    ap, _resume_ref(ref_arg, assets_exists), info["resume_needs"], sched_iso, now, fail_on_low=fail_on_low
+                )
+                lines.append(rline)
+            return _stop(4, "hold", _stop_action_text(4, sched_iso, recorded=rec), resume_iso=sched_iso)
         if stop_rc == 3:
-            _stop_action(3, None, "", info["cause"])
-            return 3
-        _stop_action(2, None, notes=extra_notes)
-        return 2
+            cause = info["cause"]
+            return _stop(3, "ask" if cause == "ask" else "stop", _stop_action_text(3, None, "", cause))
+        return _stop(2, "stop", _stop_action_text(2, None, notes=extra_notes))
 
-    print(f"orchestrator tier {tier} (>= {floor}; coordination {coord})")
-    print("ladder: " + " -> ".join(_cand_ref(r) for r in same_rungs))
+    lines.append(f"orchestrator tier {tier} (>= {floor}; coordination {coord})")
+    lines.append("ladder: " + " -> ".join(_cand_ref(r) for r in same_rungs))
     if switch_rung:
-        print(f"provider switch (phase boundary, ask the user first): {_cand_ref(switch_rung)}")
+        lines.append(f"provider switch (phase boundary, ask the user first): {_cand_ref(switch_rung)}")
     if _FULL:
         for r in same_rungs:
-            _detail(f"  rung: {_fmt_cand(r)}")
+            detail(f"  rung: {_fmt_cand(r)}")
         if switch_rung:
-            _detail(f"  switch: {_fmt_cand(switch_rung)}")
+            detail(f"  switch: {_fmt_cand(switch_rung)}")
     if ignored_line:
-        print(ignored_line)
-    _print_notes(extra_notes)
+        lines.append(ignored_line)
+    lines.extend(_note_lines(extra_notes))
+    phase_act = None
     if phase:
-        line, act = _phase_effort(catalog, _orchestrator_prefs(assets)[0], phase, cur)
-        print(line)
-        if act:
-            _action(act)
-            return 0
-    _action(
+        line, phase_act = _phase_effort(catalog, _orchestrator_prefs(assets)[0], phase, cur)
+        lines.append(line)
+    act = phase_act or (
         f"launch the orchestrator on {_cand_ref(same_rungs[0])}; "
         "climb the ladder only on an escalation trigger (references/selection.md)"
-        + ("; ask the user before the provider switch" if switch_rung else "")
-        + "; log it with --role orchestrator --rubric <rubric>"
+        + _orch_action_suffix(switch_rung)
     )
-    return 0
+    return {
+        "rc": 0,
+        "kind": "dispatch_orchestrator",
+        "lines": lines,
+        "action": act,
+        "candidate": same_rungs[0],
+        "same_rungs": same_rungs,
+        "switch_rung": switch_rung,
+        "tier": tier,
+        "provider": same_rungs[0]["provider"],
+        "reviewer_stage": None,
+        "provisional": False,
+        "resume_iso": None,
+    }
 
 
 def _rung_model(catalog, mid):
@@ -1711,42 +1848,104 @@ def _phase_effort(catalog, oprefs, phase, cur):
     return f"phase effort: {phase} -> {to}", (f"at this phase boundary switch the orchestrator in place to {to}" if new != eff else f"stay on {here}")
 
 
-def select(a):
-    _begin(a)
+def select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_exists=False):
+    """Select an orchestrator effort/model ladder and optional cross-provider switch."""
+    res = _eval_select_orchestrator(a, catalog, assets, avail, floors, now, ap=ap, assets_exists=assets_exists)
+    for line in res["lines"]:
+        print(line)
+    _action(res["action"])
+    return res["rc"]
+
+
+def select_reviewer_only(a, catalog, assets, avail, floors, tier, impl_id, now, ap=None, below_tier_mode="stage", assets_exists=False):
+    """Reviewer step: the implementer already ran, so rank the reviewer against the model that did."""
+    res = _eval_select_reviewer(
+        a, catalog, assets, avail, floors, tier, impl_id, now, ap=ap, below_tier_mode=below_tier_mode, assets_exists=assets_exists
+    )
+    for line in res["lines"]:
+        print(line)
+    _action(res["action"])
+    return res["rc"]
+
+
+def _eval_select(a, record_followups=True):
+    """Run select's exact filtering, ranking, fallback, and reviewer logic without printing."""
+    lines = []
+    detail = lambda s: lines.append(s) if _FULL else None
     now = get_now(_opt_str(a, "now"))
     ap = _opt_str(a, "assets") or def_assets()
     catalog = load_catalog_with_local(DEF_CATALOG if not _opt_str(a, "catalog") else _opt_str(a, "catalog"), ap)
     assets_exists = os.path.exists(ap)
     assets = load_file(ap) if assets_exists else None
     if assets is None:
-        _detail(f"[note] no assets file at {ap}: defaults (all providers ok, policy normal)")
+        detail(f"[note] no assets file at {ap}: defaults (all providers ok, policy normal)")
     prefs = (assets or {}).get("preferences") or {}
     floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
     avail = [x.strip() for x in a.available.split(",") if x.strip()]
     bad = bad_available_entries(avail, catalog)
     if bad:
-        print("note: --available entries are not provider:model: " + ", ".join(_capped([_show_entry(x) for x in bad])))
-        _action("fix --available (comma-separated <provider>:<model-id> pairs as discovery lists them) and rerun select; dispatch only the model its action line names")
-        return 1
+        lines.append("note: --available entries are not provider:model: " + ", ".join(_capped([_show_entry(x) for x in bad])))
+        return {
+            "rc": 1,
+            "kind": "error",
+            "lines": lines,
+            "action": "fix --available (comma-separated <provider>:<model-id> pairs as discovery lists them) and rerun select; dispatch only the model its action line names",
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
     raw_role = _opt_str(a, "role")
     impl_id = _opt_str(a, "implementer")
     if raw_role == "orchestrator":
-        return select_orchestrator(a, catalog, assets, avail, floors, now, ap=ap, assets_exists=assets_exists)
+        res = _eval_select_orchestrator(
+            a, catalog, assets, avail, floors, now, ap=ap, assets_exists=assets_exists, record_followups=record_followups
+        )
+        res["lines"] = lines + res["lines"]
+        return res
     if raw_role == "implementer" and impl_id:
-        print("error: --implementer cannot be used with --role implementer")
-        _action("fix select arguments (use --role reviewer with --implementer, or drop --implementer) and rerun select")
-        return 1
+        lines.append("error: --implementer cannot be used with --role implementer")
+        return {
+            "rc": 1,
+            "kind": "error",
+            "lines": lines,
+            "action": "fix select arguments (use --role reviewer with --implementer, or drop --implementer) and rerun select",
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
     if raw_role == "reviewer" and not impl_id:
-        print("error: --implementer is required for --role reviewer")
-        _action("fix --implementer (required for --role reviewer) and rerun select")
-        return 1
+        lines.append("error: --implementer is required for --role reviewer")
+        return {
+            "rc": 1,
+            "kind": "error",
+            "lines": lines,
+            "action": "fix --implementer (required for --role reviewer) and rerun select",
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
     eff_role = raw_role or ("reviewer" if impl_id else "implementer")
     complexity = _opt_str(a, "complexity")
     risk = _opt_str(a, "risk")
     if not complexity or not risk:
-        print(f"error: --complexity and --risk are required for --role {eff_role}")
-        _action(f"fix --complexity/--risk (required for --role {eff_role}) and rerun select")
-        return 1
+        lines.append(f"error: --complexity and --risk are required for --role {eff_role}")
+        return {
+            "rc": 1,
+            "kind": "error",
+            "lines": lines,
+            "action": f"fix --complexity/--risk (required for --role {eff_role}) and rerun select",
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
     tier = TIER[complexity][risk]
     prefer_family = _opt_str(a, "prefer_family")
     fallback_mode = _opt_str(a, "fallback") or prefs.get("ui_fallback") or "proceed"
@@ -1755,10 +1954,10 @@ def select(a):
     ignored = [f for f, on in (("--coordination", _opt_int(a, "coordination") is not None), ("--phase", bool(_opt_str(a, "phase"))),
                                ("--current", bool(_opt_str(a, "current")))) if on]
     if ignored:
-        print(f"note: ignored for --role {eff_role}: {', '.join(ignored)}")
+        lines.append(f"note: ignored for --role {eff_role}: {', '.join(ignored)}")
 
     if impl_id:
-        return select_reviewer_only(
+        res = _eval_select_reviewer(
             a,
             catalog,
             assets,
@@ -1770,7 +1969,10 @@ def select(a):
             ap=ap,
             below_tier_mode=below_tier_mode,
             assets_exists=assets_exists,
+            record_followups=record_followups,
         )
+        res["lines"] = lines + res["lines"]
+        return res
 
     cands, notes, reasons = candidates(
         catalog,
@@ -1784,7 +1986,7 @@ def select(a):
         fail_on_low=bool(a.fail_on_low),
     )
     cands.sort(key=lambda c: c["key"])
-    _detail(f"tier {tier} (>= {floors[tier]})")
+    detail(f"tier {tier} (>= {floors[tier]})")
     if not cands:
         below_cands, _, _ = candidates(
             catalog,
@@ -1830,12 +2032,12 @@ def select(a):
                 if target
                 else f"first usable {tier} (>= {floors[tier]}) model"
             )
-            _detail(
+            detail(
                 f"STAGE (below_tier=stage): no usable candidate meets {tier} (>= {floors[tier]}); "
                 f"starting phase 1 below tier (earliest {tier} reset: {reset_txt}{resume_sched_txt})."
             )
-            _detail(f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}")
-            _detail(
+            detail(f"implementer (phase 1, low-risk only — read, plan, failing tests/red; below {tier}): {fmt(impl)}")
+            detail(
                 f"phase 2 (risky change, destructive steps, review; requires {tier} >= {floors[tier]}): "
                 f"at the phase 1 boundary switch same child in place to {target_txt} immediately. "
                 "Send one continue message only for a verified or observed (harness, provider) pair that resumes "
@@ -1844,66 +2046,125 @@ def select(a):
                 f"A harness that cannot switch in place should defer the new Phase 2 child until {resume_txt}; "
                 f"on a harness without a scheduler, report the reset time ({reset_txt}) to the user."
             )
-            _record_resume(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
-            if ref_val:
-                assets = load_file(ap)
+            if record_followups:
+                _, rline = _record_resume_lines(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
+                lines.append(rline)
+                if ref_val:
+                    assets = load_file(ap)
             if a.risk == "high":
-                _detail(f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); select it when the review step starts in phase 2")
+                detail(f"reviewer ({rt}): high-risk work under stage takes a reviewer meeting {rt} (>= {floors[rt]}); select it when the review step starts in phase 2")
             else:
-                _detail(f"reviewer ({rt}): select when the review step starts in phase 2 (fallback order)")
-            _print_notes(notes)
-            _print_due(catalog, assets, now, avail)
-            _action(
+                detail(f"reviewer ({rt}): select when the review step starts in phase 2 (fallback order)")
+            lines.extend(_note_lines(notes))
+            lines.extend(_due_lines(due_followups(catalog, assets, now, available=avail)))
+            act = (
                 f"stage: dispatch Phase 1 {_cand_ref(impl)} now; switch to "
                 + (_cand_ref(target) if target else f"the first usable {tier} model")
                 + f" at the Phase 1 boundary (earliest reset {reset_txt}), with a resume double check at {resume_iso or 'reset + 2m'}"
             )
-            return 0
+            return {
+                "rc": 0,
+                "kind": "stage",
+                "lines": lines,
+                "action": act,
+                "candidate": impl,
+                "target": target,
+                "tier": tier,
+                "provider": impl["provider"],
+                "reviewer_stage": None,
+                "provisional": False,
+                "resume_iso": resume_iso,
+            }
 
         if can_stage and below_tier_mode == "proceed":
             impl = below_cands[0]
             reset_txt = earliest_iso or "unknown"
-            _detail(
+            detail(
                 f"[provisional] (below_tier=proceed): no usable candidate meets {tier} (>= {floors[tier]}, "
                 f"earliest reset: {reset_txt}); proceeding with best available below-tier model for all phases "
                 f"— tier-meeting ({tier}) re-review follow-up required"
             )
-            _record_resume(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
-            if ref_val:
-                assets = load_file(ap)
-            _detail(f"implementer: {fmt(impl)}")
+            if record_followups:
+                _, rline = _record_resume_lines(ap, ref_val, resume_needs, resume_iso, now, fail_on_low=bool(a.fail_on_low))
+                lines.append(rline)
+                if ref_val:
+                    assets = load_file(ap)
+            detail(f"implementer: {fmt(impl)}")
             pick, wait = choose_reviewer(
                 catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low), a.risk, below_tier_mode, impl_below_tier=True
             )
             if pick:
-                print_reviewer(rt, pick, impl["model"], floors[rt])
+                lines.extend(_reviewer_lines(rt, pick, impl["model"], floors[rt]))
             elif wait:
-                _detail(
+                detail(
                     f"reviewer ({rt}): high-risk work under {below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
                     f"wait for one to renew (needs {wait[1]})"
                 )
-            _print_notes(notes)
-            _print_due(catalog, assets, now, avail)
-            _action(
+            lines.extend(_note_lines(notes))
+            lines.extend(_due_lines(due_followups(catalog, assets, now, available=avail)))
+            act = (
                 f"dispatch {_cand_ref(impl)} now (below {tier}); choose the reviewer when its step starts; "
                 "mark it provisional (log --provisional)"
             )
-            return 0
+            return {
+                "rc": 0,
+                "kind": "dispatch",
+                "lines": lines,
+                "action": act,
+                "candidate": impl,
+                "provider": impl["provider"],
+                "reviewer_stage": None,
+                "provisional": True,
+                "resume_iso": resume_iso,
+            }
 
         if _FULL:
-            print("NO CANDIDATE:", *notes, sep="\n  ")
+            lines.append("NO CANDIDATE:" + ("".join("\n  " + n for n in notes)))
         else:
-            _print_notes(notes)
+            lines.extend(_note_lines(notes))
         if saw_ex_tier and reasons["threshold"] == 0:
-            sched_iso = _schedule_resume(f"{tier} candidates", earliest_dt)
-            rec = _record_resume(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
-            _stop_action(4, sched_iso, recorded=rec)
-            return 4
+            sched_iso, sched_line = _schedule_resume_line(f"{tier} candidates", earliest_dt)
+            if sched_line:
+                lines.append(sched_line)
+            rec = False
+            if record_followups:
+                rec, rline = _record_resume_lines(ap, ref_val, resume_needs, sched_iso, now, fail_on_low=bool(a.fail_on_low))
+                lines.append(rline)
+            return {
+                "rc": 4,
+                "kind": "hold",
+                "lines": lines,
+                "action": _stop_action_text(4, sched_iso, recorded=rec),
+                "candidate": None,
+                "provider": None,
+                "reviewer_stage": None,
+                "provisional": False,
+                "resume_iso": sched_iso,
+            }
         if reasons["threshold"] > 0 or (reasons["gated"] > 0 and reasons["tier"] == 0 and reasons["exhausted"] == 0):
-            _stop_action(3, None, "", _gate_cause(reasons))
-            return 3
-        _stop_action(2, None, notes=notes)
-        return 2
+            cause = _gate_cause(reasons)
+            return {
+                "rc": 3,
+                "kind": "ask" if cause == "ask" else "stop",
+                "lines": lines,
+                "action": _stop_action_text(3, None, "", cause),
+                "candidate": None,
+                "provider": None,
+                "reviewer_stage": None,
+                "provisional": False,
+                "resume_iso": None,
+            }
+        return {
+            "rc": 2,
+            "kind": "stop",
+            "lines": lines,
+            "action": _stop_action_text(2, None, notes=notes),
+            "candidate": None,
+            "provider": None,
+            "reviewer_stage": None,
+            "provisional": False,
+            "resume_iso": None,
+        }
 
     impl = cands[0]
     fmt = _fmt_cand
@@ -1924,75 +2185,546 @@ def select(a):
             catalog, assets, avail, pref_need, floors[tier], now, fail_on_low=bool(a.fail_on_low)
         )
         if pref_state == "not-offered":
-            print(
+            lines.append(
                 f"[note] preferred {pref_need} not offered by this harness; "
                 f"using best available model ({fmt(impl)})"
             )
         else:
             reset_txt = earliest or "unknown"
             if fallback_mode == "defer":
-                _detail(
+                detail(
                     f"DEFER: preferred {pref_need} exhausted (earliest reset: {reset_txt}). "
                     "Recommend waiting for reset (non-urgent work)."
                 )
-                _detail(f"  fallback if urgent: {fmt(impl)}")
-                _print_notes(notes)
-                _action(
-                    f"hold until {_plus_margin(earliest) or 'the preferred model renews (time unknown)'} "
-                    f"(preferred {pref_need} exhausted); record a resume follow-up"
-                )
-                return 3
+                detail(f"  fallback if urgent: {fmt(impl)}")
+                lines.extend(_note_lines(notes))
+                when = _plus_margin(earliest)
+                return {
+                    "rc": 3,
+                    "kind": "hold",
+                    "lines": lines,
+                    "action": (
+                        f"hold until {when or 'the preferred model renews (time unknown)'} "
+                        f"(preferred {pref_need} exhausted); record a resume follow-up"
+                    ),
+                    "candidate": None,
+                    "provider": None,
+                    "reviewer_stage": None,
+                    "provisional": False,
+                    "resume_iso": when,
+                    "pref_need": pref_need,
+                }
             if fallback_mode == "ask":
-                _detail(
+                detail(
                     f"ASK: preferred {pref_need} exhausted (earliest reset: {reset_txt}). "
                     f"Ask the user once: proceed provisionally with {fmt(impl)} (and queue follow-up review) or wait for reset?"
                 )
-                _print_notes(notes)
-                _action(
-                    f"ask the user once (preferred {pref_need} exhausted: proceed provisionally with "
-                    f"{_cand_ref(impl)} and queue a follow-up review, or wait until {_plus_margin(earliest) or 'it renews'})"
-                )
-                return 3
+                lines.extend(_note_lines(notes))
+                return {
+                    "rc": 3,
+                    "kind": "ask",
+                    "lines": lines,
+                    "action": (
+                        f"ask the user once (preferred {pref_need} exhausted: proceed provisionally with "
+                        f"{_cand_ref(impl)} and queue a follow-up review, or wait until {_plus_margin(earliest) or 'it renews'})"
+                    ),
+                    "candidate": None,
+                    "provider": None,
+                    "reviewer_stage": None,
+                    "provisional": False,
+                    "resume_iso": _plus_margin(earliest),
+                }
             # proceed (default)
             provisional = True
-            _detail(
+            detail(
                 f"[provisional] preferred {pref_need} exhausted (earliest reset: {reset_txt}); "
                 "proceeding with fallback model — follow-up review required"
             )
             if assets_exists or ref_arg:
-                fu_entry = {
-                    "kind": pref_kind,
-                    "ref": ref_arg or "current-task",
-                    "needs": pref_need,
-                }
-                if earliest:
-                    fu_entry["after"] = earliest
-                record_followup(ap, fu_entry, now=now)
-                print(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
-                assets = load_file(ap)
+                if record_followups:
+                    fu_entry = {
+                        "kind": pref_kind,
+                        "ref": ref_arg or "current-task",
+                        "needs": pref_need,
+                    }
+                    if earliest:
+                        fu_entry["after"] = earliest
+                    record_followup(ap, fu_entry, now=now)
+                    lines.append(f"followup recorded: [{fu_entry['kind']}] {fu_entry['ref']} (needs {pref_need}, after {reset_txt})")
+                    assets = load_file(ap)
             else:
                 skipped_followup = True
 
-    _detail(f"implementer: {fmt(impl)}")
+    detail(f"implementer: {fmt(impl)}")
 
     rt = reviewer_tier(tier, a.risk)
     pick, wait = choose_reviewer(
         catalog, assets, avail, floors, rt, now, impl["model"], bool(a.fail_on_low), a.risk, below_tier_mode
     )
     if pick:
-        print_reviewer(rt, pick, impl["model"], floors[rt])
+        lines.extend(_reviewer_lines(rt, pick, impl["model"], floors[rt]))
     elif wait:
-        _detail(
+        detail(
             f"reviewer ({rt}): high-risk work under {below_tier_mode} takes a reviewer meeting {rt} (>= {floors[rt]}); "
             f"wait for one to renew (needs {wait[1]})"
         )
-    _print_notes(notes)
-    _print_due(catalog, assets, now, avail)
-    _action(
+    lines.extend(_note_lines(notes))
+    lines.extend(_due_lines(due_followups(catalog, assets, now, available=avail)))
+    act = (
         f"dispatch {_cand_ref(impl)} now; choose the reviewer when its step starts"
         + ("; mark it provisional (log --provisional)" if provisional else "")
         + ("; no assets file, so no follow-up was recorded: queue the preferred-model review yourself" if skipped_followup else "")
     )
+    return {
+        "rc": 0,
+        "kind": "dispatch",
+        "lines": lines,
+        "action": act,
+        "candidate": impl,
+        "provider": impl["provider"],
+        "reviewer_stage": None,
+        "provisional": provisional,
+        "resume_iso": None,
+        "pref_need": pref_need,
+    }
+
+
+def select(a):
+    _begin(a)
+    res = _eval_select(a, record_followups=True)
+    for line in res["lines"]:
+        print(line)
+    _action(res["action"])
+    return res["rc"]
+
+
+def _parse_pool_busy(raw):
+    """Parse `pool=N[,pool/group=N]` entries -> list of `(prov_raw, grp_raw_or_none, count)` or raise ValueError."""
+    entries = []
+    for tok in (raw or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        key, sep, cnt_s = tok.partition("=")
+        key, cnt_s = key.strip(), cnt_s.strip()
+        if not sep or not key or not re.fullmatch(r"\d+", cnt_s):
+            raise ValueError(f"invalid --pool-busy entry {tok!r} (expected <provider>=<N> or <provider>/<group>=<N>)")
+        if "/" in key:
+            prov_r, _, grp_r = key.partition("/")
+            prov_r, grp_r = prov_r.strip(), grp_r.strip()
+            if not prov_r or not grp_r:
+                raise ValueError(f"invalid --pool-busy entry {tok!r} (expected <provider>/<group>=<N>)")
+            entries.append((prov_r, grp_r, int(cnt_s)))
+        else:
+            entries.append((key, None, int(cnt_s)))
+    if not entries:
+        raise ValueError("--pool-busy must list at least one <provider>=<N> entry")
+    return entries
+
+
+def _canon_needs_target(target, catalog):
+    """Return canonical target string matching `_model_matches_need` (tier, family, strength, or canonical model id), or None."""
+    s = target.strip()
+    n = s.lower()
+    if not n:
+        return None
+    t_key = n[len("tier:"):].upper() if n.startswith("tier:") else n.upper()
+    if t_key in FLOORS:
+        return f"tier:{t_key}" if n.startswith("tier:") else t_key
+    models = (catalog or {}).get("models") or []
+    families = {str(m.get("family") or "").lower() for m in models if m.get("family")}
+    if n.startswith("family:"):
+        fam = n[len("family:"):]
+        return f"family:{fam}" if fam in families else None
+    if n in families:
+        return n
+    strengths = {str(st).lower() for m in models for st in (m.get("strengths") or []) if st}
+    if n in strengths:
+        return n
+    canon_id = _catalog_name_map(catalog).get(norm(n))
+    return canon_id
+
+
+def _match_group_by_name(p, grp_raw):
+    """Match a provider group by exact normalized name or case-insensitive substring of its name (not model ids)."""
+    groups = [g for g in ((p or {}).get("groups") or []) if isinstance(g, dict) and g.get("name")]
+    if not groups:
+        return None
+    gn = norm(grp_raw)
+    exact = next((g for g in groups if norm(g["name"]) == gn), None)
+    if exact is not None:
+        return exact
+    low = grp_raw.strip().lower()
+    return next((g for g in groups if low in str(g["name"]).lower()), None)
+
+
+def _never_due_note(target, catalog):
+    """`note:` when a `--needs` model is emergency or unrated: neither ever counts as usable, so the follow-up never becomes due."""
+    m = next((x for x in (catalog or {}).get("models") or [] if isinstance(x, dict) and norm(x.get("id") or "") == norm(target)), None)
+    why = None if not m else "an emergency model" if m.get("cost") == "emergency" else "unrated" if m.get("rating") == "unrated" else None
+    if not why:
+        return None
+    return f"note: --needs {target} is {why}, so this follow-up never becomes due; name a tier or a rated model instead"
+
+
+def _validate_defer_needs(needs, catalog, assets, has_after=False):
+    """Validate and canonicalize `--needs` for `defer --user-hold` so it matches `_model_matches_need`.
+
+    Returns `(canonical_needs, notes, error_msg)`. Unlisted providers emit a `note:` instead of an error.
+    """
+    s = needs.strip()
+    low = s.lower()
+    notes = []
+    if low in ("any", "*"):
+        if has_after:
+            return s, notes, None
+        return None, notes, "--needs 'any' requires --after <ISO> (otherwise the hold is immediately due)"
+    if low.startswith("provider:"):
+        parts = [p.strip() for p in s[len("provider:"):].split("/") if p.strip()]
+        if len(parts) not in (2, 3):
+            return None, notes, f"invalid --needs {s!r} (expected provider:<id>/<tier|model> or provider:<id>/<group>/<tier>)"
+        pid_raw = parts[0]
+        providers = [p for p in ((assets or {}).get("providers") or []) if isinstance(p, dict) and p.get("id")]
+        by_norm = {norm(p["id"]): p for p in providers}
+        p = by_norm.get(norm(pid_raw))
+        if p is not None:
+            canon_pid = p["id"]
+        else:
+            canon_pid = pid_raw
+            notes.append(f"note: provider {pid_raw} is not in assets.yaml (unlisted providers default to ok)")
+        if len(parts) == 3:
+            grp_raw, raw_target = parts[1], parts[2]
+            if p is not None:
+                matched_g = _match_group_by_name(p, grp_raw)
+                if matched_g is None:
+                    return None, notes, f"unknown quota group {grp_raw!r} for provider {canon_pid!r} in --needs"
+                canon_grp = matched_g["name"]
+            else:
+                canon_grp = grp_raw
+        else:
+            canon_grp, raw_target = None, parts[1]
+        canon_target = _canon_needs_target(raw_target, catalog)
+        if canon_target is None:
+            return None, notes, f"unknown target {raw_target!r} in --needs (expected a tier T1-T4, model id, family, or strength)"
+        canon = f"provider:{canon_pid}/{canon_grp}/{canon_target}" if canon_grp else f"provider:{canon_pid}/{canon_target}"
+        notes.extend(n for n in [_never_due_note(canon_target, catalog)] if n)
+        return canon, notes, None
+    canon_target = _canon_needs_target(s, catalog)
+    if canon_target is None:
+        return None, notes, f"unknown --needs {s!r} (expected provider:<id>/<tier>, tier T1-T4, family, strength, or catalog model id)"
+    notes.extend(n for n in [_never_due_note(canon_target, catalog)] if n)
+    return canon_target, notes, None
+
+
+def _pool_cap_filter(avail, busy_entries, pool_cap, catalog, assets):
+    """Validate `--pool-busy` entries and return `(uncapped_avail, capped_lookup, capped_labels)`.
+
+    Raises ValueError when a `--pool-busy` provider has no entry in `avail` or a `<provider>/<group>` does not resolve.
+    """
+    avail_providers = {norm(pair.partition(":")[0]): pair.partition(":")[0].strip() for pair in avail if ":" in pair}
+    providers_by_norm = {
+        norm(p["id"]): p for p in ((assets or {}).get("providers") or []) if isinstance(p, dict) and p.get("id")
+    }
+    cat = {norm(m["id"]): m for m in (catalog or {}).get("models") or []}
+    capped_lookup = {}
+    capped_labels = {}
+    for prov_r, grp_r, cnt in busy_entries:
+        np = norm(prov_r)
+        if np not in avail_providers:
+            raise ValueError(f"--pool-busy provider {prov_r!r} has no entry in --available")
+        disp_prov = avail_providers[np]
+        if grp_r is not None:
+            p = providers_by_norm.get(np)
+            matched_g = _find_provider_group(p, group_arg=grp_r, catalog=catalog) if p else None
+            if matched_g is None or not matched_g.get("name"):
+                raise ValueError(f"--pool-busy group '{prov_r}/{grp_r}' does not match any quota group for {prov_r} in assets.yaml")
+            if cnt >= pool_cap:
+                gn = norm(matched_g["name"])
+                capped_lookup[(np, gn)] = max(capped_lookup.get((np, gn), 0), cnt)
+                capped_labels[(np, gn)] = (f"{disp_prov}/{matched_g['name']}", capped_lookup[(np, gn)])
+        elif cnt >= pool_cap:
+            capped_lookup[(np, None)] = max(capped_lookup.get((np, None), 0), cnt)
+            capped_labels[(np, None)] = (disp_prov, capped_lookup[(np, None)])
+
+    if not capped_lookup:
+        return list(avail), capped_lookup, []
+
+    uncapped = []
+    for pair in avail:
+        prov, _, mid = pair.partition(":")
+        np = norm(prov)
+        p = providers_by_norm.get(np)
+        m = cat.get(norm(mid))
+        g = model_group(p, mid, m) if p else None
+        gn = norm(g["name"]) if (isinstance(g, dict) and g.get("name")) else None
+        if (np, None) in capped_lookup or (gn is not None and (np, gn) in capped_lookup):
+            continue
+        uncapped.append(pair)
+    return uncapped, capped_lookup, list(capped_labels.values())
+
+
+def _cand_cap_match(cand, capped_lookup):
+    """Return `(pool_label, busy_n)` if `cand`'s pool is in `capped_lookup`, else None.
+
+    A provider-level cap is labelled `<provider>` (never `<provider>/<group>`);
+    a group-level cap is labelled `<provider>/<group>`.
+    """
+    prov = cand["provider"]
+    grp = cand.get("group")
+    np = norm(prov)
+    gn = norm(grp) if grp else None
+    if gn is not None and (np, gn) in capped_lookup:
+        return f"{prov}/{grp}", capped_lookup[(np, gn)]
+    if (np, None) in capped_lookup:
+        return prov, capped_lookup[(np, None)]
+    return None
+
+
+def _free_result_is_no_worse(res_all, res_free):
+    """True when `res_free` keeps the same action kind, adds no newly unmet preference or provisional degradation,
+    and (for reviewers) stays at the same or better fallback stage."""
+    if res_free["kind"] != res_all["kind"]:
+        return False
+    if res_free["provisional"] and not res_all["provisional"]:
+        return False
+    if res_free.get("pref_need") and not res_all.get("pref_need"):
+        return False
+    if res_all["kind"] == "dispatch_reviewer" and res_free["reviewer_stage"] > res_all["reviewer_stage"]:
+        return False
+    return True
+
+
+def _defer_refuse(res, ref):
+    """Print refusal lines and action for a `defer` call where `select` would dispatch or stage; return exit 5."""
+    for line in res["lines"]:
+        print(line)
+    if res["kind"] == "dispatch":
+        act = f"dispatch {_cand_ref(res['candidate'])} now; do not defer {ref}"
+        if res["provisional"]:
+            act += "; mark it provisional (log --provisional)"
+    elif res["kind"] == "dispatch_reviewer":
+        act = f"dispatch reviewer {_cand_ref(res['candidate'])} now; do not defer {ref}"
+        if res["reviewer_stage"] != 1:
+            act += "; state the reviewer degradation in the report"
+    elif res["kind"] == "dispatch_orchestrator":
+        act = f"launch the orchestrator on {_cand_ref(res['candidate'])}; do not defer {ref}" + _orch_action_suffix(res.get("switch_rung"))
+    else:
+        act = res["action"] + f"; do not defer {ref}"
+    _action(act)
+    return 5
+
+
+def _defer_hold_or_stop(res, ap, ref, now, extra_lines=()):
+    """Print hold/ask/stop output for `defer`, recording a `resume` follow-up for `ui_fallback: defer`; return 0."""
+    if res["kind"] == "hold" and res.get("pref_need"):
+        pref_need = res["pref_need"]
+        when = res["resume_iso"]
+        status, rline = _record_resume_lines(ap, ref, pref_need, when, now, on_recovery=True)
+        for line in res["lines"]:
+            print(line)
+        for line in extra_lines:
+            print(line)
+        print(rline)
+        fu_msg = "follow-up in place: schedule its wakeup" if status == "in_place" else "follow-up recorded: schedule its wakeup"
+        _action(f"hold until {when or 'the preferred model renews (time unknown)'} (preferred {pref_need} exhausted); {fu_msg}")
+        return 0
+    for line in res["lines"]:
+        print(line)
+    for line in extra_lines:
+        print(line)
+    _action(res["action"])
+    return 0
+
+
+def defer_cmd(a):
+    """Gate before deferring work over quota or reviewer family: refuses when select would dispatch or stage."""
+    _begin(a)
+    now = get_now(_opt_str(a, "now"))
+    ap = _opt_str(a, "assets") or def_assets()
+    ref = _opt_str(a, "ref")
+    if not ref:
+        print("error: defer requires --ref <item>")
+        _action("rerun defer with --ref <item>")
+        return 1
+
+    user_hold = _opt_bool(a, "user_hold")
+    needs = _opt_str(a, "needs")
+    after = _opt_str(a, "after")
+    on_rec = _opt_bool(a, "on_recovery")
+    comp = _opt_str(a, "complexity")
+    risk = _opt_str(a, "risk")
+    coord = _opt_int(a, "coordination")
+    avail = _opt_str(a, "available")
+    role = _opt_str(a, "role")
+    impl = _opt_str(a, "implementer")
+    pool_busy_raw = _opt_str(a, "pool_busy")
+    raw_pb = getattr(a, "pool_busy", None)
+    if pool_busy_raw is None and isinstance(raw_pb, (int, float)) and not isinstance(raw_pb, bool):
+        pool_busy_raw = str(raw_pb)
+
+    if user_hold:
+        if any((comp, risk, coord is not None, avail, impl, _opt_bool(a, "ui"), _opt_str(a, "prefer_family"), _opt_str(a, "below_tier"), pool_busy_raw)):
+            print("error: defer --user-hold does not accept selection or --pool-busy flags")
+            _action("rerun defer --user-hold with --ref, --needs (and optional --after / --on-recovery)")
+            return 1
+        if not needs or not needs.strip():
+            print("error: defer --user-hold requires --needs (e.g. provider:<id>/<tier>)")
+            _action("rerun defer --user-hold with --needs provider:<id>/<tier> (and optional --after <ISO>)")
+            return 1
+        needs = needs.strip()
+        if after is not None and parse_time(after, now) is None:
+            print(f"error: invalid --after timestamp {after!r} (expected ISO date or datetime)")
+            _action("rerun defer --user-hold with an ISO --after timestamp (e.g. 2026-11-23T08:02:00+00:00)")
+            return 1
+        catalog = load_catalog_with_local(DEF_CATALOG if not _opt_str(a, "catalog") else _opt_str(a, "catalog"), ap)
+        assets = load_file(ap) if os.path.exists(ap) else None
+        canon_needs, needs_notes, needs_err = _validate_defer_needs(needs, catalog, assets, has_after=bool(after))
+        if needs_err:
+            print(f"error: {needs_err}")
+            _action("rerun defer --user-hold with a valid --needs (e.g. provider:<id>/<tier>, tier T1-T4, family, or model id)")
+            return 1
+        for note in needs_notes:
+            print(note)
+        status, line = _record_resume_lines(ap, ref, canon_needs, after, now, on_recovery=on_rec)
+        print(line)
+        fu_msg = "follow-up in place: schedule its wakeup" if status == "in_place" else "follow-up recorded: schedule its wakeup"
+        _action(f"hold {ref} as the user asked; {fu_msg}")
+        return 0
+
+    if needs or after or on_rec:
+        print("error: --needs, --after, and --on-recovery require --user-hold")
+        _action("rerun defer with --user-hold (or omit --needs/--after/--on-recovery)")
+        return 1
+
+    eff_role = role or ("reviewer" if impl else "implementer")
+    if eff_role == "orchestrator":
+        if any((comp, risk, impl, _opt_bool(a, "ui"), _opt_str(a, "prefer_family"), _opt_str(a, "below_tier"))):
+            print("error: defer --role orchestrator does not accept worker flags (--complexity/--risk/--implementer/--ui/--prefer-family/--below-tier)")
+            _action("rerun defer --role orchestrator with --coordination 0|1|2 and --available")
+            return 1
+        if coord is None or coord not in (0, 1, 2) or not avail:
+            print("error: defer --role orchestrator requires --coordination 0|1|2 and --available")
+            _action("rerun defer --role orchestrator with --coordination 0|1|2 and --available")
+            return 1
+    else:
+        if coord is not None:
+            print(f"error: --coordination only applies with --role orchestrator (got --role {eff_role})")
+            _action("rerun defer with --role orchestrator --coordination 0|1|2 (or omit --coordination)")
+            return 1
+        if not (comp and risk and avail):
+            print("error: defer requires --complexity, --risk, and --available (or --user-hold)")
+            _action("rerun defer with --complexity, --risk, and --available (or pass --user-hold)")
+            return 1
+        if eff_role == "reviewer" and not impl:
+            print("error: defer --role reviewer requires --implementer <model-id>")
+            _action("rerun defer --role reviewer with --implementer <model-id>")
+            return 1
+        if role == "implementer" and impl:
+            print("error: --implementer only applies with --role reviewer")
+            _action("rerun defer with --role reviewer --implementer <model-id> (or omit --implementer)")
+            return 1
+
+    pool_cap = _opt_int(a, "pool_cap")
+    if pool_cap is None:
+        pool_cap = 2
+    if pool_cap < 1:
+        print(f"error: --pool-cap must be >= 1 (got {pool_cap})")
+        _action("rerun defer with --pool-cap >= 1")
+        return 1
+
+    busy_entries = []
+    if pool_busy_raw is not None:
+        try:
+            busy_entries = _parse_pool_busy(pool_busy_raw)
+        except ValueError as exc:
+            print(f"error: {exc}")
+            _action("rerun defer with --pool-busy <provider>=<N>[,<provider>/<group>=<N>]")
+            return 1
+
+    sel_a = argparse.Namespace(
+        role=eff_role,
+        complexity=comp,
+        risk=risk,
+        coordination=coord if eff_role == "orchestrator" else None,
+        available=avail,
+        ui=_opt_bool(a, "ui"),
+        prefer_family=_opt_str(a, "prefer_family"),
+        fallback=None,
+        below_tier=_opt_str(a, "below_tier"),
+        ref=ref,
+        fail_on_low=False,
+        implementer=impl if eff_role == "reviewer" else None,
+        catalog=_opt_str(a, "catalog"),
+        assets=ap,
+        now=_opt_str(a, "now"),
+        full=_FULL,
+    )
+
+    catalog = load_catalog_with_local(DEF_CATALOG if not _opt_str(a, "catalog") else _opt_str(a, "catalog"), ap)
+    assets = load_file(ap) if os.path.exists(ap) else None
+    avail_pairs = [x.strip() for x in avail.split(",") if x.strip()]
+    bad_avail = bad_available_entries(avail_pairs, catalog)
+    if bad_avail:
+        res_err = _eval_select(sel_a, record_followups=False)
+        for line in res_err["lines"]:
+            print(line)
+        _action(res_err["action"])
+        return 1
+
+    try:
+        uncapped_pairs, capped_lookup, capped_labels = _pool_cap_filter(avail_pairs, busy_entries, pool_cap, catalog, assets)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        _action("rerun defer with valid --pool-busy <provider>=<N>[,<provider>/<group>=<N>] matching --available and assets.yaml")
+        return 1
+
+    dispatch_kinds = ("dispatch", "dispatch_reviewer", "dispatch_orchestrator", "stage")
+    if not capped_lookup:
+        res = _eval_select(sel_a, record_followups=True)
+        if res["kind"] == "error":
+            for line in res["lines"]:
+                print(line)
+            _action(res["action"])
+            return 1
+        if res["kind"] in dispatch_kinds:
+            return _defer_refuse(res, ref)
+        return _defer_hold_or_stop(res, ap, ref, now)
+
+    # One or more pools are at cap: evaluate the full set first (dry, no follow-up write yet).
+    res_all = _eval_select(sel_a, record_followups=False)
+    if res_all["kind"] == "error":
+        for line in res_all["lines"]:
+            print(line)
+        _action(res_all["action"])
+        return 1
+    if res_all["kind"] not in dispatch_kinds:
+        # Even with capped pools included, nothing dispatches: genuine quota/policy hold or ask.
+        res_real = _eval_select(sel_a, record_followups=True)
+        cap_notes = ()
+        if res_real["kind"] == "ask" and capped_labels:
+            cap_txt = ", ".join(f"{lbl} ({cnt}/{pool_cap})" for lbl, cnt in capped_labels)
+            cap_notes = (f"note: pool(s) at cap: {cap_txt}",)
+        return _defer_hold_or_stop(res_real, ap, ref, now, extra_lines=cap_notes)
+
+    # If the pool select picked (Phase 1 pool for stage) is NOT capped, refuse with that exact result.
+    cap_hit = _cand_cap_match(res_all["candidate"], capped_lookup)
+    if cap_hit is None:
+        res_real = _eval_select(sel_a, record_followups=True)
+        return _defer_refuse(res_real, ref)
+
+    # The picked pool IS capped: accept a free-pool candidate only when it is no worse.
+    if uncapped_pairs:
+        free_a = argparse.Namespace(**{**vars(sel_a), "available": ",".join(uncapped_pairs)})
+        res_free_dry = _eval_select(free_a, record_followups=False)
+        if _free_result_is_no_worse(res_all, res_free_dry):
+            res_free = _eval_select(free_a, record_followups=True)
+            return _defer_refuse(res_free, ref)
+
+    # No equivalent uncapped pool would dispatch -> queue for the next batch on the capped pool.
+    pool_label, busy_n = cap_hit
+    for line in res_all["lines"]:
+        print(line)
+    _action(f"queue {ref} for the next batch (pool {pool_label} at cap {busy_n}/{pool_cap}); treat as a batch cap, not a quota wait")
     return 0
 
 
@@ -2703,8 +3435,143 @@ def _find_provider_group(p, group_arg=None, model_arg=None, catalog=None):
     return None
 
 
+def _exhaust_next_action(a, ap):
+    """Print the follow-on action line for `exhaust` (selection args, `--self`, or default guidance)."""
+    is_self = _opt_bool(a, "is_self") or _opt_bool(a, "self")
+    comp = _opt_str(a, "complexity")
+    risk = _opt_str(a, "risk")
+    coord = _opt_int(a, "coordination")
+    avail = _opt_str(a, "available")
+    role = _opt_str(a, "role")
+    impl = _opt_str(a, "implementer")
+    has_sel = any((comp, risk, coord is not None, avail, role, impl, _opt_bool(a, "ui"), _opt_str(a, "below_tier"), _opt_str(a, "ref")))
+
+    if is_self:
+        self_ref = _opt_str(a, "ref") or "orchestrator-self"
+        sel_a = argparse.Namespace(
+            role="orchestrator",
+            complexity=None,
+            risk=None,
+            coordination=coord,
+            available=avail,
+            ui=False,
+            prefer_family=None,
+            fallback=None,
+            below_tier=None,
+            ref=self_ref,
+            fail_on_low=False,
+            implementer=None,
+            catalog=_opt_str(a, "catalog"),
+            assets=ap,
+            now=_opt_str(a, "now"),
+            full=_FULL,
+        )
+        res = _eval_select(sel_a, record_followups=True)
+        for line in res["lines"]:
+            print(line)
+        if res["kind"] == "error":
+            _action(res["action"])
+            return 1
+        if res["kind"] == "dispatch_orchestrator":
+            _action(
+                f'switch this conversation to {_cand_ref(res["candidate"])} in place, or hand off with orch.py launch <spec> '
+                '(references/harnesses.md "Orchestrator\'s own quota")' + _orch_action_suffix(res.get("switch_rung"))
+            )
+            return 0
+        if res["kind"] == "hold":
+            when = res["resume_iso"] or "the earliest reset (time unknown)"
+            _action(f"hold until {when}; schedule this conversation's resume")
+            return res["rc"]
+        _action(res["action"])
+        return res["rc"]
+
+    if has_sel:
+        eff_role = role or ("reviewer" if impl else "implementer")
+        sel_a = argparse.Namespace(
+            role=eff_role,
+            complexity=comp,
+            risk=risk,
+            coordination=coord if eff_role == "orchestrator" else None,
+            available=avail,
+            ui=_opt_bool(a, "ui"),
+            prefer_family=None,
+            fallback=None,
+            below_tier=_opt_str(a, "below_tier"),
+            ref=_opt_str(a, "ref"),
+            fail_on_low=False,
+            implementer=impl if eff_role == "reviewer" else None,
+            catalog=_opt_str(a, "catalog"),
+            assets=ap,
+            now=_opt_str(a, "now"),
+            full=_FULL,
+        )
+        res = _eval_select(sel_a, record_followups=True)
+        for line in res["lines"]:
+            print(line)
+        _action(res["action"])
+        return res["rc"]
+
+    _action("run select (or defer) with the exhausted model removed and follow its action: line")
+    return 0
+
+
 def exhaust(a):
     _begin(a)
+    is_self = _opt_bool(a, "is_self") or _opt_bool(a, "self")
+    comp = _opt_str(a, "complexity")
+    risk = _opt_str(a, "risk")
+    coord = _opt_int(a, "coordination")
+    avail = _opt_str(a, "available")
+    role = _opt_str(a, "role")
+    impl = _opt_str(a, "implementer")
+    extra_sel = any((_opt_bool(a, "ui"), _opt_str(a, "below_tier"), _opt_str(a, "ref")))
+    has_sel = any((comp, risk, coord is not None, avail, role, impl)) or extra_sel
+    if is_self:
+        if any((comp, risk, role, impl, _opt_bool(a, "ui"), _opt_str(a, "below_tier"))):
+            print("error: exhaust --self uses the orchestrator ladder (--coordination 0|1|2); omit worker flags")
+            _action("rerun exhaust --self with --coordination 0|1|2 and --available")
+            return 1
+        if coord is None or coord not in (0, 1, 2) or not avail:
+            print("error: exhaust --self requires --coordination 0|1|2 and --available")
+            _action("rerun exhaust --self with --coordination 0|1|2 and --available")
+            return 1
+    elif has_sel:
+        if role == "orchestrator":
+            if any((comp, risk, impl, _opt_bool(a, "ui"), _opt_str(a, "below_tier"))):
+                print("error: exhaust --role orchestrator does not accept worker flags")
+                _action("rerun exhaust --role orchestrator with --coordination 0|1|2 and --available")
+                return 1
+            if coord is None or coord not in (0, 1, 2) or not avail:
+                print("error: exhaust --role orchestrator requires --coordination 0|1|2 and --available")
+                _action("rerun exhaust --role orchestrator with --coordination 0|1|2 and --available")
+                return 1
+        else:
+            if coord is not None:
+                print("error: --coordination only applies with --self or --role orchestrator")
+                _action("rerun exhaust with --self --coordination 0|1|2 (or omit --coordination)")
+                return 1
+            if not (comp and risk and avail):
+                print("error: exhaust selection arguments require --complexity, --risk, and --available")
+                _action("rerun exhaust with --complexity, --risk, and --available (or omit all selection flags to only record the lockout)")
+                return 1
+            if role == "reviewer" and not impl:
+                print("error: exhaust --role reviewer requires --implementer <model-id>")
+                _action("rerun exhaust --role reviewer with --implementer <model-id>")
+                return 1
+            if role == "implementer" and impl:
+                print("error: --implementer only applies with --role reviewer")
+                _action("rerun exhaust with --role reviewer --implementer <model-id> (or omit --implementer)")
+                return 1
+    if avail:
+        bad_ap = _opt_str(a, "assets") or def_assets()
+        bad_cat_path = _opt_str(a, "catalog") or DEF_CATALOG
+        bad_cat = load_catalog_with_local(bad_cat_path, bad_ap) if os.path.exists(bad_cat_path) else {"models": []}
+        bad = bad_available_entries([x.strip() for x in avail.split(",") if x.strip()], bad_cat)
+        if bad:
+            print("error: --available entries are not provider:model: " + ", ".join(_capped([_show_entry(x) for x in bad])))
+            _action("fix --available (comma-separated <provider>:<model-id> pairs as discovery lists them) and rerun exhaust; nothing was recorded")
+            return 1
+
     now = get_now(_opt_str(a, "now"))
     t = parse_reset(a.message, now)
     raw_note = a.message.replace('"', "'")[:200]
@@ -2771,7 +3638,7 @@ def exhaust(a):
                 f"{a.provider} ({target_g.get('name')}): exhausted until {until}"
                 + ("" if t else " (unparsed, +1h default)")
             )
-            return 0
+            return _exhaust_next_action(a, ap)
 
         # Provider has no groups block yet; seed the targeted group entry so subsequent probe merges it.
         name_map = _catalog_name_map(catalog)
@@ -2790,7 +3657,7 @@ def exhaust(a):
         prov_st = (p or {}).get("status", "ok")
         edit_provider(ap, a.provider, {"status": prov_st, "groups": [seeded]}, now=now)
         print(f"{a.provider} ({gname}): exhausted until {until}" + ("" if t else " (unparsed, +1h default)"))
-        return 0
+        return _exhaust_next_action(a, ap)
 
     f = {"status": "exhausted", "exhausted_until": until, "status_note": quoted_note}
     clear = [] if not t else ["unparsed"]
@@ -2798,7 +3665,7 @@ def exhaust(a):
         f["unparsed"] = "true"
     edit_provider(ap, a.provider, f, now=now, clear_keys=clear)
     print(f"{a.provider}: exhausted until {until}" + ("" if t else " (unparsed, +1h default)"))
-    return 0
+    return _exhaust_next_action(a, ap)
 
 
 # ---------- automatic quota probes ----------
@@ -5440,6 +6307,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
     "classify": "classify --size 2 --uncertainty 1 --deps 2 --consequences 1 --verification 1 --coordination 2",
     "select": "select --complexity standard --risk low --available claude:claude-opus-5-5,codex:gpt-6-2-sol",
     "launch": "launch task.launch.yaml --available codex:gpt-6.2-sol,claudeAgent:claude-opus-5-5",
+    "defer": "defer --ref PR-42 --role implementer --complexity standard --risk low --available claude:claude-opus-5-5,codex:gpt-6-2-sol",
     "followups": "followups --due --available claude:claude-opus-5-5",
     "log": "log --complexity standard --risk low --provider claude --model claude-opus-5-5 --effort high",
     "history": "history --last 5",
@@ -5455,12 +6323,16 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "classify", "select", "launch", "followups", "log", "history", "escalate", "exhaust", "status", "failure", "scope", "policy"):
+    for n in ("check", "probe", "classify", "select", "launch", "defer", "followups", "log", "history", "escalate", "exhaust", "status", "failure", "scope", "policy"):
         usage = (
             "orch.py log [options] [--event select|complete] [--ui] [--surface subagent|conversation] [--repo NAME] [--assets F] [--ledger F] [--now ISO] [--full]"
             if n == "log"
             else "orch.py launch <spec> [options]"
             if n == "launch"
+            else "orch.py defer [options] [--assets F] [--catalog F] [--now ISO]"
+            if n == "defer"
+            else "orch.py exhaust [options] [--assets F] [--catalog F] [--now ISO]"
+            if n == "exhaust"
             else f"orch.py {n} [options]"
         )
         p = sub.add_parser(
@@ -5475,12 +6347,12 @@ def build_parser():
             help=argparse.SUPPRESS if n == "log" else "print every detail line and remove the list caps",
         )
         if n not in ("scope", "policy", "classify"):
-            p.add_argument("--assets", help=argparse.SUPPRESS if n == "log" else None)
-            p.add_argument("--now", help=argparse.SUPPRESS if n == "log" else None)
+            p.add_argument("--assets", help=argparse.SUPPRESS if n in ("log", "defer", "exhaust") else None)
+            p.add_argument("--now", help=argparse.SUPPRESS if n in ("log", "defer", "exhaust") else None)
         elif n in ("policy", "classify"):
             p.add_argument("--assets")
         if n not in ("log", "failure", "scope", "classify"):
-            p.add_argument("--catalog")
+            p.add_argument("--catalog", help=argparse.SUPPRESS if n in ("defer", "exhaust") else None)
         if n == "check":
             p.add_argument("--lockfile")
             p.add_argument("--available")
@@ -5514,6 +6386,23 @@ def build_parser():
             p.add_argument("--available", help="comma-separated provider:model pairs (overrides spec available)")
             p.add_argument("--no-probe", action="store_true", help="skip quota refresh before resolving the model")
             p.add_argument("--out", metavar="FILE", help="output JSON path (default: <spec without .launch.yaml>.payload.json)")
+        if n == "defer":
+            p.add_argument("--ref", required=True, help="item or batch label")
+            p.add_argument("--role", choices=list(VALID_ROLES))
+            p.add_argument("--complexity", choices=list(TIER))
+            p.add_argument("--risk", choices=["low", "medium", "high"])
+            p.add_argument("--coordination", type=int, choices=[0, 1, 2])
+            p.add_argument("--available")
+            p.add_argument("--implementer")
+            p.add_argument("--ui", action="store_true")
+            p.add_argument("--prefer-family")
+            p.add_argument("--below-tier", choices=list(VALID_BELOW_TIER))
+            p.add_argument("--user-hold", action="store_true", help="the user explicitly asked to wait")
+            p.add_argument("--needs", help="with --user-hold (required): follow-up target (e.g. provider:<id>/<tier>)")
+            p.add_argument("--after", help="with --user-hold: ISO resume time")
+            p.add_argument("--on-recovery", action="store_true", help="with --user-hold: due as soon as the pool recovers")
+            p.add_argument("--pool-busy", metavar="POOL=N[,...]", help="running children per pool (e.g. codex=2,antigravity/Gemini=1)")
+            p.add_argument("--pool-cap", type=int, default=2, metavar="N", help="max parallel children per pool (default: 2)")
         if n == "followups":
             p.add_argument("--due", action="store_true")
             p.add_argument("--add", action="store_true")
@@ -5593,6 +6482,16 @@ def build_parser():
             p.add_argument("message")
             p.add_argument("--group")
             p.add_argument("--model")
+            p.add_argument("--self", dest="is_self", action="store_true", help="orchestrator's own conversation hit quota (uses --coordination)")
+            p.add_argument("--coordination", type=int, choices=[0, 1, 2])
+            p.add_argument("--complexity", choices=list(TIER))
+            p.add_argument("--risk", choices=["low", "medium", "high"])
+            p.add_argument("--available")
+            p.add_argument("--role", choices=list(VALID_ROLES))
+            p.add_argument("--implementer")
+            p.add_argument("--ui", action="store_true")
+            p.add_argument("--below-tier", choices=list(VALID_BELOW_TIER))
+            p.add_argument("--ref")
         if n == "status":
             p.add_argument("state", choices=["ok", "low"])
         for act in p._actions:
@@ -5609,6 +6508,7 @@ def main():
         "classify": classify_cmd,
         "select": select,
         "launch": launch_cmd,
+        "defer": defer_cmd,
         "followups": followups_cmd,
         "log": log_cmd,
         "history": history_cmd,
