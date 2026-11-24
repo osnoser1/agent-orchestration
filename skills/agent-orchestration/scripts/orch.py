@@ -1709,9 +1709,14 @@ def _compute_orchestrator_ladder(
     return same_rungs[0], same_rungs, switch_rung, extra_notes, {"rc": 0, "tier": tier, "floor": floor, "max_escalations": oprefs["max_escalations"]}
 
 
-def _orch_action_suffix(switch_rung):
-    """Suffixes of select's orchestrator `action:` line, reused by `defer` refusals and `exhaust --self`."""
-    return ("; ask the user before the provider switch" if switch_rung else "") + "; log it with --role orchestrator --rubric <rubric>"
+def _orch_action_suffix(switch_rung, name_rung=False):
+    """Suffixes of select's orchestrator `action:` line, reused by `defer` refusals and `exhaust --self`; those pass
+    `name_rung` so the clause names the phase-boundary provider-switch rung and is not read as a gate on the self-switch."""
+    if switch_rung and name_rung:
+        sw = f"; ask the user before the phase-boundary provider switch to {_cand_ref(switch_rung)}"
+    else:
+        sw = "; ask the user before the provider switch" if switch_rung else ""
+    return sw + "; log it with --role orchestrator --rubric <rubric>"
 
 
 def _eval_select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, assets_exists=False, record_followups=True):
@@ -2507,7 +2512,7 @@ def _defer_refuse(res, ref):
         if res["reviewer_stage"] != 1:
             act += "; state the reviewer degradation in the report"
     elif res["kind"] == "dispatch_orchestrator":
-        act = f"launch the orchestrator on {_cand_ref(res['candidate'])}; do not defer {ref}" + _orch_action_suffix(res.get("switch_rung"))
+        act = f"launch the orchestrator on {_cand_ref(res['candidate'])}; do not defer {ref}" + _orch_action_suffix(res.get("switch_rung"), name_rung=True)
     else:
         act = res["action"] + f"; do not defer {ref}"
     _action(act)
@@ -3475,7 +3480,7 @@ def _exhaust_next_action(a, ap):
         if res["kind"] == "dispatch_orchestrator":
             _action(
                 f'switch this conversation to {_cand_ref(res["candidate"])} in place, or hand off with orch.py launch <spec> '
-                '(references/harnesses.md "Orchestrator\'s own quota")' + _orch_action_suffix(res.get("switch_rung"))
+                '(references/harnesses.md "Orchestrator\'s own quota")' + _orch_action_suffix(res.get("switch_rung"), name_rung=True)
             )
             return 0
         if res["kind"] == "hold":

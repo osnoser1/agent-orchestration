@@ -92,7 +92,7 @@ Escalate any role (implementer, reviewer, or orchestrator) when its work falls s
 
 On `STATUS: ESCALATE`, first rerun `orch.py classify` with the child's `ASSESSMENT` (keep your `coordination` score), so its `--complexity`/`--risk` raise the tier floor. Then run `python3 scripts/orch.py escalate --role <role> --ref <item> --current <provider:model@effort> --cause rework|findings|status --available <provider:model,...> [--findings N]`, adding `--complexity`/`--risk` for workers, `--implementer` for a reviewer, or `--coordination` for the orchestrator, and follow its `action:` line; it logs the escalation with its cause. When the line asks the user (unknown current score, emergency-only rung, or the orchestrator's provider switch), rerun it after approval with `--approved --to <provider:model@effort>` to log the approved switch.
 
-After the switch, log the new rung with `log --event select` (`references/improvement.md`) and re-review the change as a delta (`references/selection.md`, Re-reviews).
+After the switch, log the new rung with `log --event select` (`references/improvement.md`; an orchestrator switching itself verifies and logs per `references/harnesses.md`, Orchestrator's own quota, step 3) and re-review the change as a delta (`references/selection.md`, Re-reviews).
 
 Without Python:
 

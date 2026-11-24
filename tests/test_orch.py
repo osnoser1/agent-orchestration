@@ -5846,6 +5846,10 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
         sel_last = out_s.strip().splitlines()[-1]
         sfx = "; ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>"
         self.assertTrue(sel_last.endswith(sfx), out_s)
+        # defer and exhaust --self name the phase-boundary rung, so the clause does not read as a gate on the self-switch
+        sw_prefix = "provider switch (phase boundary, ask the user first): "
+        sw = next(l for l in out_s.splitlines() if l.startswith(sw_prefix))[len(sw_prefix):]
+        named = f"; ask the user before the phase-boundary provider switch to {sw}; log it with --role orchestrator --rubric <rubric>"
 
         ap_def = self._write_assets(text, "sfx-defer.yaml")
         rc_d, out_d = self._defer(
@@ -5853,7 +5857,7 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
         )
         self.assertEqual(rc_d, 5, out_d)
         def_last = out_d.strip().splitlines()[-1]
-        self.assertTrue(def_last.endswith("; do not defer orch-sfx" + sfx), out_d)
+        self.assertTrue(def_last.endswith("; do not defer orch-sfx" + named), out_d)
         self.assertEqual(def_last.split(";")[0], sel_last.split(";")[0])
 
         ap_ex = self._write_assets(text, "sfx-exhaust.yaml")
@@ -5866,7 +5870,7 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
         ex_last = out_e.strip().splitlines()[-1]
         self.assertTrue(ex_last.startswith("action: switch this conversation to "), out_e)
         self.assertIn("orch.py launch <spec>", ex_last)
-        self.assertTrue(ex_last.endswith(sfx), out_e)
+        self.assertTrue(ex_last.endswith(named), out_e)
 
     def test_defer_user_hold_notes_needs_that_never_become_due(self):
         ap = self._write_assets(
