@@ -928,18 +928,20 @@ def release_state(root, run=sh, check_fn=run_checks):
         problems.append("git status failed")
     elif out.strip():
         problems.append("working tree is not clean")
-    # Any clean worktree works: the HEAD == origin/main check below pins the commit, not the branch name.
-    rc, out = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], root)
-    if rc == 0 and out.strip() != "main":
-        notes.append("releasing from %s at origin/main" % (out.strip() if out.strip() not in ("", "HEAD") else "detached HEAD"))
-    rc, _ = run(["git", "fetch", "--quiet", "origin", "main"], root)
+    # Any clean worktree works: HEAD == origin/main pins the commit, not the branch name. The explicit refspec
+    # updates refs/remotes/origin/main even when remote.origin.fetch does not cover main.
+    rc, _ = run(["git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"], root)
     if rc != 0:
         problems.append("git fetch origin main failed")
     rc_h, head = run(["git", "rev-parse", "HEAD"], root)
-    rc_o, origin = run(["git", "rev-parse", "origin/main"], root)
+    rc_o, origin = run(["git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"], root)
     head = head.strip()
     if rc_h != 0 or rc_o != 0 or head != origin.strip():
         problems.append("HEAD is not origin/main (push or pull first)")
+    else:
+        rc, out = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], root)
+        if rc == 0 and out.strip() != "main":
+            notes.append("releasing from %s at origin/main" % (out.strip() if out.strip() not in ("", "HEAD") else "detached HEAD"))
     checked = check_fn(root)
     if checked.errors:
         problems.append("check has %d error(s); run: python3 tools/repo.py check" % len(checked.errors))
@@ -974,7 +976,7 @@ def release_state(root, run=sh, check_fn=run_checks):
     if local:
         notes.append("tag %s already exists locally at HEAD; not recreating it" % tag)
     else:
-        state["steps"].append(["git", "tag", "-a", tag, "-m", "Release " + tag])
+        state["steps"].append(["git", "tag", "-a", tag, "-m", "Release " + tag, head])  # tag the checked commit
     if remote:
         notes.append("tag %s is already on origin at HEAD and has no release yet; resuming at gh" % tag)
     else:

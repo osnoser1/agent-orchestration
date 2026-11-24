@@ -7,6 +7,6 @@
 - Validate before pushing (each exits 0): `agentskills validate skills/agent-orchestration` (from `pip install skills-ref`), `python3 skills/agent-orchestration/scripts/orch.py check`, `python3 tools/repo.py check` (add `--base origin/main` for the version-bump rule), `python3 tools/repo.py check --self-test`, `python3 -m unittest discover -s tests`, and `npx skills add . --list` (lists only `agent-orchestration`).
 - Update vendored skills under `.agents/skills/` only with `npx skills update` (tracked in `skills-lock.json`); mark repo-local maintainer skills under `.agents/skills/` with `metadata.internal: "true"` so `npx skills add . --list` exposes only `agent-orchestration`.
 - Version: the PR author runs `python3 tools/repo.py bump <X.Y.Z>` once per PR that changes `skills/agent-orchestration/` or `.claude-plugin/`. Patch = fix or doc wording, minor = new rule or feature, major = breaking `assets.yaml` or catalog schema.
-- Release only when the user asks, from any clean worktree at origin/main: show the dry run (`python3 tools/repo.py release`) and get approval before `--publish`, which tags and creates the GitHub release.
+- Release only when the user asks, from any clean worktree whose HEAD equals origin/main: show the dry run (`python3 tools/repo.py release`) and get approval before `--publish`, which tags and creates the GitHub release.
 - Rules that must survive edits live in `tools/pinned-rules.json`; change a pinned rule and its entry together.
 - Orchestrating work in this repo: follow [.agents/orchestration.md](.agents/orchestration.md).
