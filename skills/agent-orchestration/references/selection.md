@@ -65,5 +65,7 @@ When `assets.yaml` is missing, default every discovered provider to `status: ok`
 
 Manage quota by choosing, not pausing: the ranking, the effort knee, and the cheapest model meeting each phase's tier pick the least wasteful candidate; then spend less with delta re-reviews (`references/review.md`) and a per-pool cap on parallel children (`references/supervision.md`).
 
+**`select` output**: ends with one `action:` line (`dispatch`, `stage:`, `hold until <time>`, `ask the user once`, `rerun select without --fail-on-low`, `fix <argument>`, `no usable model`, or `no tier match`) that maps the outcome to the next step. Skipped candidates print as `note:` lines grouped by reason; `--full` adds the detail lines.
+
 ## Tool needs
 Check `references/harnesses.md` before choosing a provider when the task requires browser, device, or network tools.

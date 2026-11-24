@@ -10,6 +10,8 @@ On `STATUS: ESCALATE`, first rerun `orch.py classify` with the child's `ASSESSME
 
 After the switch, log the new rung with `log --event select` (`references/improvement.md`; an orchestrator switching itself verifies and logs per `references/orchestrator.md`, Orchestrator's own quota, step 3) and re-review the change as a delta (`references/review.md`, Re-reviews).
 
+*Done when*: every trigger went through `orch.py escalate` (or the rules above), its `action:` line was followed, the escalation is logged with its cause, and the change got a delta re-review.
+
 ## Rules without Python
 
 1. **Order**: the next higher rated effort of the same model first (skipped for a reviewer on the implementer's model), then the first model in the worker ranking order (`references/selection.md`), same provider first, at its lowest effort that scores strictly higher; reviewers take the reviewer fallback order (`references/review.md`) instead. The target always scores strictly higher, so an escalation never steps down; when nothing scores higher, report to the user.
@@ -17,5 +19,3 @@ After the switch, log the new rung with `log --event select` (`references/improv
 3. **Cap**: at most two escalations per item and role (`preferences.escalation.max`; orchestrator `preferences.orchestrator.max_escalations`). At the cap, report the item to the user with the evidence.
 4. **Providers**: workers cross providers as a routine decision. The orchestrator climbs its own provider's ladder (effort capped at `high`, `references/orchestrator.md`) and asks the user before a provider switch, at a phase boundary only; on `findings` with no higher same-provider rung it continues on its current rung.
 5. **Exclusions**: a reviewer escalates only to a model other than the implementer's; emergency efforts and models, pay-per-use, `policy: avoid`, and exhausted pools stay out. When only emergency models or efforts score higher, ask the user once (`SKILL.md` Step 7).
-
-*Done when*: every trigger went through `orch.py escalate` (or the rules above), its `action:` line was followed, the escalation is logged with its cause, and the change got a delta re-review.
