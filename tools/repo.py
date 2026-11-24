@@ -104,7 +104,7 @@ ORDERED_ITEM_RE = re.compile(r"^\d+[.)][ \t]", re.M)
 STEP_HEADING_RE = re.compile(r"^##\s+\d+\.")
 POINTER_PATH = r"((?:skills/[\w.-]+/)?references/[\w.-]+\.md)"
 POINTER_BOLD_RE = re.compile(r"\(`?" + POINTER_PATH + r"`?,\s*\*\*([^*]+?)\*\*")  # (`references/x.md`, **Heading**
-POINTER_ANCHOR_RE = re.compile(r"(?<![\w/(.\]-])" + POINTER_PATH + r"#([\w-]+)")  # not a [link](target): `links` owns those
+POINTER_ANCHOR_RE = re.compile(r"(?<![\w/(.\]<-])" + POINTER_PATH + r"#([\w-]+)")  # not a [link](target): `links` owns those
 
 
 # ---------- plumbing ----------
@@ -466,6 +466,7 @@ def heading_titles(text):
 
 
 def norm_title(s):
+    s = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", s)  # _emphasis_ like **strong**
     return " ".join(re.sub(r"[`*]", "", s).split()).lower()
 
 
@@ -1008,7 +1009,7 @@ def golden_cases(text):
 
 def golden_decision(body):
     """(rc, decision): the `rc:` value and the last `action:` line without its ` (…)` asides."""
-    rc = re.match(r"rc: (-?\d+)", body)
+    rc = re.search(r"^rc: (-?\d+)", body, re.M)
     acts = re.findall(r"^action: (.*)$", body, re.M)
     return (rc.group(1) if rc else "?"), (re.sub(r"\s*\([^()]*\)", "", acts[-1]).strip() if acts else "(none)")
 
@@ -1064,10 +1065,19 @@ def golden_diff_lines(new, old, full=False):
             for key in ([decision_change(d0, d1)] if d0 != d1 else []) + (["rc %s -> rc %s" % (rc0, rc1)] if rc0 != rc1 else []):
                 counts[key] = counts.get(key, 0) + 1
         ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        lines += capped(["%s: %s: %d" % (group, k, n) for k, n in ranked], full)
+        lines += capped([golden_line(group, k, n, full) for k, n in ranked], full)
         if same:
             lines.append("%s: same rc and action, other output changed: %d" % (group, same))
     return lines, total, groups
+
+
+def golden_line(group, key, n, full, limit=350):
+    """`<group>: <decision change>: <n>`, shortened in the middle when compact so it stays within the output contract."""
+    line = "%s: %s: %d" % (group, key, n)
+    if full or len(line) <= limit:
+        return line
+    room = limit - len("%s: : %d" % (group, n)) - 1
+    return "%s: %s…%s: %d" % (group, key[: room // 2], key[len(key) - (room - room // 2):], n)
 
 
 def cmd_golden_diff(root, base, run=sh, out=print, full=False):

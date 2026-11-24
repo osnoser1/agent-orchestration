@@ -195,6 +195,12 @@ class TestPointers(unittest.TestCase):
         write(root, rel, (read(root, rel) if os.path.exists(os.path.join(root, rel)) else "") + extra)
         return [e for e in repo.run_checks(root).errors if e.startswith("pointers")]
 
+    def test_emphasis_and_angle_bracket_links(self):
+        root = fixture_dir(self)
+        write(root, self.REF, read(root, self.REF) + "\n## _Emphasized_ Heading\n")
+        write(root, "README.md", read(root, "README.md") + "\n(`references/harnesses.md`, **Emphasized Heading**)\n")
+        self.assertEqual([e for e in repo.run_checks(root).errors if e.startswith("pointers")], [])
+
     def test_dangling_bold_pointer_is_one_error_line(self):
         self.assertEqual(self.errors_for("README.md", "\n(`references/harnesses.md`, **No Such Section**)\n"),
                          ["pointers: README.md:11: pointer to references/harnesses.md **No Such Section** has no such heading"])
@@ -231,6 +237,15 @@ class TestGoldenDiff(unittest.TestCase):
     NEW = {"select": snapshot([("a", 0, "x", "dispatch agy/gemini @ medium now; tail"), ("b", 0, "x", "dispatch y (see z)"),
                                ("c", 0, "y", "same"), ("new", 0, "x", "z")]),
            "classify": snapshot([("k", 0, "x", "k")])}
+
+    def test_compact_lines_stay_within_the_output_contract(self):
+        old = {"select": snapshot([("a", 0, "x", "dispatch " + "o" * 190 + " now")])}
+        new = {"select": snapshot([("a", 0, "x", "ask " + "n" * 190 + " once")])}
+        lines, _, _ = repo.golden_diff_lines(new, old)
+        self.assertTrue(all(len(l) <= 350 for l in lines), [len(l) for l in lines])
+        self.assertTrue(any("…" in l for l in lines))
+        full, _, _ = repo.golden_diff_lines(new, old, True)
+        self.assertTrue(any(len(l) > 350 for l in full))
 
     def test_groups_counts_and_decision_changes(self):
         lines, total, groups = repo.golden_diff_lines(self.NEW, self.OLD)
