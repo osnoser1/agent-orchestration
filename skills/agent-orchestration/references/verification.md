@@ -34,17 +34,18 @@ For user-visible changes whose look, layout, copy, or interaction behavior is a 
 
 ## Final check before landing (Step 5.4)
 
-After cross-family review findings are resolved and before landing, verify five items:
+After review findings are resolved and before landing, verify six items:
 
 1. **Diff and one key test**: read the diff and run one key verification command yourself. When a diff is too large to read cheaply in orchestrator context, delegate reading it to a `cheap` subagent (or reuse the reviewer **evidence pack** from `references/review.md`) and judge its `path:line` summary yourself.
 2. **Dependency and tooling proportionality**: re-run `orch.py scope` (**Scope check before review**) on the diff after review fixes, and flag new dependencies, scripts, or abstractions that are disproportionately large for the problem solved.
 3. **User-visible evidence**: when the change is user-visible, verify concrete visual or behavioral evidence (screenshots, recordings, or transcripts) scaled to `preferences.evidence` and repo `Evidence:`.
 4. **Repo budgets and limits**: verify any size, bundle, performance, lint, or schema budgets the target repository defines.
 5. **Maintainability**: confirm clean module boundaries and proportionate tests; `orch.py scope` lists stray scratch files (check debug leftovers yourself).
+6. **Pending cross-family review (high risk)**: on `high` risk, run `scripts/orch.py land-check --ref <item> --risk high` (with `--available` when discovered) and follow its `action:` line. Without Python, hold landing when a cross-family review is pending and its family is usable now or renews within `preferences.land_hold_hours` (default 4 h).
 
 Send any follow-up fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
 
-*Done when*: all five items are verified or marked not applicable, and follow-up fixes are sent to the implementing child.
+*Done when*: all six items pass (or are marked not applicable) and follow-up fixes are sent to the implementing child.
 
 ## Known infrastructure failures and unstarted PR checks
 

@@ -4,7 +4,7 @@ description: Orchestrate coding work across subagents and models by complexity, 
 license: MIT
 compatibility: Any harness with subagents. Optional helper script requires Python 3.9+ (stdlib only).
 metadata:
-  version: "0.21.2"
+  version: "0.22.0"
 ---
 
 # Agent orchestration
@@ -42,7 +42,7 @@ Each gate's rules live in `references/verification.md` unless named otherwise.
 1. **Red→green evidence**: require failing repro/test output before the fix and passing output after, scaled to the user's and repo's evidence priorities.
 2. **Design checkpoints**: for user-visible taste decisions, apply the checkpoint gate.
 3. **Cross-family review**: run `scripts/orch.py scope` first, then review with a different model family given the diff or a shared **evidence pack** (reviewer fallback order: `references/review.md`); agent-facing docs, including your own edits, get the doc review loop. Send fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`). On `rework`, important findings at the escalation threshold, or a child's `STATUS: ESCALATE`, run `scripts/orch.py escalate` and follow its `action:` line (`references/escalation.md`).
-4. **Final check before landing**: run the pre-landing checklist.
+4. **Final check before landing**: run the pre-landing checklist (including `scripts/orch.py land-check` on `high` risk).
 5. **Land**: follow repo policy `Land:` (`references/repo-policy.md`) or documented process (`AGENTS.md`/`CLAUDE.md`), advance any dependent batch waiting on these paths, and wind down the supervision loop when the batch finishes (`references/supervision.md`).
 6. **Log outcome**: append completion (`ok|failed|quota|stall|rework` + findings count) to the decision ledger (`scripts/orch.py log`, `references/improvement.md`).
 

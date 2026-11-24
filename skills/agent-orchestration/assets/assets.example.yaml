@@ -11,6 +11,7 @@ preferences:
   new_conversations: ask                          # ask | allow (authorization to open new top-level conversations)
   design_checkpoints: ask                         # ask | delegate (pause for user approval on taste/design checkpoints)
   # usage_cache_ttl_seconds: 300                  # optional: seconds `probe` reuses a cached Claude usage reading
+  # land_hold_hours: 4                            # optional: hours `land-check` holds a high-risk landing for a renewing cross-family review (0 disables)
   # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
   # escalation: {findings: 3, max: 2}            # orch.py escalate for workers: findings that trigger it; escalations per item (0..3)
