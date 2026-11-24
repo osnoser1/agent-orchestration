@@ -6524,7 +6524,7 @@ def _expand_available(a):
     raw = getattr(a, "available", None)
     if not isinstance(raw, str) or not raw.startswith("@"):
         return None
-    path = raw[1:].strip()
+    path = raw[1:].lstrip()
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()

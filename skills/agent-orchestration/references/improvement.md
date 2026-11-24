@@ -14,7 +14,7 @@ Pass the same `--ref <item>` on every log of an item: `orch.py failure` counts r
 
 Recorded fields: `ts`, `event`, `repo` (basename only — paths are stripped automatically), `surface` (`subagent|conversation`), `complexity`, `risk`, `ui`, `provider`, `model`, `effort`, `reviewer`, `outcome`, `findings`, `role` (`implementer|reviewer|orchestrator`, defaulting to `implementer`; older entries without it count as `implementer`), and optional `provisional`, `ref` (a short item label such as `PR-42`, slugified from `--ref`; never a path), `failure_class` (`quota|infra|context-cap|tool|unknown`; `orch.py failure` counts retries from them, `references/supervision.md`), `rubric` (six-key JSON object from `orch.py classify`), `unflagged` (orchestrator only), `requested`, `effective` (accepted as `provider:model@effort` or `provider/model @ effort`, stored as `provider:model-id@effort` with the provider id verbatim, as assets.yaml and the harness spell it), and `mismatch` (`true` when `effective` differs from `requested` ignoring provider case and `_`/`-` spelling, also printed as a `warning:` line). Keep prompts, source code, secrets, full paths, and personal data out of the ledger.
 
-`orch.py escalate` adds one `event: escalate` row per escalation (`role`, `ref`, `from`, `to` as normalised `provider:model-id@effort`, `cause`, and `findings` when given; `references/supervision.md`); `history` lines skip these rows.
+`orch.py escalate` adds one `event: escalate` row per escalation (`role`, `ref`, `from`, `to` as `provider:model-id@effort` with the provider id verbatim, compared ignoring case and `_`/`-`, `cause`, and `findings` when given; `references/supervision.md`); `history` lines skip these rows.
 
 ## Calibrating the default ladder
 
