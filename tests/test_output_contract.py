@@ -208,7 +208,29 @@ class OrchContract(unittest.TestCase):
         cases["check"] = self.check_cases(w)
         cases["probe"] = self.probe_cases(w)
         cases["policy"] = self.policy_cases(w)
+        cases["land-check"] = self.land_check_cases(w)
         return cases
+
+    def land_check_cases(self, w):
+        lines = [
+            "version: 1",
+            "providers:",
+            "  - id: claude",
+            "    status: ok",
+            "  - id: antigravity",
+            "    status: exhausted",
+            "    exhausted_until: 2026-11-20T21:30:00+00:00",
+            "followups:",
+        ]
+        for i in range(15):
+            lines += ["  - kind: preferred-review", "    ref: PR-37", "    needs: '!anthropic/T4'" if i == 0 else f"    needs: need-{i:02d}"]
+        lc_assets = w.write("\n".join(lines) + "\n", "land-check-assets.yaml")
+        avail = "claude:claude-opus-5-5,antigravity:gemini-4-neon"
+        return [
+            Case(["land-check", "--ref", "PR-37", "--risk", "low", *w.common(lc_assets)], 2, ORCH_FINAL, env=w.env, cwd=w.dir, shows=("action: land now",)),
+            Case(["land-check", "--ref", "PR-37", "--risk", "high", "--available", avail, *w.common(lc_assets)], 13, ORCH_FINAL, rc=3,
+                 last="need-14", env=w.env, cwd=w.dir, shows=("followup: preferred-review PR-37", "hold landing until")),
+        ]
 
     def exhaust_cases(self, w, avail):
         env = w.env

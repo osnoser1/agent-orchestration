@@ -100,7 +100,20 @@ def matrix():
         esc("implementer", "claudeAgent:claude-sonnet-5-5@high", AVAIL["low"], *hl, cause="status"),
         esc("implementer", "codex:no-such-model@high", AVAIL["main"], *hl),
     ]
-    return {"select": sel, "classify": classify, "history": history, "launch": launch, "escalate": escalate}
+    lc_avail = "claude:claude-opus-5-5,antigravity:gemini-4-neon"
+    lc_base = ["--assets", "<TMP>/quota-land.yaml", "--catalog", "<REPO>/skills/agent-orchestration/catalog.yaml"]
+    land_check = [
+        ["land-check", "--ref", "PR-37", "--risk", "low", "--available", lc_avail, *lc_base, "--now", NOW],
+        ["land-check", "--ref", "PR-37", "--risk", "medium", "--available", lc_avail, *lc_base, "--now", NOW],
+        ["land-check", "--ref", "PR-99", "--risk", "high", "--available", lc_avail, *lc_base, "--now", NOW],
+        ["land-check", "--ref", "PR-37", "--risk", "high", "--available", lc_avail, *lc_base, "--now", NOW],
+        ["land-check", "--ref", "PR-37", "--risk", "high", "--available", lc_avail, *lc_base, "--now", "2026-11-20T11:00:00Z"],
+        ["land-check", "--ref", "PR-37", "--risk", "high", "--available", lc_avail, *lc_base, "--now", "2026-11-20T22:00:00Z"],
+        ["land-check", "--ref", "PR-37", "--risk", "high", "--available", "claude:claude-opus-5-5", *lc_base, "--now", NOW],
+        ["land-check", "--ref", "PR-37", "--risk", "high", *lc_base, "--now", NOW],
+        ["land-check", "--ref", "PR-38", "--risk", "high", "--available", "claude:claude-opus-5-5", *lc_base, "--now", NOW],
+    ]
+    return {"select": sel, "classify": classify, "history": history, "launch": launch, "escalate": escalate, "land-check": land_check}
 
 
 def run_case(argv):

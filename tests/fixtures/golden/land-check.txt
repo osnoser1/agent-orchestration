@@ -1,0 +1,66 @@
+=== land-check --ref PR-37 --risk low --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+action: land now
+=== land-check --ref PR-37 --risk low --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+action: land now
+=== land-check --ref PR-37 --risk medium --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+action: land now
+=== land-check --ref PR-37 --risk medium --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+action: land now
+=== land-check --ref PR-99 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+action: land now
+=== land-check --ref PR-99 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+action: land now
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+followup: preferred-review PR-37 needs !anthropic/T4 — renews 2026-11-20T21:30:00+00:00
+action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+followup: preferred-review PR-37 needs !anthropic/T4 — renews 2026-11-20T21:30:00+00:00
+action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T11:00:00Z
+rc: 0
+followup: preferred-review PR-37 needs !anthropic/T4 — renews 2026-11-20T21:30:00+00:00
+action: land now; schedule a wakeup at 2026-11-20T21:32:00+00:00 to run the cross-family review (needs !anthropic/T4), fix forward on its findings, then followups --done PR-37
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T11:00:00Z --full
+rc: 0
+followup: preferred-review PR-37 needs !anthropic/T4 — renews 2026-11-20T21:30:00+00:00
+action: land now; schedule a wakeup at 2026-11-20T21:32:00+00:00 to run the cross-family review (needs !anthropic/T4), fix forward on its findings, then followups --done PR-37
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T22:00:00Z
+rc: 3
+followup: preferred-review PR-37 needs !anthropic/T4 — usable now
+action: hold landing: run the cross-family review now (needs !anthropic/T4; select --role reviewer …), then clear it with followups --done PR-37
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T22:00:00Z --full
+rc: 3
+followup: preferred-review PR-37 needs !anthropic/T4 — usable now
+action: hold landing: run the cross-family review now (needs !anthropic/T4; select --role reviewer …), then clear it with followups --done PR-37
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5 --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+followup: preferred-review PR-37 needs !anthropic/T4 — no matching model offered
+action: land now; the cross-family review stays queued as a post-merge follow-up (needs !anthropic/T4); the next probe/followups --due shows it as due; run it then and fix forward
+=== land-check --ref PR-37 --risk high --available claude:claude-opus-5-5 --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+followup: preferred-review PR-37 needs !anthropic/T4 — no matching model offered
+action: land now; the cross-family review stays queued as a post-merge follow-up (needs !anthropic/T4); the next probe/followups --due shows it as due; run it then and fix forward
+=== land-check --ref PR-37 --risk high --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+followup: preferred-review PR-37 needs !anthropic/T4 — renews 2026-11-20T21:30:00+00:00
+action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check
+=== land-check --ref PR-37 --risk high --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+followup: preferred-review PR-37 needs !anthropic/T4 — renews 2026-11-20T21:30:00+00:00
+action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check
+=== land-check --ref PR-38 --risk high --available claude:claude-opus-5-5 --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+followup: resume PR-38 needs !openai/T4 — usable now
+action: hold landing: run the cross-family review now (needs !openai/T4; select --role reviewer …), then clear it with followups --done PR-38
+=== land-check --ref PR-38 --risk high --available claude:claude-opus-5-5 --assets <TMP>/quota-land.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+followup: resume PR-38 needs !openai/T4 — usable now
+action: hold landing: run the cross-family review now (needs !openai/T4; select --role reviewer …), then clear it with followups --done PR-38

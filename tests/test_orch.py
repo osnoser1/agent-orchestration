@@ -7289,5 +7289,164 @@ class TestCrossFamilyReviewFixes(unittest.TestCase):
         self.assertEqual(orch.load_file(self.assets)["providers"][0]["groups"][0]["exhausted_models"], {"gemini-4-argon": self.UNTIL})
 
 
+class TestLandCheck(unittest.TestCase):
+    NOW = "2026-11-20T21:00:00Z"
+    AVAIL = "claude:claude-opus-5-5,antigravity:gemini-4-neon"
+    FU = "  - kind: preferred-review\n    ref: PR-37\n    needs: '!anthropic/T4'\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.assets = os.path.join(self.tmp.name, "assets.yaml")
+
+    def run_lc(self, ref="PR-37", risk="high", available=AVAIL, now=NOW, assets=None):
+        return _run(orch.land_check_cmd, _Args(ref=ref, risk=risk, available=available, assets=assets or self.assets,
+                                               catalog=CATALOG_PATH, now=now, full=False))
+
+    def write_assets(self, providers, followups=FU, prefs=""):
+        _write(self.assets, "version: 1\n" + (f"preferences:\n{prefs}" if prefs else "")
+               + f"providers:\n{providers}" + (f"followups:\n{followups}" if followups else ""))
+
+    def test_low_medium_risk_and_ref_filtering(self):
+        self.write_assets("  - id: antigravity\n    status: ok\n", self.FU
+                          + "  - kind: preferred-review\n    ref: PR-99\n    needs: '!anthropic/T4'\n"
+                          + "  - kind: ui-review\n    ref: PR-38\n    needs: ui-ux-review\n"
+                          + "  - kind: resume\n    ref: PR-38\n    needs: T4\n")
+        for ref, risk in (("PR-37", "low"), ("PR-37", "medium"), ("PR-38", "high"), ("PR-404", "high")):
+            self.assertEqual(self.run_lc(ref=ref, risk=risk), (0, "action: land now\n"))
+        self.assertEqual(self.run_lc(assets=os.path.join(self.tmp.name, "missing.yaml")), (0, "action: land now\n"))
+
+    def test_usable_now_available_assets_and_resume_bang(self):
+        self.write_assets("  - id: claude\n    status: ok\n  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n",
+                          self.FU + "  - kind: resume\n    ref: PR-38\n    needs: '!openai/T4'\n")
+        for avail in (self.AVAIL, None):
+            rc, out = self.run_lc(available=avail)
+            self.assertEqual(rc, 3, out)
+            self.assertIn("followup: preferred-review PR-37 needs !anthropic/T4 — usable now", out)
+            self.assertIn("action: hold landing: run the cross-family review now (needs !anthropic/T4; select --role reviewer …), then clear it with followups --done PR-37", out)
+        rc, out = self.run_lc(ref="PR-38", available="claude:claude-opus-5-5")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("followup: resume PR-38 needs !openai/T4 — usable now", out)
+
+    def test_group_reset_within_beyond_and_land_hold_hours(self):
+        grp = ("  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n    groups:\n"
+               "      - name: Gemini Models\n        models: [gemini-4-neon, gemini-4-hydrogen]\n"
+               "        status: exhausted\n        window: 7d\n        resets_at: %s\n")
+        self.write_assets(grp % "2026-11-20T21:30:00+00:00")
+        for avail in (self.AVAIL, None):
+            rc, out = self.run_lc(available=avail)
+            self.assertEqual(rc, 3, out)
+            self.assertIn("renews 2026-11-20T21:30:00+00:00", out)
+            self.assertIn("action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check", out)
+        # land_hold_hours: 0 disables future-reset holds; 10h reset lands with scheduled wakeup under 4h and holds under 12h
+        self.write_assets(grp % "2026-11-20T21:30:00+00:00", prefs="  land_hold_hours: 0\n")
+        self.assertEqual(self.run_lc()[0], 0)
+        self.write_assets(grp % "2026-11-21T07:00:00+00:00")
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("action: land now; schedule a wakeup at 2026-11-21T07:02:00+00:00 to run the cross-family review (needs !anthropic/T4), fix forward on its findings, then followups --done PR-37", out)
+        self.write_assets(grp % "2026-11-21T07:00:00+00:00", prefs="  land_hold_hours: 12\n")
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 3, out)
+        self.assertIn("action: hold landing until 2026-11-21T07:02:00+00:00;", out)
+
+    def test_individual_model_lock_and_provider_exhausted(self):
+        for body in (
+            "  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n    groups:\n"
+            "      - name: Gemini Models\n        models: [gemini-4-neon, gemini-4-hydrogen]\n        status: ok\n        window: 7d\n"
+            '        exhausted_models: {"gemini-4-neon": 2026-11-20T21:30:00+00:00}\n',
+            "  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n    groups:\n"
+            '      - name: gemini-4-neon\n        models: [gemini-4-neon]\n        exhausted_models: {"gemini-4-neon": 2026-11-20T21:30:00+00:00}\n',
+        ):
+            self.write_assets(body)
+            rc, out = self.run_lc()
+            self.assertEqual(rc, 3, out)
+            self.assertIn("hold landing until 2026-11-20T21:32:00+00:00", out)
+        self.write_assets("  - id: claude\n    status: exhausted\n    exhausted_until: 2026-11-20T22:00:00+00:00\n",
+                          "  - kind: preferred-review\n    ref: PR-37\n    needs: '!google/T4'\n")
+        rc, out = self.run_lc(available="claude:claude-opus-5-5")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("hold landing until 2026-11-20T22:02:00+00:00", out)
+
+    def test_unknown_reset_not_offered_at_file_and_check_validation(self):
+        self.write_assets("  - id: antigravity\n    status: exhausted\n")
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("renews unknown", out)
+        self.assertIn("the next probe/followups --due shows it as due; run it then and fix forward", out)
+        # Cadence-only reset (session / 5h / weekly) is treated as unknown, not a moving future timestamp
+        for cad in ("session", "5h", "weekly"):
+            self.write_assets(f"  - id: antigravity\n    status: exhausted\n    resets: {cad}\n")
+            rc, out = self.run_lc()
+            self.assertEqual(rc, 0, f"cadence={cad}: {out}")
+            self.assertIn("renews unknown", out, f"cadence={cad}: {out}")
+        rc, out = self.run_lc(available="claude:claude-opus-5-5")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("no matching model offered", out)
+        avail_file = os.path.join(self.tmp.name, "avail.txt")
+        _write(avail_file, "claude:claude-opus-5-5\nantigravity:gemini-4-neon\n")
+        self.write_assets("  - id: antigravity\n    status: ok\n")
+        p = subprocess.run([sys.executable, "-I", os.path.join(SCRIPTS_DIR, "orch.py"), "land-check",
+                            "--ref", "PR-37", "--risk", "high", "--available", "@" + avail_file,
+                            "--assets", self.assets, "--catalog", CATALOG_PATH, "--now", self.NOW],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 3, p.stdout)
+        self.assertIn("usable now", p.stdout)
+        for val, want in (("0", 0), ("4", 0), ("2.5", 0), ("-1", 1), ("true", 1), ("nope", 1)):
+            _write(self.assets, f"version: 1\npreferences:\n  land_hold_hours: {val}\nproviders: []\n")
+            rc, out = _run(orch.check, _Args(assets=self.assets, catalog=CATALOG_PATH, now=self.NOW, lockfile="", full=False))
+            self.assertEqual(rc, want, f"land_hold_hours={val}: {out}")
+            if want == 1:
+                self.assertIn("preferences.land_hold_hours", out)
+
+    def test_usable_review_clears_every_matching_ref_and_names_stale_current_task(self):
+        fus = ("  - kind: preferred-review\n    ref: current-task\n    needs: '!anthropic/T4'\n"
+               "  - kind: preferred-review\n    ref: PR-37\n    needs: '!anthropic/T4'\n"
+               "  - kind: preferred-review\n    ref: bob's fix\n    needs: '!anthropic/T4'\n")
+        self.write_assets("  - id: antigravity\n    status: ok\n", fus)
+        rc, out = self.run_lc(ref="PR-37")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("followups --done current-task; followups --done PR-37", out)
+        self.assertIn("if current-task is from other work: followups --done current-task, then rerun land-check", out)
+        rc, out = self.run_lc(ref="bob's fix")
+        self.assertIn("""followups --done 'bob'"'"'s fix'""", out)
+
+    def test_ref_normalization_current_task_mixed_kinds_and_dedup(self):
+        ex30 = "  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-20T21:30:00+00:00\n"
+        # Blocker: current-task entry matches any --ref and names stored ref in --done when usable
+        self.write_assets(ex30, "  - kind: preferred-review\n    ref: current-task\n    needs: '!anthropic/T4'\n")
+        rc, out = self.run_lc(ref="PR-37")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("current-task (applies to any --ref)", out)
+        self.assertIn("hold landing until 2026-11-20T21:32:00+00:00", out)
+        self.write_assets("  - id: antigravity\n    status: ok\n", "  - kind: preferred-review\n    ref: current-task\n    needs: '!anthropic/T4'\n")
+        rc, out = self.run_lc(ref="PR-37")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("followups --done current-task", out)
+        # Normalized ref matching ("PR #37" and " PR-37" match --ref PR-37) and stored ref quoted in --done
+        for stored in ("PR #37", " PR-37"):
+            self.write_assets("  - id: antigravity\n    status: ok\n", f"  - kind: preferred-review\n    ref: '{stored}'\n    needs: '!anthropic/T4'\n")
+            rc, out = self.run_lc(ref="PR-37")
+            self.assertEqual(rc, 3, f"stored={stored!r}: {out}")
+            self.assertIn(f"followups --done '{stored}'", out)
+        # Mixed follow-up kinds for same ref: warns instead of suggesting bare --done
+        mixed = self.FU + "  - kind: ui-review\n    ref: PR-37\n    needs: ui-ux-review\n"
+        self.write_assets("  - id: antigravity\n    status: ok\n", mixed)
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 3, out)
+        self.assertIn("remove only the review entry of PR-37 (also has ui-review) in assets.yaml", out)
+        self.assertNotIn("then clear it with followups --done PR-37", out)
+        self.write_assets("  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-21T07:00:00+00:00\n", mixed)
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("(also has ui-review)", out)
+        # Duplicate identical follow-ups group as (×2)
+        self.write_assets(ex30, self.FU + self.FU)
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 3, out)
+        self.assertEqual(len([l for l in out.splitlines() if l.startswith("followup:")]), 1, out)
+        self.assertIn("(×2)", out)
+
+
 if __name__ == "__main__":
     unittest.main()

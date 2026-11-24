@@ -32,17 +32,18 @@
   orch.py status    <provider> ok|low [--assets F] [--now ISO]
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
   orch.py scope     --base REF [--max-files N] [--max-lines N] [--expect GLOB ...] [--repo DIR]
+  orch.py land-check --ref R --risk low|medium|high [--available ...] [--assets F] [--catalog F] [--now ISO]
   orch.py policy    [--repo DIR] [--check] [--catalog F] [--assets F]
 
 Exit codes (only the final `action:` line carries the decision):
   0  ok;  1  validation or invocation error
   2  no candidate meets the required tier (select / exhaust with selection args), no reviewer is usable, or no higher rung (escalate)
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select / exhaust blocked on low/gated/fallback policy),
-     or escalate stops at its cap or asks the user
+     escalate stops at its cap or asks the user, or land-check holds landing
   4  quota hit (probe >= exhausted_threshold, or select / exhaust found only exhausted providers)
   5  defer refused: a usable model exists (dispatch or stage now)
 
-`probe`, `classify`, `select`, `launch`, `defer`, `escalate`, `exhaust`, `followups`, `failure` and `scope` end with one `action:` line naming the next step: follow it instead of reading exit codes.
+`probe`, `classify`, `select`, `launch`, `defer`, `escalate`, `exhaust`, `followups`, `failure`, `scope` and `land-check` end with one `action:` line naming the next step: follow it instead of reading exit codes.
 `check`, `policy` and `history` end with `ok: …` or `error: N problem(s); action: …`.
 Every command is compact by default: lists stop at 10 items (`… N more (rerun with --full)`), repeated notes group by
 reason, and `--full` prints every detail line. `<command> --help` shows one example. (tests/test_output_contract.py)
@@ -59,6 +60,7 @@ DEF_CATALOG = os.path.join(HERE, "..", "catalog.yaml")
 ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 DEFAULT_LOW_THRESHOLD = 85
 DEFAULT_EXHAUSTED_THRESHOLD = 98
+DEFAULT_LAND_HOLD_HOURS = 4
 VALID_UI_FALLBACK = ("proceed", "defer", "ask")
 VALID_BELOW_TIER = ("stage", "wait", "proceed")
 VALID_PAY_PER_USE = ("never", "ask")
@@ -4676,6 +4678,178 @@ def followups_cmd(a):
     return 0
 
 
+def _concrete_reset(now, *vals):
+    """Earliest future concrete timestamp/date among `vals` (ignores rolling cadences like `5h` or `weekly`)."""
+    dts = [dt for v in vals if (dt := parse_time(v, now)) and dt > now]
+    return min(dts) if dts else None
+
+
+def _cand_reset_dt(p, prov_st, g, mid, m, now, fail_on_low=False):
+    """Earliest concrete time a blocked candidate becomes usable again, or None when unknown/cadence-only."""
+    gst = group_state(g, now)[0] if g is not None else "ok"
+    dts = [u] if (u := _locked(g, mid, m, now)) else []
+    p_vals = (p.get("exhausted_until"), p.get("resets_at"), p.get("resets"), p.get("renews"))
+    if g is not None and gst == "exhausted":
+        dt = parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or _concrete_reset(now, g.get("resets_at"), p.get("resets"), p.get("renews"))
+        if not (dt and dt > now):
+            return None
+        dts.append(dt)
+    if prov_st == "exhausted":
+        dt = parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or _concrete_reset(now, *p_vals)
+        if dt and dt > now:
+            dts.append(dt)
+        elif not (g is not None and gst == "exhausted" and partitions_quota(p)):
+            return None
+    if not dts and fail_on_low and (prov_st == "low" or gst == "low"):
+        dt = _concrete_reset(now, *([g.get("resets_at")] if g is not None else []), *p_vals)
+        if dt and dt > now:
+            dts.append(dt)
+    return max(dts) if dts else None
+
+
+def _earliest_need_reset(catalog, assets, now, need, available=None, fail_on_low=False):
+    """Return `(matched, earliest_dt)` for blocked models matching `need`."""
+    models = (catalog or {}).get("models") or []
+    cat = {norm(m["id"]): m for m in models}
+    emerg = set((catalog or {}).get("emergency_efforts", ["max", "ultra"]))
+    prefs = ((assets or {}).get("preferences") or {}) if isinstance(assets, dict) else {}
+    floors = {**FLOORS, **(prefs.get("tier_floors") or {})}
+    matched, dts = False, []
+
+    def _check(p, prov_st, g, pid, mid, m):
+        nonlocal matched
+        gname = g.get("name") if isinstance(g, dict) and not _is_lock_carrier(g) else None
+        if not m or m.get("cost") == "emergency" or m.get("rating") == "unrated":
+            return
+        if not _model_matches_need(m, need, floors=floors, emerg=emerg, provider_id=pid, group_name=gname):
+            return
+        matched = True
+        dt = _cand_reset_dt(p, prov_st, g, mid, m, now, fail_on_low=fail_on_low)
+        if dt and dt > now:
+            dts.append(dt)
+
+    if available is not None:
+        for pair in available:
+            prov, _, mid = pair.partition(":")
+            m = cat.get(norm(mid))
+            p, prov_st, _ = provider_state(assets, prov, now)
+            if not p.get("pay_per_use") and p.get("policy") != "avoid":
+                _check(p, prov_st, model_group(p, mid, m), prov, mid, m)
+    else:
+        for p in (assets or {}).get("providers") or []:
+            if not isinstance(p, dict) or not p.get("id") or p.get("pay_per_use") or p.get("policy") == "avoid":
+                continue
+            pid, (_, prov_st, _) = p["id"], provider_state(assets, p["id"], now)
+            real_g = [g for g in (p.get("groups") or []) if isinstance(g, dict) and not _is_lock_carrier(g)]
+            if real_g and partitions_quota(p):
+                for g in real_g:
+                    for mid in g.get("models") or []:
+                        _check(p, prov_st, g, pid, mid, cat.get(norm(mid)))
+            elif (fam := _provider_inferred_family(p)):
+                for m in models:
+                    if str(m.get("family") or "").lower() == fam:
+                        _check(p, prov_st, model_group(p, m["id"], m), pid, m["id"], m)
+    return matched, (min(dts) if dts else None)
+
+
+def _is_land_followup(fu):
+    need = str(fu.get("needs") or "").strip()
+    return bool(need) and (fu.get("kind") == "preferred-review" or (fu.get("kind") == "resume" and need.startswith("!")))
+
+
+def _land_ref_key(ref):
+    s = str(ref or "").strip()
+    return re.sub(r"[^a-z0-9]+", "-", _clean_ref(s).lower()).strip("-") if s else ""
+
+
+def _done_hint(all_fus, done_refs, lead="then clear it with"):
+    """`followups --done` for every stored ref the review satisfies; refs that also carry other follow-up kinds are named
+    for a manual edit of assets.yaml instead, since `--done` clears every entry of a ref."""
+    import shlex
+    refs = list(dict.fromkeys(done_refs if isinstance(done_refs, (list, tuple)) else [done_refs]))
+    clear, manual = [], []
+    for ref in refs:
+        others = [x for x in all_fus if str(x.get("ref") or "") == ref and not _is_land_followup(x)]
+        short = ref if len(ref) <= 40 else ref[:37] + "..."
+        if others:
+            kinds = ", ".join(dict.fromkeys(str(x.get("kind") or "other") for x in others))
+            manual.append(f"{shlex.quote(short)} (also has {kinds})")
+        else:
+            clear.append("followups --done " + shlex.quote(ref if len(ref) <= 60 else short))
+    parts = ([f"{lead} " + "; ".join(clear)] if clear else [])
+    if manual:
+        parts.append("remove only the review entry of " + ", ".join(manual) + " in assets.yaml")
+    return "; ".join(parts) if parts else lead.replace(" with", "")
+
+
+def land_check_cmd(a):
+    _begin(a)
+    if a.risk in ("low", "medium"):
+        _action("land now")
+        return 0
+    now, ap = get_now(_opt_str(a, "now")), _opt_str(a, "assets") or def_assets()
+    assets = load_file(ap) if os.path.exists(ap) else {}
+    cpath = _opt_str(a, "catalog") or DEF_CATALOG
+    catalog = load_catalog_with_local(cpath, ap) if os.path.exists(cpath) else {"models": []}
+    avail_str = _opt_str(a, "available")
+    avail = [x.strip() for x in avail_str.split(",") if x.strip()] if avail_str else None
+    prefs = (assets or {}).get("preferences") or {}
+    raw_hh = prefs.get("land_hold_hours") if isinstance(prefs, dict) else None
+    hold_hours = float(raw_hh) if (isinstance(raw_hh, (int, float)) and not isinstance(raw_hh, bool) and raw_hh >= 0) else DEFAULT_LAND_HOLD_HOURS
+    all_fus = [fu for fu in (assets.get("followups") or []) if isinstance(fu, dict)]
+    target_key = _land_ref_key(a.ref)
+    fus = [
+        (fu, str(fu.get("ref") or ""), sk == "current-task" and target_key != "current-task")
+        for fu in all_fus
+        if _is_land_followup(fu) and (sk := _land_ref_key(fu.get("ref"))) and (sk == target_key or sk == "current-task")
+    ]
+    if not fus:
+        _action("land now")
+        return 0
+    lines, usable_pick, soon_dts, later_picks, all_needs, usable_refs = [], None, [], [], [], []
+    stale_tail = "; if current-task is from other work: followups --done current-task, then rerun land-check" if any(x[2] for x in fus) else ""
+    cutoff = now + timedelta(hours=hold_hours)
+    for fu, stored_ref, any_ref in fus:
+        need, fol = str(fu.get("needs") or "").strip(), fu.get("fail_on_low") is True
+        all_needs.append(need)
+        usable = find_usable_in_available(catalog, assets, now, need, avail, fail_on_low=fol) if avail is not None else find_usable_in_assets(catalog, assets, now, need, fail_on_low=fol)
+        if usable:
+            status = "usable now"
+            usable_pick = usable_pick or need
+            usable_refs.append(stored_ref)
+        else:
+            matched, dt = _earliest_need_reset(catalog, assets, now, need, available=avail, fail_on_low=fol)
+            if dt is not None:
+                status = f"renews {dt.isoformat(timespec='seconds')}"
+                if dt <= cutoff:
+                    soon_dts.append(dt)
+                else:
+                    later_picks.append((dt, need, stored_ref))
+            else:
+                status = "renews unknown" if matched else "no matching model offered"
+        ref_label = f"{stored_ref.strip()} (applies to any --ref)" if any_ref else stored_ref.strip()
+        lines.append(f"followup: {fu.get('kind')} {ref_label} needs {need} — {status}")
+    counts = {}
+    for line in lines:
+        counts[line] = counts.get(line, 0) + 1
+    for line in _capped([f"{line} (×{n})" if n > 1 else line for line, n in counts.items()]):
+        print(line)
+    if usable_pick is not None:
+        _action(f"hold landing: run the cross-family review now (needs {usable_pick}; select --role reviewer …), {_done_hint(all_fus, usable_refs)}{stale_tail}")
+        return 3
+    if soon_dts:
+        _action(f"hold landing until {_plus_margin(min(soon_dts))}; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check{stale_tail}")
+        return 3
+    if later_picks:
+        dt, need, done_ref = min(later_picks, key=lambda x: x[0])
+        _action(f"land now; schedule a wakeup at {_plus_margin(dt)} to run the cross-family review (needs {need}), fix forward on its findings, {_done_hint(all_fus, done_ref, lead='then')}")
+        return 0
+    uniq = list(dict.fromkeys(all_needs))
+    needs_str = ", ".join(uniq[:3]) + (f" (+{len(uniq) - 3} more)" if len(uniq) > 3 else "")
+    _action(f"land now; the cross-family review stays queued as a post-merge follow-up (needs {needs_str}); the next probe/followups --due shows it as due; run it then and fix forward")
+    return 0
+
+
 def _clean_ref(ref):
     """Ledger label for an item: a short slug, never a path (references/improvement.md)."""
     label = ref.strip()
@@ -5724,6 +5898,9 @@ def check(a):
             uct = prefs.get("usage_cache_ttl_seconds")
             if uct is not None and (isinstance(uct, bool) or not isinstance(uct, (int, float)) or uct < 0):
                 errs.append(f"assets preferences.usage_cache_ttl_seconds: bad value {uct} (expected number >= 0)")
+            lhh = prefs.get("land_hold_hours")
+            if lhh is not None and (isinstance(lhh, bool) or not isinstance(lhh, (int, float)) or lhh < 0):
+                errs.append(f"assets preferences.land_hold_hours: bad value {lhh} (expected number >= 0)")
             lt = prefs.get("low_threshold")
             if lt is not None and (isinstance(lt, bool) or not isinstance(lt, (int, float)) or not (0 < lt <= 100)):
                 errs.append(f"assets preferences.low_threshold: bad value {lt} (expected number in (0, 100])")
@@ -6521,6 +6698,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
     "status": "status claude low",
     "failure": 'failure "context length exceeded" --ref item-1',
     "scope": "scope --base origin/main --max-files 20 --expect 'src/**'",
+    "land-check": "land-check --ref PR-42 --risk high --available claude:claude-opus-5-5,antigravity:gemini-4-neon",
     "policy": "policy --check",
 }
 
@@ -6528,7 +6706,7 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for n in ("check", "probe", "classify", "select", "launch", "defer", "followups", "log", "history", "escalate", "exhaust", "status", "failure", "scope", "policy"):
+    for n in ("check", "probe", "classify", "select", "launch", "defer", "followups", "log", "history", "escalate", "exhaust", "status", "failure", "scope", "land-check", "policy"):
         usage = (
             "orch.py log [options] [--event select|complete] [--ui] [--surface subagent|conversation] [--repo NAME] [--assets F] [--ledger F] [--now ISO] [--full]"
             if n == "log"
@@ -6672,6 +6850,10 @@ def build_parser():
             p.add_argument("--max-lines", type=int)
             p.add_argument("--expect", action="extend", nargs="+", metavar="GLOB", help="paths the task should touch")
             p.add_argument("--repo", help="repository directory (default: the current directory)")
+        if n == "land-check":
+            p.add_argument("--ref", required=True, help="item or PR label")
+            p.add_argument("--risk", required=True, choices=["low", "medium", "high"], help="task risk level")
+            p.add_argument("--available", help="comma-separated provider:model pairs (or @file)")
         if n == "failure":
             p.add_argument("message", help="the child's error text")
             p.add_argument("--ref", required=True, help="short item label (no paths)")
@@ -6743,6 +6925,7 @@ def main():
         "status": status_cmd,
         "failure": failure_cmd,
         "scope": scope_cmd,
+        "land-check": land_check_cmd,
         "policy": policy_cmd,
     }[a.cmd](a)
 

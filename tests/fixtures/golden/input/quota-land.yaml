@@ -1,0 +1,32 @@
+# Golden-test quota state for land-check: exhausted Gemini group resetting at 21:30Z, pending cross-family follow-ups.
+version: 1
+preferences:
+  pay_per_use: never
+providers:
+  - id: claude
+    policy: preserve
+    status: ok
+  - id: antigravity
+    policy: spend-first
+    status: ok
+    probe: {kind: antigravity}
+    groups:
+      - name: "Gemini Models"
+        models: [gemini-4-neon, gemini-4-hydrogen, gemini-pro-orchestrator-neon, gemini-3-8-flash]
+        status: exhausted
+        used_percent: 100
+        window: 7d
+        resets_at: 2026-11-20T21:30:00+00:00
+      - name: "Claude and GPT models"
+        models: [claude-opus-5-5, claude-sonnet-5-5, gpt-oss-120b]
+        status: ok
+        used_percent: 20
+        window: 7d
+        resets_at: 2026-12-02T00:00:00+00:00
+followups:
+  - kind: preferred-review
+    ref: PR-37
+    needs: "!anthropic/T4"
+  - kind: resume
+    ref: PR-38
+    needs: "!openai/T4"
