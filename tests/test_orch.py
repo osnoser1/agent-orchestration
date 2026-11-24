@@ -7235,6 +7235,14 @@ class TestCrossFamilyReviewFixes(unittest.TestCase):
         self.assertIn("ok: 1 combination(s) for role implementer", out)
 
     # Findings 6, 8, 9: carrier resume needs, second pre-probe individual lock, find_usable_in_assets ignores carriers
+    def test_legacy_carrier_named_resume_need_still_matches_its_model(self):
+        cat = orch.load_file(os.path.join(os.path.dirname(orch.__file__), "..", "catalog.yaml"))
+        argon = next(m for m in cat["models"] if m["id"] == "gemini-4-argon")
+        need = "provider:antigravity/gemini-4-argon/T3"  # written by v0.21.0/0.21.1
+        self.assertTrue(orch._model_matches_need(argon, need, provider_id="antigravity", group_name="Gemini Models"))
+        neon = next(m for m in cat["models"] if m["id"] == "gemini-4-neon")
+        self.assertFalse(orch._model_matches_need(neon, need, provider_id="antigravity", group_name="Gemini Models"))
+
     def test_f6_f8_f9_individual_locks_carriers_and_resume_needs(self):
         _write(self.assets, "version: 1\nproviders:\n  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n")
         # F8: two individual locks before first probe both succeed
@@ -7245,7 +7253,8 @@ class TestCrossFamilyReviewFixes(unittest.TestCase):
         cat = orch.load_file(CATALOG_PATH)
         self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now(self.NOW), "!anthropic/T4"), ["antigravity"])
         self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now("2026-11-21T00:00:00Z"), "provider:antigravity/gemini-4-argon"), ["antigravity"])
-        self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now("2026-11-21T00:00:00Z"), "provider:antigravity/gemini-4-argon/T3"), [])
+        # a legacy carrier-named need (v0.21.0/0.21.1) becomes due once the lock expired (23:47) instead of never
+        self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now("2026-11-21T00:00:00Z"), "provider:antigravity/gemini-4-argon/T3"), ["antigravity"])
         # F6 (carrier): resume needs is provider:antigravity/gemini-4-argon (never carrier group /T3), stays due after probe moves it
         rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="low", ref="PR-C", full=False))
         self.assertEqual(rc, 4, out)

@@ -598,7 +598,9 @@ def _model_matches_need(m, need, floors=None, emerg=None, provider_id=None, grou
         if len(parts) == 2:
             return _model_matches_need(m, parts[1], floors=floors, emerg=emerg)
         if len(parts) == 3:
-            if not group_name or norm(group_name) != norm(parts[1]):
+            # v0.21.0/0.21.1 named a lock carrier after its model (`provider:<p>/<model>/<tier>`): match that model too.
+            own = norm(parts[1]) in {norm(x) for x in [m.get("id"), m.get("name"), *(m.get("aliases") or [])] if x}
+            if not own and (not group_name or norm(group_name) != norm(parts[1])):
                 return False
             return _model_matches_need(m, parts[2], floors=floors, emerg=emerg)
         return False
