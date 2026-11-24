@@ -112,7 +112,7 @@ def run_case(argv):
                "CLAUDE_CONFIG_DIR": os.path.join(tmp, "home", ".claude"), "CODEX_HOME": os.path.join(tmp, "home", ".codex")}
         real = [x.replace("<TMP>", tmp).replace("<REPO>", REPO_ROOT) for x in argv]
         p = subprocess.run([sys.executable, "-I", ORCH, *real], cwd=tmp, env=env, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, universal_newlines=True)
+                           stderr=subprocess.STDOUT, universal_newlines=True, encoding="utf-8", timeout=60)
         body = "rc: %d\n%s" % (p.returncode, p.stdout)
         for extra, path in (("select", "quota.yaml"), ("select", "quota-orch.yaml"), ("launch", "payload.json")):
             if argv[0] == extra and "<TMP>/" + path in argv and os.path.exists(os.path.join(tmp, path)):
@@ -167,7 +167,8 @@ class GoldenOutput(unittest.TestCase):
 
 class EscalateNeverStepsDown(unittest.TestCase):
     """Every catalog rung as --current, every role: a target scores strictly higher (or, from an unscored rung, is the same
-    model at a higher rated effort), a reviewer never lands on the implementer's model, and a dry run never logs."""
+    model at a higher rated effort), a reviewer never lands on the implementer's model, the orchestrator stays on its provider
+    without approval, a target logs exactly one escalate row, and an ask (exit 2/3) logs nothing."""
 
     def test_every_catalog_rung(self):
         catalog = orch.load_file(CATALOG)
@@ -179,6 +180,7 @@ class EscalateNeverStepsDown(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp)
         ledger, parser, problems, runs = os.path.join(tmp, "ledger.jsonl"), orch.build_parser(), [], 0
+        targets = {"implementer": 0, "reviewer": 0, "orchestrator": 0}
         pat = re.compile(r"^escalate: \w+ \S+ @ \S+ -> (\S+)/(\S+) @ (\S+) \(cause", re.M)
         for i, mid in enumerate(ids):
             fam = [m for m in ids if m != mid and models[m]["family"] == models[mid]["family"]]
@@ -191,7 +193,7 @@ class EscalateNeverStepsDown(unittest.TestCase):
             for eff in efforts:
                 for role, more, avail in roles:
                     argv = ["escalate", "--role", role, "--ref", "p", "--current", "codex:%s@%s" % (mid, eff), "--cause",
-                            "rework", "--available", avail, *more, "--dry-run", "--ledger", ledger,
+                            "rework", "--available", avail, *more, "--ledger", ledger,  # real run: logging is under test
                             "--assets", os.path.join(tmp, "quota.yaml"), "--catalog", CATALOG, "--now", NOW]
                     impl = more[-1] if role == "reviewer" else None
                     case = "%s %s@%s %s" % (role, mid, eff, " ".join(more))
@@ -204,9 +206,13 @@ class EscalateNeverStepsDown(unittest.TestCase):
                         continue
                     runs += 1
                     text = out.getvalue()
+                    rows = []
                     if os.path.exists(ledger):
-                        problems.append("%s: rc %s logged to the ledger" % (case, rc))
-                        os.remove(ledger)
+                        with open(ledger, encoding="utf-8") as fh:
+                            rows = [l for l in fh if l.strip()]
+                        os.remove(ledger)  # a fresh ledger per case, so the cap never interferes
+                    if len(rows) != (1 if rc == 0 else 0):
+                        problems.append("%s: rc %s logged %d row(s)" % (case, rc, len(rows)))
                     if rc != 0:
                         if rc not in (2, 3):
                             problems.append("%s: rc %s\n%s" % (case, rc, text))
@@ -215,6 +221,9 @@ class EscalateNeverStepsDown(unittest.TestCase):
                     if not hit:
                         problems.append("%s: rc 0 without a target line\n%s" % (case, text))
                         continue
+                    targets[role] += 1
+                    if role == "orchestrator" and hit.group(1) != "codex":
+                        problems.append("%s -> %s: orchestrator left its provider without approval" % (case, hit.group(1)))
                     to_m, to_e = orch._rung_model(catalog, hit.group(2)), hit.group(3)
                     cur_sc, to_sc = orch._rung_score(models[mid], eff), orch._rung_score(to_m, to_e)
                     if to_sc is None:
@@ -226,6 +235,8 @@ class EscalateNeverStepsDown(unittest.TestCase):
                     if role == "reviewer" and to_m["id"] == impl:
                         problems.append("%s -> %s: the implementer's model" % (case, to_m["id"]))
         self.assertGreater(runs, 300)
+        for role, floor in (("implementer", 50), ("reviewer", 50), ("orchestrator", 20)):  # a vacuous all-ask run fails here
+            self.assertGreaterEqual(targets[role], floor, "%s: only %d escalation target(s)" % (role, targets[role]))
         if problems:
             self.fail("%d of %d escalate run(s) broke the property:\n%s" % (len(problems), runs, "\n".join(problems[:10])))
 
