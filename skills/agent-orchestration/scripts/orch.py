@@ -6769,7 +6769,10 @@ EXAMPLES = {  # one example per subcommand, shown at the end of `<command> --hel
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=50, width=154),
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     for n in ("check", "probe", "classify", "select", "launch", "defer", "followups", "log", "history", "escalate", "exhaust", "status", "failure", "scope", "land-check", "policy"):
         usage = (

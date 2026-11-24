@@ -526,11 +526,15 @@ def assert_contract(tc, case, rc, lines, rc_full, full):
 
 
 def assert_help(tc, script, subcommands, label):
-    top = subprocess.run([sys.executable, "-I", script, "--help"], stdout=subprocess.PIPE, universal_newlines=True).stdout
+    env = dict(os.environ, COLUMNS="80")
+    top = subprocess.run([sys.executable, "-I", script, "--help"], stdout=subprocess.PIPE, universal_newlines=True, env=env).stdout
     tc.assertLessEqual(len(top.splitlines()), TOP_HELP_LINES, label)
     tc.assertRegex(top, r"(?i)exit codes?", "%s --help must list the exit codes" % label)
+    w60 = subprocess.run([sys.executable, "-I", script, "--help"], stdout=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, COLUMNS="60")).stdout
+    w200 = subprocess.run([sys.executable, "-I", script, "--help"], stdout=subprocess.PIPE, universal_newlines=True, env=dict(os.environ, COLUMNS="200")).stdout
+    tc.assertEqual(w60, w200, "%s --help must be invariant to COLUMNS" % label)
     for name in subcommands:
-        out = subprocess.run([sys.executable, "-I", script, name, "--help"], stdout=subprocess.PIPE, universal_newlines=True).stdout
+        out = subprocess.run([sys.executable, "-I", script, name, "--help"], stdout=subprocess.PIPE, universal_newlines=True, env=env).stdout
         tc.assertLessEqual(len(out.splitlines()), HELP_LINES, "%s %s --help is too long" % (label, name))
         tc.assertRegex(out, r"(?m)^example: python3 \S+ %s\b" % re.escape(name), "%s %s --help needs one example" % (label, name))
 
