@@ -4828,9 +4828,9 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         with open(ledger, encoding="utf-8") as fh:
             row = json.loads(fh.read().strip())
         self.assertEqual(row["role"], "implementer")
-        self.assertEqual(row["requested"], "claudeagent:claude-opus-5-5@high")
-        self.assertEqual(row["effective"], "claudeagent:claude-opus-5-5@high")
-        self.assertNotIn("mismatch", row)
+        self.assertEqual(row["requested"], "claudeAgent:claude-opus-5-5@high")  # the provider id stays verbatim
+        self.assertEqual(row["effective"], "ClaudeAgent:claude-opus-5-5@high")
+        self.assertNotIn("mismatch", row)  # equal up to provider case
 
     def test_select_warns_on_ignored_other_role_flags_and_equal_score_rung(self):
         rc1, out1 = self._orch_sel("codex:gpt-6-2-sol", coordination=1, complexity="hard", ui=True, below_tier="wait")
@@ -6705,6 +6705,135 @@ class TestQualityEscalation(unittest.TestCase):
         notmap = self.prefs("  escalation: 3\n")
         rc, out = _run(orch.check, _Args(assets=notmap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", full=True))
         self.assertEqual(rc, 1, out)
+
+
+class TestLedgerProviderIdsDuplicatesAndAvailableFile(unittest.TestCase):
+    """Verbatim provider ids in the ledger, the duplicate-`complete` warning, and `--available @file`."""
+
+    LOG = dict(now="2026-11-20T21:00:00Z", event="select", complexity="hard", risk="low", ui=False, surface="subagent",
+               provider="claudeAgent_claude_extra", model="claude-opus-5-5", effort="high", reviewer=None, outcome=None,
+               findings=None, repo="demo", provisional=False, ref=None, failure_class=None, role=None, rubric=None,
+               requested=None, effective=None)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.assets = os.path.join(self.dir, "assets.yaml")
+        self.ledger = os.path.join(self.dir, "ledger.jsonl")
+        _write(self.assets, "version: 1\nproviders:\n  - id: claudeAgent_claude_extra\n    status: ok\n  - id: codex\n    status: ok\n")
+
+    def log(self, **kw):
+        return _run(orch.log_cmd, _Args(**{**self.LOG, "assets": self.assets, "ledger": self.ledger, "catalog": CATALOG_PATH, **kw}))
+
+    def rows(self):
+        with open(self.ledger, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def cli(self, *args):
+        proc = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "orch.py"), *args, "--assets", self.assets, "--catalog", CATALOG_PATH,
+                               "--now", "2026-11-20T21:00:00Z"], capture_output=True, text=True, cwd=self.dir)
+        return proc.returncode, proc.stdout
+
+    def avail_file(self, text, name="avail.txt"):
+        path = os.path.join(self.dir, name)
+        _write(path, text)
+        return "@" + path
+
+    # ---------- verbatim provider ids ----------
+    def test_requested_effective_keep_the_provider_id_verbatim(self):
+        rc, out = self.log(requested="  claudeAgent_claude_extra:Claude Opus 5.5@HIGH ", effective="claudeAgent_claude_extra/claude-opus-5-5 @ high")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines(), [f"logged select (demo) -> {self.ledger}"])
+        row = self.rows()[0]
+        self.assertEqual(row["requested"], "claudeAgent_claude_extra:claude-opus-5-5@high")
+        self.assertEqual(row["effective"], "claudeAgent_claude_extra:claude-opus-5-5@high")
+        self.assertNotIn("mismatch", row)
+
+    def test_mismatch_compares_normalised_providers(self):
+        rc, out = self.log(requested="claudeAgent_claude_extra:claude-opus-5-5@high", effective="claudeagent-claude-extra:claude-opus-5-5@high")
+        self.assertEqual((rc, "warning:" in out), (0, False), out)
+        rc, out = self.log(requested="claudeAgent_claude_extra:claude-opus-5-5@high", effective="claudeAgent:claude-opus-5-5@high")
+        self.assertIn("warning: effective claudeAgent:claude-opus-5-5@high differs from requested claudeAgent_claude_extra:claude-opus-5-5@high", out)
+        self.assertTrue(self.rows()[-1]["mismatch"])
+
+    def test_escalate_rows_keep_the_provider_id_verbatim(self):
+        rc, out = _run(orch.escalate_cmd, _Args(
+            assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", ledger=self.ledger, role="implementer", ref="PR-7",
+            current="Codex:gpt-6-2-sol@medium", cause="rework", available="Codex:gpt-6-2-sol", findings=None, complexity="standard", risk="low",
+            coordination=None, implementer=None, dry_run=False, repo="demo", full=False, approved=False, to=None))
+        self.assertEqual(rc, 0, out)
+        row = self.rows()[0]
+        self.assertEqual((row["from"], row["to"]), ("Codex:gpt-6-2-sol@medium", "Codex:gpt-6-2-sol@high"))
+
+    def test_history_by_groups_old_lowercase_and_new_verbatim_rows(self):
+        sol = {"model": "gpt-6-2-sol", "effort": "medium"}
+        with open(self.ledger, "w", encoding="utf-8") as fh:
+            for e in ({"event": "select", "ref": "A", "provider": "claudeagent-claude-extra", "model": "claude-opus-5-5", "effort": "high"},
+                      {"event": "complete", "ref": "A", "provider": "claudeagent-claude-extra", "model": "claude-opus-5-5", "effort": "high", "outcome": "ok", "findings": 1},
+                      {"event": "select", "ref": "B", "provider": "claudeAgent_claude_extra", "model": "claude-opus-5-5", "effort": "high"},
+                      {"event": "complete", "ref": "B", "provider": "claudeAgent_claude_extra", "model": "claude-opus-5-5", "effort": "high", "outcome": "rework", "findings": 3},
+                      {"event": "escalate", "ref": "B", "role": "implementer", "from": "claudeAgent_claude_extra:claude-opus-5-5@high",
+                       "to": "claudeAgent_claude_extra:claude-opus-5-5@xhigh", "cause": "rework"},
+                      {"event": "select", "ref": "C", "provider": "codex", **sol}):
+                fh.write(json.dumps(e) + "\n")
+        rc, out = _run(orch.history_cmd, _Args(ledger=self.ledger, assets=self.assets, catalog=CATALOG_PATH, ref=None, last=None,
+                                               full=True, role="implementer", by="model,effort"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.splitlines(), [
+            "claudeAgent_claude_extra:claude-opus-5-5@high: 2 item(s); rework 50%; findings avg 2.0; escalations 1; cost expensive",
+            "codex:gpt-6-2-sol@medium: 1 item(s); rework n/a; findings avg n/a; escalations 0; cost normal",
+            "ok: 2 combination(s) for role implementer",
+        ])
+
+    # ---------- duplicate complete ----------
+    def test_second_complete_for_an_attempt_warns_but_logs(self):
+        self.log(ref="PR-9")
+        self.assertNotIn("warning:", self.log(ref="PR-9", event="complete", outcome="rework")[1])
+        rc, out = self.log(ref="PR-9", event="complete", outcome="ok")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.splitlines(), [
+            "warning: PR-9 (implementer) already has a complete for this attempt (outcome rework); history keeps the latest — "
+            "log one complete per attempt, after the review gate",
+            f"logged complete (demo) -> {self.ledger}",
+        ])
+        self.assertEqual(len(self.rows()), 3)
+        # a role has its own attempt; a new select starts a new attempt; no --ref means nothing to match
+        self.assertNotIn("warning:", self.log(ref="PR-9", event="complete", outcome="ok", role="reviewer")[1])
+        self.log(ref="PR-9")
+        self.assertNotIn("warning:", self.log(ref="PR-9", event="complete", outcome="ok")[1])
+        self.assertNotIn("warning:", self.log(event="complete", outcome="ok")[1])
+        self.assertNotIn("warning:", self.log(event="complete", outcome="ok")[1])
+
+    # ---------- --available @file ----------
+    def test_available_file_for_select_escalate_and_launch(self):
+        avail = self.avail_file("# discovery\ncodex:gpt-6-2-sol, claude:claude-opus-5-5  # inline note\n\n\nantigravity:gemini-4-neon\n")
+        rc, out = self.cli("select", "--complexity", "standard", "--risk", "low", "--available", avail)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], self.cli("select", "--complexity", "standard", "--risk", "low", "--available",
+                                                                "codex:gpt-6-2-sol,claude:claude-opus-5-5,antigravity:gemini-4-neon")[1].strip().splitlines()[-1])
+        rc, out = self.cli("escalate", "--role", "implementer", "--ref", "PR-1", "--current", "codex:gpt-6-2-sol@medium", "--cause", "rework",
+                           "--complexity", "standard", "--risk", "low", "--available", avail, "--ledger", self.ledger)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("escalate: implementer codex/gpt-6-2-sol @ medium -> ", out)
+        _write(os.path.join(self.dir, "brief.md"), "GOAL: ship it.\n")
+        _write(os.path.join(self.dir, "t.launch.yaml"),
+               "version: 1\nrole: orchestrator\ntitle: t\nrepo: o/r\nbrief: brief.md\n"
+               "rubric: {size: 2, uncertainty: 1, deps: 2, consequences: 1, verification: 1, coordination: 2}\nladder: auto\n"
+               "workspace: {strategy: worktree, base: origin/main, children: shared}\n")
+        rc, out = self.cli("launch", os.path.join(self.dir, "t.launch.yaml"), "--available", avail, "--no-probe")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("available:", out)
+
+    def test_unreadable_available_file_names_the_path(self):
+        missing = os.path.join(self.dir, "nope.txt")
+        for cmd in (("select", "--complexity", "standard", "--risk", "low"), ("check",)):
+            rc, out = self.cli(*cmd, "--available", "@" + missing)
+            self.assertEqual(rc, 1, out)
+            lines = out.strip().splitlines()
+            self.assertEqual(lines[0], f"error: --available file {missing} is not readable")
+            self.assertTrue(lines[-1].startswith("error: 1 problem(s); action: fix --available "), lines)
+            self.assertTrue(lines[-1].endswith(f"and rerun {cmd[0]}"), lines)
 
 
 if __name__ == "__main__":

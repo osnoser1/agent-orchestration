@@ -1455,15 +1455,16 @@ def _parse_pme(val, allow_slash=False):
     return prov, mid, eff
 
 
-def _canon_pme(val, catalog):
-    """Parse and normalise `--requested`/`--effective` to canonical `provider:model-id@effort`, or None."""
+def _canon_pme(val, catalog, key=False):
+    """Parse `--requested`/`--effective` to `provider:model-id@effort` or None. The provider id stays verbatim (it must match
+    assets.yaml and the harness); `key=True` normalises it for comparing and grouping rows (old lowercase and verbatim alike)."""
     parsed = _parse_pme(val, allow_slash=True)
     if not parsed:
         return None
     prov, mid, eff = parsed
     names = _catalog_name_map(catalog)
     canon_mid = norm(names.get(norm(mid), mid))
-    return f"{norm(prov)}:{canon_mid}@{eff}"
+    return f"{norm(prov) if key else prov}:{canon_mid}@{eff}"
 
 
 def _parse_rubric(val):
@@ -4663,11 +4664,20 @@ def log_cmd(a):
             return 1
         entry["effective"] = canon_eff
     mismatch_msg = None
-    if "requested" in entry and "effective" in entry and entry["effective"] != entry["requested"]:
+    if "requested" in entry and "effective" in entry and (
+            _canon_pme(effective, cat, key=True) != _canon_pme(requested, cat, key=True)):
         entry["mismatch"] = True
         mismatch_msg = f"warning: effective {entry['effective']} differs from requested {entry['requested']}; check the thread settings"
 
+    dup = None
+    if event == "complete" and entry.get("ref") and os.path.exists(ledger_path):
+        prior = read_ledger_refs(ledger_path)[0].get((entry["ref"], role), {}).get("complete")
+        if prior:
+            dup = (f"warning: {entry['ref']} ({role}) already has a complete for this attempt (outcome {prior.get('outcome')}); "
+                   "history keeps the latest — log one complete per attempt, after the review gate")
     _append_ledger(ledger_path, entry)
+    if dup:
+        print(dup)
     if mismatch_msg:
         print(mismatch_msg)
     print(f"logged {event} ({repo}) -> {ledger_path}")
@@ -4787,9 +4797,13 @@ def history_by(a, ledger_path, ap, role):
         print(f"note: ignored with --by: {', '.join(ignored)}")
     catalog = load_catalog_with_local(_opt_str(a, "catalog") or DEF_CATALOG, ap)
 
-    def combo(e):
-        raw = f"{e.get('provider') or '?'}:{e.get('model') or '?'}@{e.get('effort') or '?'}"
-        return _canon_pme(raw, catalog) or raw
+    shown = {}  # group key -> the most recent verbatim spelling
+
+    def combo(e, raw=None):
+        raw = raw or f"{e.get('provider') or '?'}:{e.get('model') or '?'}@{e.get('effort') or '?'}"
+        k = _canon_pme(raw, catalog, key=True) or raw
+        shown[k] = _canon_pme(raw, catalog) or raw
+        return k
 
     open_by_ref, attempts, escalations = {}, [], {}
     for _, e in _ledger_entries(ledger_path):
@@ -4797,18 +4811,19 @@ def history_by(a, ledger_path, ap, role):
         if not isinstance(ref, str) or not ref.strip() or _entry_role(e) != role:
             continue
         if ev == "escalate" and isinstance(e.get("from"), str):
-            k = _canon_pme(e["from"], catalog) or e["from"]
+            k = combo(e, e["from"])
             escalations[k] = escalations.get(k, 0) + 1
         elif ev in ("select", "complete"):
             ref = _clean_ref(ref)
             if ev == "select" or ref not in open_by_ref:
                 open_by_ref[ref] = {"ref": ref}
                 attempts.append(open_by_ref[ref])
+                open_by_ref[ref]["key"] = combo(e)
             open_by_ref[ref][ev] = e
     stats = {}
     new = lambda: {"refs": set(), "done": 0, "rework": 0, "findings": [], "unflagged": []}  # noqa: E731
     for at in attempts:
-        st = stats.setdefault(combo(at.get("select") or at["complete"]), new())
+        st = stats.setdefault(at["key"], new())
         st["refs"].add(at["ref"])
         done = at.get("complete") or {}
         if done.get("outcome") in ("ok", "rework"):  # the rework rate compares finished work only
@@ -4828,7 +4843,7 @@ def history_by(a, ledger_path, ap, role):
         if role == "orchestrator":
             parts.append(f"unflagged avg {avg(st['unflagged'])}")
         parts += [f"escalations {escalations.get(k, 0)}", f"cost {(m or {}).get('cost') or '?'}"]
-        lines.append(f"{k}: " + "; ".join(parts))
+        lines.append(f"{shown.get(k, k)}: " + "; ".join(parts))
     for line in _capped(lines):
         print(line)
     print(f"ok: {len(lines)} combination(s) for role {role}")
@@ -6503,8 +6518,29 @@ def build_parser():
     return ap
 
 
+def _expand_available(a):
+    """`--available @path`: read the pairs from a file (commas and/or newlines; `#` comments and blank lines ignored) into
+    `a.available` for every command. Returns the unreadable path, else None."""
+    raw = getattr(a, "available", None)
+    if not isinstance(raw, str) or not raw.startswith("@"):
+        return None
+    path = raw[1:].lstrip()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return path or raw
+    a.available = ",".join(x.strip() for ln in text.splitlines() for x in ln.partition("#")[0].split(",") if x.strip())
+    return None
+
+
 def main():
     a = build_parser().parse_args()
+    bad = _expand_available(a)
+    if bad:
+        print(f"error: --available file {_show_entry(bad)} is not readable")
+        print(f"error: 1 problem(s); action: fix --available (comma-separated <provider>:<model-id> pairs, or @<readable file>) and rerun {a.cmd}")
+        return 1
     return {
         "check": check,
         "probe": probe,
