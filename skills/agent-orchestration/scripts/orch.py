@@ -67,8 +67,8 @@ VALID_DESIGN_CHECKPOINTS = ("ask", "delegate")
 VALID_OUTCOMES = ("ok", "failed", "quota", "stall", "rework")
 VALID_SURFACES = ("subagent", "conversation")
 VALID_ROLES = ("implementer", "reviewer", "orchestrator")
-VALID_CAUSES = ("rework", "findings", "status")  # quality-escalation triggers (references/supervision.md)
-VALID_PHASES = ("plan", "review", "supervise")  # orchestrator per-phase effort (references/selection.md)
+VALID_CAUSES = ("rework", "findings", "status")  # quality-escalation triggers (references/escalation.md)
+VALID_PHASES = ("plan", "review", "supervise")  # orchestrator per-phase effort (references/orchestrator.md)
 ORCH_TIERS_DEFAULT = {0: "T1", 1: "T2", 2: "T3"}
 ORCH_EFFORTS = ("none", "low", "medium", "high")
 RUBRIC_KEYS = ("size", "uncertainty", "deps", "consequences", "verification", "coordination")
@@ -1166,7 +1166,7 @@ def reviewer_tier(tier, risk):
 def pick_reviewer(catalog, assets, avail, floors, rt, now, impl_model, fail_on_low, tier_only=False):
     """Return `(stage, candidate, below_tier)` for the first usable reviewer, or None.
 
-    Capability before independence (references/selection.md): different family meeting `rt` ->
+    Capability before independence (references/review.md): different family meeting `rt` ->
     same family, different model, meeting `rt` -> different family below `rt` (best score) ->
     same family, different model, below `rt` (best score) -> same model.
     """
@@ -1865,7 +1865,7 @@ def _eval_select_orchestrator(a, catalog, assets, avail, floors, now, ap=None, a
         lines.append(line)
     act = phase_act or (
         f"launch the orchestrator on {_cand_ref(same_rungs[0])}; "
-        "climb the ladder only on an escalation trigger (references/selection.md)"
+        "climb the ladder only on an escalation trigger (references/escalation.md)"
         + _orch_action_suffix(switch_rung)
     )
     return {
@@ -2985,7 +2985,7 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
         esc_noun = "escalation" if max_esc == 1 else "escalations"
         lines.append(
             f"escalate on (orch.py escalate): outcome rework | {thresholds[1]}+ findings exposing a gap in your brief or plan "
-            f"(references/supervision.md) (workers: {thresholds[0]}+) | a child's STATUS: ESCALATE"
+            f"(references/escalation.md) (workers: {thresholds[0]}+) | a child's STATUS: ESCALATE"
         )
         lines.append(f"escalation cap: at most {max_esc} {esc_noun}; never step down mid-phase")
     else:
@@ -3002,7 +3002,7 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
         ws_txt = f"worktree from {ws['base']}" if strat == "worktree" else f"existing_worktree at {ws['worktree_path']}" if strat == "existing_worktree" else "root"
         lines.append(f"workspace: {ws_txt}" + (f"; children {ws['children']}" if ws.get("children") else ""))
     lines.append(f"rubric: {rubric_str} ({complexity}/{risk})")
-    lines.append("verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)")
+    lines.append("verify: the launcher compares requested vs effective model/effort after launch (references/harnesses.md)")
     return lines
 
 
@@ -3542,7 +3542,7 @@ def _exhaust_next_action(a, ap):
         if res["kind"] == "dispatch_orchestrator":
             _action(
                 f'switch this conversation to {_cand_ref(res["candidate"])} in place, or hand off with orch.py launch <spec> '
-                '(references/harnesses.md "Orchestrator\'s own quota")' + _orch_action_suffix(res.get("switch_rung"), name_rung=True)
+                '(references/orchestrator.md "Orchestrator\'s own quota")' + _orch_action_suffix(res.get("switch_rung"), name_rung=True)
             )
             return 0
         if res["kind"] == "hold":
@@ -4725,7 +4725,7 @@ def log_cmd(a):
     }
     if _opt_bool(a, "provisional"):
         entry["provisional"] = True
-    if _opt_int(a, "unflagged") is not None:  # orchestrator: findings exposing a gap in its brief or plan (references/supervision.md)
+    if _opt_int(a, "unflagged") is not None:  # orchestrator: findings exposing a gap in its brief or plan (references/escalation.md)
         entry["unflagged"] = _opt_int(a, "unflagged")
     ref = _opt_str(a, "ref")
     if ref:
@@ -4958,7 +4958,7 @@ def history_by(a, ledger_path, ap, role):
     return 0
 
 
-# ---------- quality escalation (references/supervision.md) ----------
+# ---------- quality escalation (references/escalation.md) ----------
 def _rung_score(m, eff):
     """Catalog score of model `m` at effort `eff`, or None: an unrated rung's score is unknown, never 0."""
     v = ((m or {}).get("scores") or {}).get(eff)

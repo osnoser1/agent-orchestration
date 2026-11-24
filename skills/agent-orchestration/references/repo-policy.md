@@ -6,28 +6,13 @@ Run `python3 scripts/orch.py policy --check` (add `--repo <dir>` outside the rep
 
 ## Contract
 
-Start the section (recommended) with the prose intro line `Repository policy for the agent-orchestration skill; it overrides the skill's defaults here.` so agents without this skill understand what the section governs. Prose paragraph lines before the first `- Key: value` bullet are allowed; non-bullet lines after bullets start fail validation.
-
-```markdown
-## Orchestration
-Repository policy for the agent-orchestration skill; it overrides the skill's defaults here.
-- Implement: <free text with markdown links to skills/guides>
-- Review: <free text with markdown links to review skills>
-- PR: <free text with markdown links to PR skill>
-- Land: <exact command or process with optional links>
-- High risk: <glob> | source:<repo-relative path> | class:<short phrase> (; separated)
-- Models: <task-type> → family:<catalog family> [(<note>)] (; separated)
-- Conversations: <free text on opening new top-level conversations>
-- Evidence: <free text with markdown links on verification evidence by change type>
-- Checkpoints: <free text with markdown links on taste/design checkpoint triggers>
-- Known failures: /<regex>/ => rerun | `<command>` (; separated)
-```
+Start the section (recommended) with the prose intro line `Repository policy for the agent-orchestration skill; it overrides the skill's defaults here.` so agents without this skill understand what the section governs. Prose paragraph lines before the first `- Key: value` bullet are allowed; non-bullet lines after bullets start fail validation. Each key takes one `- Key: value` bullet; the field tables below give each key's grammar, and **Example** shows a full section.
 
 ### Typed fields
 
 | Field | Grammar | Effect and validation (`orch.py policy --check`) |
 |---|---|---|
-| `Models` | `;`-separated `<task-type> → family:<catalog family>`, optional trailing `(<note>)` | `<catalog family>` must match a `family` in `catalog.yaml` (or `catalog.local.yaml`); relative links in `(<note>)` must resolve. Unmet preferences follow `references/selection.md`. |
+| `Models` | `;`-separated `<task-type> → family:<catalog family>`, optional trailing `(<note>)` | `<catalog family>` must match a `family` in `catalog.yaml` (or `catalog.local.yaml`); relative links in `(<note>)` must resolve. Unmet preferences follow `references/fallbacks.md`. |
 | `High risk` | `;`-separated items: `<glob>` (`db/migrations/**`), `source:<repo-relative path>` (file defining risky paths), or `class:<short phrase>` (judgment class) | Additive to Step 2 (Classify) in `references/selection.md`. Globs must be repo-relative without spaces, commas, braces, or `..`; `source:` files must resolve inside the repo and exist. |
 | `Known failures` | `;`-separated `/regex/ => <action>` where `<action>` is `rerun` or a command in backticks | Matched before code investigation (`references/verification.md`, `references/supervision.md`). Regex must compile (always case-insensitive; flags unsupported). `orch.py failure` loads these from `--repo` automatically. |
 
@@ -52,13 +37,13 @@ Only the typed format is accepted; free-text `Models`, `High risk`, and `Known f
 ## Precedence
 
 1. **User's explicit instruction** — overrides everything for the current request.
-2. **User's `assets.yaml` and harness rules** — keep authority over quota limits (`low_threshold`, `exhausted_threshold`, `exhausted_until`), `preferences.ui_fallback` when a preferred family is exhausted, `preferences.below_tier` when every tier-meeting model is out of quota (`references/selection.md`), `preferences.evidence` (user-wide evidence priorities and deprioritized checks), `pay_per_use`, `policy: avoid`, and the ask-once gates in `SKILL.md` Step 7 (`preferences.new_conversations`, `preferences.design_checkpoints`, emergency spending). Assets and harness rules win on these, except new top-level conversations, where the stricter of `preferences.new_conversations` and the repo's `Conversations:` line applies.
+2. **User's `assets.yaml` and harness rules** — keep authority over quota limits (`low_threshold`, `exhausted_threshold`, `exhausted_until`), `preferences.ui_fallback` when a preferred family is exhausted, `preferences.below_tier` when every tier-meeting model is out of quota (`references/fallbacks.md`), `preferences.evidence` (user-wide evidence priorities and deprioritized checks), `pay_per_use`, `policy: avoid`, and the ask-once gates in `SKILL.md` Step 7 (`preferences.new_conversations`, `preferences.design_checkpoints`, emergency spending). Assets and harness rules win on these, except new top-level conversations, where the stricter of `preferences.new_conversations` and the repo's `Conversations:` line applies.
 3. **Repository policy (`.agents/orchestration.md` or `AGENTS.md` `## Orchestration`)** — overrides skill defaults for process (phase skills/commands), extra high-risk triggers, task-type model preferences (`Models:`), repo evidence expectations (`Evidence:`), checkpoint triggers (`Checkpoints:`), and known infrastructure remedies (`Known failures:`).
 4. **Skill defaults** — apply for any omitted line or when no policy is present.
 
 ## Applying policy in briefs
 
-Load repo policy via `python3 scripts/orch.py policy` during Step 1 (Discover) — or read `.agents/orchestration.md` / `AGENTS.md` directly when Python is unavailable. In Step 4 (Brief), name the active phase's skills, commands, evidence requirements, and checkpoint triggers explicitly in `CONSTRAINTS` and `VERIFICATION` (for example, `"follow the implement-feature skill"`, `"use the open-pr skill"`, or `"land with make land PR=<n>"`) in addition to the general `AGENTS.md` read.
+Load repo policy via `python3 scripts/orch.py policy` during Step 1 (Discover) — or read `.agents/orchestration.md` / `AGENTS.md` directly when Python is unavailable. In Step 4 (Brief), name the active phase's skills, commands, evidence requirements, and checkpoint triggers explicitly in `CONSTRAINTS` and `VERIFICATION` (`references/brief-template.md`) in addition to the general `AGENTS.md` read.
 
 ## Example
 
