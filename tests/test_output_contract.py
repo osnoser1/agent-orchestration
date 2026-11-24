@@ -541,9 +541,38 @@ class RepoContract(unittest.TestCase):
                 Case(lambda: ["bump", "1.1.0", "--root", self.fixture()], 1, CHECK_FINAL),
                 Case(lambda: ["bump", "0.0.1", "--root", self.fixture()], 2, CHECK_FINAL, rc=1),
                 Case(lambda: ["bump", "nope", "--root", self.fixture()], 2, CHECK_FINAL, rc=1),
+                self.bump_next_case("v1.4.2\nv1.0.0\n", 0),
+                self.bump_next_case("fatal: not a git repository", 128),
             ],
+            "golden-diff": [self.golden_diff_case(), self.golden_diff_case(err=True)],
             "release": [self.release_case()],
         }
+
+    def bump_next_case(self, tags, git_rc):
+        def runner(extra):
+            lines = []
+            rc = self.repo.cmd_bump(self.fixture(), None, out=lines.append, full="--full" in extra, part="patch",
+                                    run=lambda argv, cwd: (git_rc, tags))
+            return rc, lines
+
+        return Case(["bump"], 2, CHECK_FINAL, rc=1 if git_rc else 0, runner=runner)
+
+    def golden_diff_case(self, err=False):
+        repo = self.repo
+        snap = lambda verb: "".join("=== select c%03d\nrc: 0\naction: %s %03d\n" % (i, verb, i) for i in range(60))  # noqa: E731
+
+        def runner(extra):
+            lines = []
+            root = self.fixture()
+            os.makedirs(os.path.join(root, repo.GOLDEN_DIR))
+            repo._write(root, repo.GOLDEN_DIR + "/select.txt", snap("new"))
+            fake = lambda argv, cwd: ((1, "fatal: bad ref") if err else  # noqa: E731
+                                      (0, "tests/fixtures/golden/select.txt\n") if argv[1] == "ls-tree" else (0, snap("old")))
+            rc = repo.cmd_golden_diff(root, "origin/main", fake, out=lines.append, full="--full" in extra)
+            return rc, lines
+
+        return Case(["golden-diff"], 2 if err else 13, CHECK_FINAL, rc=1 if err else 0, runner=runner,
+                    last=None if err else "old 059 -> new 059")
 
     def release_case(self):
         repo = self.repo

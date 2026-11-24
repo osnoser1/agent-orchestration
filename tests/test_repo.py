@@ -152,6 +152,132 @@ class TestBump(unittest.TestCase):
         self.assertEqual(read(root, "skills/agent-orchestration/SKILL.md"), before)
 
 
+class TestBumpNext(unittest.TestCase):
+    def bump(self, root, part, tags="", rc=0, version=None):
+        lines = []
+        code = repo.cmd_bump(root, version, out=lines.append, part=part, run=lambda argv, cwd: (rc, tags))
+        return code, lines
+
+    def test_next_steps_above_the_higher_of_files_and_tags(self):
+        cases = [("patch", "", "1.0.1"), ("minor", "v0.9.0\n", "1.1.0"), ("major", "", "2.0.0"),
+                 ("patch", "v1.0.0\nv1.0.3\nv1.0.10\nnot-a-tag\nv2.0.0-rc1\n", "1.0.11"), ("minor", "v1.2.7\n", "1.3.0")]
+        for part, tags, want in cases:
+            root = fixture_dir(self)
+            code, lines = self.bump(root, part, tags)
+            self.assertEqual((code, lines[-1]), (0, "ok: bumped 2 file(s) 1.0.0 -> %s" % want), (part, tags))
+            self.assertIn('"version": "%s"' % want, read(root, ".claude-plugin/plugin.json"))
+
+    def test_next_and_explicit_version_are_exclusive(self):
+        root = fixture_dir(self)
+        for version, part in (("1.2.0", "patch"), (None, None)):
+            code, lines = self.bump(root, part, version=version)
+            self.assertEqual(code, 1)
+            self.assertIn("not both or neither", lines[0])
+        self.assertIn('"1.0.0"', read(root, ".claude-plugin/plugin.json"))
+
+    def test_next_refuses_when_git_tags_are_unreadable(self):
+        root = fixture_dir(self)
+        code, lines = self.bump(root, "patch", "fatal: not a git repository", rc=128)
+        self.assertEqual(code, 1)
+        self.assertIn("cannot list git tags", lines[0])
+
+    def test_cli_accepts_next(self):
+        a = repo.build_parser().parse_args(["bump", "--next", "minor"])
+        self.assertEqual((a.version, a.next), (None, "minor"))
+
+
+class TestPointers(unittest.TestCase):
+    REF = "skills/agent-orchestration/references/harnesses.md"
+
+    def errors_for(self, rel, extra):
+        root = fixture_dir(self)
+        write(root, self.REF, read(root, self.REF) + "\n## Requested model (after dispatch)\n\n## Quota: switch\n")
+        write(root, rel, (read(root, rel) if os.path.exists(os.path.join(root, rel)) else "") + extra)
+        return [e for e in repo.run_checks(root).errors if e.startswith("pointers")]
+
+    def test_dangling_bold_pointer_is_one_error_line(self):
+        self.assertEqual(self.errors_for("README.md", "\n(`references/harnesses.md`, **No Such Section**)\n"),
+                         ["pointers: README.md:11: pointer to references/harnesses.md **No Such Section** has no such heading"])
+
+    def test_matching_ignores_case_backticks_qualifiers_and_step_tails(self):
+        ok = ("(`references/harnesses.md`, **requested MODEL**, step 1) (references/harnesses.md, **`Quota`**) "
+              "(`references/harnesses.md`, **Harnesses**) see references/harnesses.md#harnesses.\n")
+        self.assertEqual(self.errors_for("skills/agent-orchestration/references/other.md", ok), [])
+
+    def test_anchor_and_missing_file(self):
+        errs = self.errors_for("AGENTS.md", "\nSee `references/harnesses.md#nope` and (`references/gone.md`, **X**) and "
+                                            "(`skills/agent-orchestration/references/gone.md`, **Y**).\n")
+        self.assertEqual(len(errs), 3, errs)
+        self.assertIn("pointer to references/harnesses.md #nope has no such heading", errs[0])
+        self.assertIn("pointer to references/gone.md **X**: no such file", errs[1])
+        self.assertIn("pointer to skills/agent-orchestration/references/gone.md **Y**: no such file", errs[2])
+
+    def test_fenced_pointers_and_markdown_links_are_skipped(self):
+        text = "\n```\n(`references/harnesses.md`, **Nope**)\n```\n[x](references/harnesses.md#harnesses)\n"
+        self.assertEqual(self.errors_for("skills/agent-orchestration/SKILL.md", text), [])
+
+    def test_a_qualifier_is_not_a_prefix_match(self):
+        self.assertEqual(len(self.errors_for("README.md", "\n(`references/harnesses.md`, **Requested**)\n")), 1)
+
+
+def snapshot(cases):
+    return "".join("=== %s\nrc: %s\nnote: %s\naction: %s\n" % c for c in cases)
+
+
+class TestGoldenDiff(unittest.TestCase):
+    OLD = {"select": snapshot([("a", 0, "x", "dispatch codex/gpt @ medium now; tail"), ("b", 3, "x", "ask the user"),
+                               ("c", 0, "x", "same"), ("gone", 0, "x", "z")]),
+           "classify": snapshot([("k", 0, "x", "k")])}
+    NEW = {"select": snapshot([("a", 0, "x", "dispatch agy/gemini @ medium now; tail"), ("b", 0, "x", "dispatch y (see z)"),
+                               ("c", 0, "y", "same"), ("new", 0, "x", "z")]),
+           "classify": snapshot([("k", 0, "x", "k")])}
+
+    def test_groups_counts_and_decision_changes(self):
+        lines, total, groups = repo.golden_diff_lines(self.NEW, self.OLD)
+        self.assertEqual(lines, [
+            "select: 3 changed case(s), 1 added, 1 removed",
+            "select: [dispatch codex/gpt @ medium now -> dispatch agy/gemini @ medium now]; tail: 1",
+            "select: ask the user -> dispatch y: 1",
+            "select: rc 3 -> rc 0: 1",
+            "select: same rc and action, other output changed: 1",
+        ])
+        self.assertEqual((total, groups), (5, 1))
+
+    def test_decision_lists_are_capped(self):
+        old = {"g": snapshot([("c%02d" % i, 0, "x", "old %d" % i) for i in range(15)])}
+        new = {"g": snapshot([("c%02d" % i, 0, "x", "new %d" % i) for i in range(15)])}
+        lines, _, _ = repo.golden_diff_lines(new, old)
+        self.assertEqual(len(lines), 12)
+        self.assertEqual(lines[-1], "… 5 more (rerun with --full)")
+        self.assertEqual(len(repo.golden_diff_lines(new, old, full=True)[0]), 16)
+
+    def test_decision_change_keeps_shared_segments_once(self):
+        self.assertEqual(repo.decision_change("a; b; c", "a; d; c"), "a; [b -> d]; c")
+        self.assertEqual(repo.decision_change("a; b", "a; b; e"), "a; b; [(none) -> e]")
+        self.assertEqual(repo.decision_change("x", "y"), "x -> y")
+
+    def test_against_a_git_ref(self):
+        root = fixture_dir(self)
+        write(root, repo.GOLDEN_DIR + "/select.txt", self.OLD["select"])
+        repo._git_repo(root)
+        out = []
+        self.assertEqual(repo.cmd_golden_diff(root, "HEAD", out=out.append), 0)
+        self.assertEqual(out, ["ok: no golden changes"])
+        write(root, repo.GOLDEN_DIR + "/select.txt", self.NEW["select"])
+        write(root, repo.GOLDEN_DIR + "/history.txt", snapshot([("h", 0, "x", "h")]))
+        out = []
+        self.assertEqual(repo.cmd_golden_diff(root, "HEAD", out=out.append), 0)
+        self.assertEqual(out[0], "history: 0 changed case(s), 1 added, 0 removed")
+        self.assertEqual(out[-1], "ok: 6 case(s) changed across 2 group(s)")
+
+    def test_unknown_base_is_an_error(self):
+        root = git_fixture(self)
+        out = []
+        self.assertEqual(repo.cmd_golden_diff(root, "no-such-ref", out=out.append), 1)
+        self.assertTrue(out[0].startswith("error: golden-diff: cannot read tests/fixtures/golden at no-such-ref"), out)
+        self.assertTrue(out[-1].startswith("error: 1 problem(s); action: "), out)
+
+
 class TestRelease(unittest.TestCase):
     TAG = ("git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0", "abc123")
     PUSH = ("git", "push", "origin", "refs/tags/v1.0.0")

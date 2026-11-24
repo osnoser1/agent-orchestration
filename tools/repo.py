@@ -6,7 +6,8 @@ Stdlib only, Python 3.9+; run it as `python3 -I tools/repo.py <command>`.
 Commands:
   check [--base REF] [--root DIR]   repo-wide rules; exit 0 ok, 1 on any `error:` line
   check --self-test                 build broken fixture trees and assert every rule fires
-  bump X.Y.Z                        write a new, higher version to every file in tools/versions.json
+  bump X.Y.Z | --next PART          write a new, higher version to every file in tools/versions.json
+  golden-diff [--base REF]          per-group count and decision changes of tests/fixtures/golden vs REF
   release [--publish]               verify release preconditions; dry run unless --publish
 
 Output contract (tests/test_output_contract.py is the source of truth): compact by
@@ -25,7 +26,13 @@ an effort suffix (`-high`, ...) on a catalog id needs no entry.
 
 Output: one line per problem, `error: <rule>: <message>` (fails the run);
 `note:` lines (information only) appear with --full. Rules: version, version-git
-(git could not answer for --base), harness, links, budget, leak, model, pinned, skills, cli, done-when.
+(git could not answer for --base), harness, links, pointers, budget, leak, model, pinned, skills, cli, done-when.
+
+Rule `pointers`: in skills/**/*.md, README.md and AGENTS.md, a section pointer ``(`references/x.md`, **Heading**``
+(any `, step N` tail is ignored) must name a heading of that file, ignoring case, backticks, emphasis and a trailing
+` (…)` or `: …` qualifier on the heading; `references/x.md#anchor` outside a markdown link must name a GitHub slug in
+it. `references/` resolves in the citing skill, or in any skills/*/ for README.md and AGENTS.md. Same-file pointers
+(`**Heading**, above`) are not checked.
 
 Rule `cli` (docs <-> CLI): imports `build_parser()` from skills/agent-orchestration/scripts/orch.py and
 tools/repo.py under the checked root, then reads every checked markdown file (the `links` set, README.md and
@@ -69,6 +76,7 @@ RULE_FIX = {  # one fix hint per rule, joined into the closing `error: N problem
     "pinned": "restore the pinned phrase, or change it together with its tools/pinned-rules.json entry",
     "skills": "restore skills/*/SKILL.md",
     "cli": "fix the doc to match `--help`, or add the missing subcommand mention to README.md",
+    "pointers": "point at an existing heading of that file (or fix the heading the pointer names)",
     "done-when": "add a `*Done when*: <checkable bound>` line to the section, or list a lookup section in tools/done-when-exempt.json",
 }
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -94,6 +102,9 @@ INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 DONE_WHEN_RE = re.compile(r"^\*Done when\*", re.M)
 ORDERED_ITEM_RE = re.compile(r"^\d+[.)][ \t]", re.M)
 STEP_HEADING_RE = re.compile(r"^##\s+\d+\.")
+POINTER_PATH = r"((?:skills/[\w.-]+/)?references/[\w.-]+\.md)"
+POINTER_BOLD_RE = re.compile(r"\(`?" + POINTER_PATH + r"`?,\s*\*\*([^*]+?)\*\*")  # (`references/x.md`, **Heading**
+POINTER_ANCHOR_RE = re.compile(r"(?<![\w/(.\]-])" + POINTER_PATH + r"#([\w-]+)")  # not a [link](target): `links` owns those
 
 
 # ---------- plumbing ----------
@@ -444,6 +455,57 @@ def check_links(root, report, md_files, texts):
                         report.error("links", "%s:%d: anchor #%s not found in %s" % (rel, lineno, anchor, dest_rel))
 
 
+def heading_titles(text):
+    """Normalised ATX heading texts (code fences skipped): backticks, emphasis and link syntax dropped, lowercase."""
+    titles = set()
+    for line in blank_code(text, inline=False).split("\n"):
+        m = re.match(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$", line)
+        if m:
+            titles.add(norm_title(re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(1))))
+    return titles
+
+
+def norm_title(s):
+    return " ".join(re.sub(r"[`*]", "", s).split()).lower()
+
+
+def pointer_target(root, rel, target):
+    """Repo-relative path a pointer names: a full skills/ path as is, else `references/…` in the citing skill (or any skill)."""
+    if target.startswith("skills/"):
+        return target if os.path.isfile(os.path.join(root, target)) else None
+    m = re.match(r"^(skills/[^/]+)/", rel)
+    skill_dirs = [m.group(1)] if m else sorted(
+        os.path.relpath(p, root).replace(os.sep, "/") for p in glob.glob(os.path.join(root, "skills", "*")))
+    for d in skill_dirs:
+        if os.path.isfile(os.path.join(root, d, target)):
+            return d + "/" + target
+    return None
+
+
+def check_pointers(root, report, md_files, texts):
+    """Section pointers (`references/x.md`, **Heading**) and references/x.md#anchor must name a real heading."""
+    cache = {}
+    for rel in md_files:
+        if not (rel.startswith("skills/") or rel in ("README.md", "AGENTS.md")):
+            continue
+        body = blank_code(texts[rel], inline=False)
+        hits = [(m.start(), m.group(1), "**%s**" % m.group(2), norm_title(m.group(2)), None) for m in POINTER_BOLD_RE.finditer(body)]
+        hits += [(m.start(), m.group(1), "#" + m.group(2), None, m.group(2).lower()) for m in POINTER_ANCHOR_RE.finditer(body)]
+        for start, target, shown, title, anchor in sorted(hits, key=lambda h: h[0]):
+            lineno = body.count("\n", 0, start) + 1
+            dest = pointer_target(root, rel, target)
+            if dest is None:
+                report.error("pointers", "%s:%d: pointer to %s %s: no such file" % (rel, lineno, target, shown))
+                continue
+            if dest not in cache:
+                text = texts[dest] if dest in texts else read_text(root, dest)
+                cache[dest] = (heading_titles(text), heading_slugs(text))
+            titles = cache[dest][0]
+            named = title is None or any(t == title or t.startswith((title + " (", title + ":")) for t in titles)
+            if not named or (anchor is not None and anchor not in cache[dest][1]):
+                report.error("pointers", "%s:%d: pointer to %s %s has no such heading" % (rel, lineno, target, shown))
+
+
 def check_budgets(root, report, texts):
     skills = sorted(glob.glob(os.path.join(root, "skills", "*", "SKILL.md")))
     if not skills:
@@ -658,6 +720,7 @@ def run_checks(root, base=None, run=sh):
         check_base(root, report, cfg, current, base, run)
     check_harnesses(root, report)
     check_links(root, report, md_files, texts)
+    check_pointers(root, report, md_files, texts)
     check_budgets(root, report, texts)
     check_leaks(report, md_files, texts)
     check_models(root, report, md_files, texts)
@@ -786,6 +849,12 @@ def self_test_cases():
          lambda r: _edit(r, "skills/agent-orchestration/references/harnesses.md", "| Beta | b |\n", "| Beta | b |\n| Gamma | g |\n"), None),
         ("broken relative link", "links", lambda r: _append(r, "README.md", "\n[x](docs/missing.md)\n"), None),
         ("broken anchor", "links", lambda r: _append(r, "README.md", "\n[x](skills/agent-orchestration/SKILL.md#nope)\n"), None),
+        ("dangling section pointer", "pointers",
+         lambda r: _append(r, "README.md", "\n(`references/harnesses.md`, **No Such Section**)\n"), None),
+        ("dangling anchor pointer", "pointers", lambda r: _append(r, "AGENTS.md", "\nSee references/harnesses.md#nope.\n"), None),
+        ("section pointers that resolve pass", None,
+         lambda r: _append(r, "skills/agent-orchestration/SKILL.md",
+                           "\n(`references/harnesses.md`, **`harnesses`**, step 1) and `references/harnesses.md#harnesses`.\n"), None),
         ("link inside code is ignored", None, lambda r: _append(r, "README.md", "\n`[x](docs/missing.md)`\n"), None),
         ("SKILL.md over word budget", "budget", lambda r: _append(r, "skills/agent-orchestration/SKILL.md", words), None),
         ("AGENTS.md over line limit", "budget", lambda r: _append(r, "AGENTS.md", "- line\n" * AGENTS_MAX_LINES), None),
@@ -859,7 +928,35 @@ def cmd_self_test(out=print, full=False):
 
 
 # ---------- bump ----------
-def cmd_bump(root, new, out=print, full=False):
+def next_version(root, part, run=sh):
+    """(X.Y.Z, source) one `part` above the higher of the version files and the latest local vX.Y.Z tag, or (None, error)."""
+    report = Report()
+    _, current = check_versions(root, report)
+    if current is None:
+        return None, "versions must agree before bumping: " + "; ".join(report.errors or ["unreadable"])
+    rc, tags = run(["git", "tag", "--list", "v*"], root)
+    if rc != 0:
+        return None, "cannot list git tags (%s); pass X.Y.Z instead" % (tags.strip() or "git failed")
+    found = [t.strip()[1:] for t in tags.split("\n") if SEMVER.match(t.strip()[1:])]
+    top = max([current] + found, key=semver_tuple)
+    major, minor, patch = semver_tuple(top)
+    bumped = {"major": (major + 1, 0, 0), "minor": (major, minor + 1, 0), "patch": (major, minor, patch + 1)}[part]
+    return "%d.%d.%d" % bumped, ("tag v" + top if top != current else "version files") + " at " + top
+
+
+def cmd_bump(root, new, out=print, full=False, part=None, run=sh):
+    if (new is None) == (part is None):
+        out("error: bump: pass either X.Y.Z or --next patch|minor|major, not both or neither")
+        out("error: 1 problem(s); action: rerun bump with exactly one of them")
+        return 1
+    if part:
+        new, source = next_version(root, part, run)
+        if new is None:
+            out("error: bump: " + source)
+            out("error: 1 problem(s); action: fix the cause above, then rerun bump --next %s" % part)
+            return 1
+        if full:
+            out("note: --next %s from %s" % (part, source))
     if not SEMVER.match(new):
         out("error: bump: %r is not X.Y.Z" % new)
         out("error: 1 problem(s); action: pass a version like 1.2.3")
@@ -890,6 +987,99 @@ def cmd_bump(root, new, out=print, full=False):
         if full:
             out("bumped %s: %s -> %s" % (rel, current, new))
     out("ok: bumped %d file(s) %s -> %s" % (len(plans), current, new))
+    return 0
+
+
+# ---------- golden-diff ----------
+GOLDEN_DIR = "tests/fixtures/golden"
+
+
+def golden_cases(text):
+    """{`=== <argv>` header: body}, as tests/test_golden.py `parse` splits a snapshot file."""
+    cases, head = {}, None
+    for line in (text or "").splitlines(keepends=True):
+        if line.startswith("=== "):
+            head = line.rstrip("\n")
+            cases[head] = ""
+        elif head is not None:
+            cases[head] += line
+    return cases
+
+
+def golden_decision(body):
+    """(rc, decision): the `rc:` value and the last `action:` line without its ` (…)` asides."""
+    rc = re.match(r"rc: (-?\d+)", body)
+    acts = re.findall(r"^action: (.*)$", body, re.M)
+    return (rc.group(1) if rc else "?"), (re.sub(r"\s*\([^()]*\)", "", acts[-1]).strip() if acts else "(none)")
+
+
+def decision_change(old, new):
+    """`old -> new`; `;`-segments both share at either end print once, around a bracketed `[old -> new]` middle."""
+    a, b = old.split("; "), new.split("; ")
+    p = 0
+    while p < min(len(a), len(b)) and a[p] == b[p]:
+        p += 1
+    q = 0
+    while q < min(len(a), len(b)) - p and a[-1 - q] == b[-1 - q]:
+        q += 1
+    mid = "%s -> %s" % ("; ".join(a[p:len(a) - q]) or "(none)", "; ".join(b[p:len(b) - q]) or "(none)")
+    return "; ".join(a[:p] + ["[%s]" % mid if p or q else mid] + (a[len(a) - q:] if q else []))
+
+
+def golden_snapshots(root, base, run=sh):
+    """({group: text} at the working tree, {group: text} at `base`, error or None)."""
+    new = {}
+    for path in sorted(glob.glob(os.path.join(root, GOLDEN_DIR, "*.txt"))):
+        with open(path, encoding="utf-8") as fh:
+            new[os.path.basename(path)[:-4]] = fh.read()
+    rc, listing = run(["git", "ls-tree", "--name-only", base, GOLDEN_DIR + "/"], root)
+    if rc != 0:
+        return new, {}, "cannot read %s at %s: %s" % (GOLDEN_DIR, base, listing.strip() or "git failed")
+    old = {}
+    for rel in listing.split("\n"):
+        if rel.endswith(".txt"):
+            rc, text = run(["git", "show", "%s:%s" % (base, rel)], root)
+            if rc != 0:
+                return new, old, "git show %s:%s failed: %s" % (base, rel, text.strip())
+            old[rel.rsplit("/", 1)[-1][:-4]] = text
+    return new, old, None
+
+
+def golden_diff_lines(new, old, full=False):
+    """(lines, cases touched, groups touched): per group a count line, then its decision changes, most frequent first."""
+    lines, total, groups = [], 0, 0
+    for group in sorted(set(new) | set(old)):
+        a, b = golden_cases(old.get(group)), golden_cases(new.get(group))
+        changed = [h for h in b if h in a and a[h] != b[h]]
+        added, removed = [h for h in b if h not in a], [h for h in a if h not in b]
+        if not (changed or added or removed):
+            continue
+        groups += 1
+        total += len(changed) + len(added) + len(removed)
+        lines.append("%s: %d changed case(s), %d added, %d removed" % (group, len(changed), len(added), len(removed)))
+        counts, same = {}, 0
+        for h in changed:
+            (rc0, d0), (rc1, d1) = golden_decision(a[h]), golden_decision(b[h])
+            same += (rc0, d0) == (rc1, d1)
+            for key in ([decision_change(d0, d1)] if d0 != d1 else []) + (["rc %s -> rc %s" % (rc0, rc1)] if rc0 != rc1 else []):
+                counts[key] = counts.get(key, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        lines += capped(["%s: %s: %d" % (group, k, n) for k, n in ranked], full)
+        if same:
+            lines.append("%s: same rc and action, other output changed: %d" % (group, same))
+    return lines, total, groups
+
+
+def cmd_golden_diff(root, base, run=sh, out=print, full=False):
+    new, old, err = golden_snapshots(root, base, run)
+    if err:
+        out("error: golden-diff: " + err)
+        out("error: 1 problem(s); action: run git fetch origin, or pass --base <ref> that has %s" % GOLDEN_DIR)
+        return 1
+    lines, total, groups = golden_diff_lines(new, old, full)
+    for line in lines:
+        out(line)
+    out("ok: %d case(s) changed across %d group(s)" % (total, groups) if total else "ok: no golden changes")
     return 0
 
 
@@ -1037,8 +1227,12 @@ def build_parser():
     c = add("check", "run repo-wide rules", "check --base origin/main")
     c.add_argument("--base", help="git ref (e.g. origin/main): shipped changes since the merge-base need a version bump")
     c.add_argument("--self-test", action="store_true", help="assert every rule fires on a broken fixture tree")
-    b = add("bump", "write a higher X.Y.Z to every version file", "bump 1.2.0")
-    b.add_argument("version")
+    b = add("bump", "write a higher X.Y.Z to every version file", "bump --next patch  # or: bump 1.2.0")
+    b.add_argument("version", nargs="?", help="explicit X.Y.Z (or use --next)")
+    b.add_argument("--next", choices=("patch", "minor", "major"),
+                   help="one step above the higher of the version files and the latest local vX.Y.Z tag")
+    g = add("golden-diff", "summarise golden snapshot changes against a git ref", "golden-diff --base v0.20.0")
+    g.add_argument("--base", default="origin/main", help="git ref to compare tests/fixtures/golden against (default: origin/main)")
     r = add("release", "verify preconditions, then tag and publish a release", "release  # dry run; add --publish after approval")
     r.add_argument("--publish", action="store_true", help="run the tag, push and gh release commands (default: dry run)")
     return ap
@@ -1049,7 +1243,9 @@ def main(argv=None):
     if a.cmd == "check":
         return cmd_self_test(full=a.full) if a.self_test else cmd_check(os.path.abspath(a.root), a.base, full=a.full)
     if a.cmd == "bump":
-        return cmd_bump(os.path.abspath(a.root), a.version, full=a.full)
+        return cmd_bump(os.path.abspath(a.root), a.version, full=a.full, part=a.next)
+    if a.cmd == "golden-diff":
+        return cmd_golden_diff(os.path.abspath(a.root), a.base, full=a.full)
     return cmd_release(os.path.abspath(a.root), a.publish, full=a.full)
 
 
