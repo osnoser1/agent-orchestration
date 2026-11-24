@@ -4882,6 +4882,1022 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         self.assertIn("P:M@E", help_out)
 
 
+class TestDeferGateAndExhaustNext(unittest.TestCase):
+    """Audit patterns B, C, D and legitimate holds: orch.py defer, exhaust with selection args, and exhaust --self."""
+
+    NOW = "2026-11-22T02:00:00Z"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _write_assets(self, text, name="assets.yaml"):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def _defer(self, assets, **kw):
+        defaults = dict(
+            ref="item-1",
+            role="implementer",
+            complexity="standard",
+            risk="medium",
+            coordination=None,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+            implementer=None,
+            ui=False,
+            prefer_family=None,
+            below_tier=None,
+            user_hold=False,
+            needs=None,
+            after=None,
+            on_recovery=False,
+            pool_busy=None,
+            pool_cap=2,
+            catalog=CATALOG_PATH,
+            assets=assets,
+            now=self.NOW,
+            full=False,
+        )
+        defaults.update(kw)
+        return _run_orch(orch.defer_cmd, _Args(**defaults))
+
+    def _exhaust(self, assets, provider, message, **kw):
+        defaults = dict(
+            provider=provider,
+            message=message,
+            group=None,
+            model=None,
+            is_self=False,
+            complexity=None,
+            risk=None,
+            coordination=None,
+            available=None,
+            role=None,
+            implementer=None,
+            ui=False,
+            below_tier=None,
+            ref=None,
+            catalog=CATALOG_PATH,
+            assets=assets,
+            now=self.NOW,
+            full=False,
+        )
+        defaults.update(kw)
+        return _run_orch(orch.exhaust, _Args(**defaults))
+
+    def test_pattern_c_defer_refuses_when_dispatch_available_including_low_preserve_pool(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    policy: preserve\n    status: low\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+        )
+        rc, out = self._defer(
+            ap,
+            ref="PR-101",
+            complexity="hard",
+            risk="high",
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc, 5, out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(last, "action: dispatch claudeAgent/claude-opus-5-5 @ xhigh now; do not defer PR-101")
+
+    def test_pattern_c_defer_refuses_when_stage_available_and_records_resume(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: ok\n"
+        )
+        rc, out = self._defer(
+            ap,
+            ref="PR-stage",
+            complexity="hard",
+            risk="high",
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc, 5, out)
+        self.assertIn("followup recorded: [resume] PR-stage", out)
+        last = out.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("action: stage: dispatch Phase 1 codex/gpt-6-2-sol @ xhigh now;"), out)
+        self.assertTrue(last.endswith("; do not defer PR-stage"), out)
+        fus = (orch.load_file(ap) or {}).get("followups") or []
+        self.assertEqual(len(fus), 1)
+        self.assertEqual(fus[0]["kind"], "resume")
+        self.assertEqual(fus[0]["ref"], "PR-stage")
+        self.assertEqual(fus[0]["after"], "2026-11-22T06:52:00+00:00")
+
+    def test_pattern_b_defer_reviewer_dispatches_same_family_with_degradation_note(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+        )
+        rc, out = self._defer(
+            ap,
+            ref="PR-rev",
+            role="reviewer",
+            complexity="standard",
+            risk="medium",
+            available="claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            implementer="claudeAgent:claude-opus-5-5",
+        )
+        self.assertEqual(rc, 5, out)
+        self.assertIn("[note] reviewer degraded:", out)
+        last = out.strip().splitlines()[-1]
+        self.assertIn("claudeAgent/claude-sonnet-5-5 @ high now", last)
+        self.assertIn("do not defer PR-rev", last)
+
+    def test_correct_hold_when_all_tier_providers_exhausted_passes_through_and_records_followup(self):
+        ap = self._write_assets(
+            "version: 1\npreferences:\n  below_tier: wait\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:49:20+00:00\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T08:00:00+00:00\n"
+            "  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-22T09:00:00+00:00\n"
+            "  - id: local-small\n    status: ok\n"
+        )
+        rc, out = self._defer(
+            ap,
+            ref="PR-hold",
+            complexity="hard",
+            risk="high",
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol,antigravity:gemini-4-neon,local-small:claude-haiku-5-5",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("followup recorded: [resume] PR-hold", out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(last, "action: hold until 2026-11-22T06:51:20+00:00; follow-up recorded: schedule its wakeup")
+        saved = orch.load_file(ap)
+        fus = saved.get("followups") or []
+        self.assertEqual(len(fus), 1)
+        self.assertEqual(fus[0]["kind"], "resume")
+        self.assertEqual(fus[0]["ref"], "PR-hold")
+        self.assertEqual(fus[0]["after"], "2026-11-22T06:51:20+00:00")
+
+    def test_defer_pool_at_cap_queues_only_when_no_free_pool_and_supports_grouped_pools(self):
+        # All three pools ok, only codex at cap -> drops codex and dispatches a free pool instead of queueing!
+        ap_multi = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: ok\n"
+            "  - id: antigravity\n    status: ok\n",
+            "multi.yaml",
+        )
+        rc_free, out_free = self._defer(
+            ap_multi,
+            ref="PR-free",
+            complexity="standard",
+            risk="medium",
+            available="codex:gpt-6-2-sol,claudeAgent:claude-sonnet-5-5,antigravity:gemini-4-neon",
+            pool_busy="codex=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_free, 5, out_free)
+        last_free = out_free.strip().splitlines()[-1]
+        self.assertNotIn("codex/", last_free)
+        self.assertIn("do not defer PR-free", last_free)
+
+        # Only claudeAgent usable and capped -> queues for next batch without quota follow-up.
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+        )
+        rc, out = self._defer(
+            ap,
+            ref="PR-batch2",
+            complexity="standard",
+            risk="medium",
+            available="claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            pool_busy="claudeAgent=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc, 0, out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(
+            last,
+            "action: queue PR-batch2 for the next batch (pool claudeAgent at cap 2/2); treat as a batch cap, not a quota wait",
+        )
+        self.assertFalse((orch.load_file(ap) or {}).get("followups"))
+
+        # Below cap still refuses deferral.
+        rc_low, out_low = self._defer(
+            ap,
+            ref="PR-batch2",
+            complexity="standard",
+            risk="medium",
+            available="claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            pool_busy="claudeAgent=1",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_low, 5, out_low)
+        self.assertIn("do not defer PR-batch2", out_low.strip().splitlines()[-1])
+
+        # Grouped provider: Gemini Models capped, Gemini 4 Argon free -> dispatches Argon; when Argon exhausted -> queues naming provider/group.
+        ap_grp = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: antigravity\n    status: ok\n    groups:\n"
+            "      - name: Gemini Models\n        models: [gemini-4-neon]\n        status: ok\n        window: 7d\n"
+            "      - name: Gemini 4 Argon\n        models: [gemini-4-argon]\n        status: ok\n        window: 7d\n",
+            "grp.yaml",
+        )
+        rc_g1, out_g1 = self._defer(
+            ap_grp,
+            ref="PR-grp",
+            complexity="hard",
+            risk="low",
+            available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+            pool_busy="antigravity/Gemini Models=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_g1, 5, out_g1)
+        self.assertIn("antigravity/gemini-4-argon @ high now; do not defer PR-grp", out_g1.strip().splitlines()[-1])
+
+        rc_g2, out_g2 = self._defer(
+            ap_grp,
+            ref="PR-grp",
+            complexity="hard",
+            risk="low",
+            available="antigravity:gemini-4-neon,antigravity:gemini-4-argon",
+            pool_busy="antigravity/Gemini Models=2,antigravity/Gemini 4 Argon=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_g2, 0, out_g2)
+        self.assertIn("pool antigravity/Gemini 4 Argon at cap 2/2", out_g2.strip().splitlines()[-1])
+
+    def test_defer_pool_cap_with_hold_and_with_stage(self):
+        # All exhausted + pool-busy -> still holds and records follow-up.
+        ap_hold = self._write_assets(
+            "version: 1\npreferences:\n  below_tier: wait\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T08:00:00+00:00\n",
+            "cap-hold.yaml",
+        )
+        rc_h, out_h = self._defer(
+            ap_hold,
+            ref="PR-cap-hold",
+            complexity="hard",
+            risk="high",
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+            pool_busy="codex=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_h, 0, out_h)
+        self.assertIn("followup recorded: [resume] PR-cap-hold", out_h)
+        self.assertIn("action: hold until 2026-11-22T06:52:00+00:00", out_h.strip().splitlines()[-1])
+
+        # Stage plan with only claudeAgent=2 busy (Phase 1 pool codex is NOT capped) -> refuses and dispatches Phase 1 on codex!
+        ap_stage = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: ok\n",
+            "cap-stage.yaml",
+        )
+        rc_s_free, out_s_free = self._defer(
+            ap_stage,
+            ref="PR-cap-stage-free",
+            complexity="hard",
+            risk="high",
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+            pool_busy="claudeAgent=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_s_free, 5, out_s_free)
+        self.assertIn("stage: dispatch Phase 1 codex/gpt-6-2-sol @ xhigh now", out_s_free.strip().splitlines()[-1])
+        self.assertIn("do not defer PR-cap-stage-free", out_s_free.strip().splitlines()[-1])
+
+        # Stage candidate pool is capped and no free pool exists -> queues without writing a stage follow-up.
+        ap_stage_cap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: ok\n",
+            "cap-stage-2.yaml",
+        )
+        rc_s, out_s = self._defer(
+            ap_stage_cap,
+            ref="PR-cap-stage",
+            complexity="hard",
+            risk="high",
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+            pool_busy="codex=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_s, 0, out_s)
+        self.assertEqual(
+            out_s.strip().splitlines()[-1],
+            "action: queue PR-cap-stage for the next batch (pool codex at cap 2/2); treat as a batch cap, not a quota wait",
+        )
+        self.assertFalse((orch.load_file(ap_stage_cap) or {}).get("followups"))
+
+    def test_defer_pool_cap_preserves_ui_prefer_family_reviewer_and_provider_label(self):
+        # N1: --ui with ui_fallback: ask and claude capped (codex free) -> queues on claude, never skips ask gate.
+        ap_ui_ask = self._write_assets(
+            "version: 1\npreferences:\n  ui_fallback: ask\nproviders:\n"
+            "  - id: claude\n    status: ok\n"
+            "  - id: codex\n    status: ok\n",
+            "cap-ui-ask.yaml",
+        )
+        rc, out = self._defer(
+            ap_ui_ask,
+            ref="PR-ui-cap",
+            complexity="standard",
+            risk="low",
+            ui=True,
+            available="claude:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            pool_busy="claude=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("not offered", out)
+        self.assertIn("pool claude at cap 2/2", out.strip().splitlines()[-1])
+
+        # N1: --ui under ui_fallback: proceed with claude capped -> also queues on claude (no silent non-provisional dispatch).
+        ap_ui_proc = self._write_assets(
+            "version: 1\npreferences:\n  ui_fallback: proceed\nproviders:\n"
+            "  - id: claude\n    status: ok\n"
+            "  - id: codex\n    status: ok\n",
+            "cap-ui-proc.yaml",
+        )
+        rc_p, out_p = self._defer(
+            ap_ui_proc,
+            ref="PR-ui-proc",
+            complexity="standard",
+            risk="low",
+            ui=True,
+            available="claude:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            pool_busy="claude=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_p, 0, out_p)
+        self.assertIn("pool claude at cap 2/2", out_p.strip().splitlines()[-1])
+
+        # N1: --prefer-family anthropic with claude capped -> queues on claude instead of dispatching codex.
+        rc_f, out_f = self._defer(
+            ap_ui_proc,
+            ref="PR-fam-cap",
+            complexity="standard",
+            risk="low",
+            prefer_family="anthropic",
+            available="claude:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            pool_busy="claude=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_f, 0, out_f)
+        self.assertIn("pool claude at cap 2/2", out_f.strip().splitlines()[-1])
+
+        # N1: reviewer with implementer codex and claude capped -> queues on claude, never picks implementer's own model!
+        rc_r, out_r = self._defer(
+            ap_ui_proc,
+            ref="PR-rev-cap",
+            role="reviewer",
+            complexity="standard",
+            risk="medium",
+            available="claude:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            implementer="codex:gpt-6-2-sol",
+            pool_busy="claude=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_r, 0, out_r)
+        self.assertIn("pool claude at cap 2/2", out_r.strip().splitlines()[-1])
+
+        # N6: provider-level cap on a grouped provider must be labelled as provider only (no group suffix).
+        ap_grp = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: antigravity\n    status: ok\n    groups:\n"
+            "      - name: Gemini Models\n        models: [gemini-4-neon]\n        status: ok\n        window: 7d\n",
+            "cap-prov-grp.yaml",
+        )
+        rc_pg, out_pg = self._defer(
+            ap_grp,
+            ref="PR-prov-cap",
+            complexity="hard",
+            risk="low",
+            available="antigravity:gemini-4-neon",
+            pool_busy="antigravity=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_pg, 0, out_pg)
+        self.assertIn("(pool antigravity at cap 2/2)", out_pg.strip().splitlines()[-1])
+        self.assertNotIn("Gemini Models", out_pg.strip().splitlines()[-1])
+
+    def test_defer_user_hold_validation_recording_and_repeat_in_place(self):
+        ap = self._write_assets("version: 1\nproviders:\n  - id: codex\n    status: ok\n")
+        # Missing --needs -> error rc=1.
+        rc_no_needs, out_no_needs = self._defer(
+            ap,
+            ref="batch-user",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs=None,
+        )
+        self.assertEqual(rc_no_needs, 1, out_no_needs)
+        self.assertIn("--needs", out_no_needs.strip().splitlines()[-1])
+
+        # Bad --after -> error rc=1.
+        rc_bad_after, out_bad_after = self._defer(
+            ap,
+            ref="batch-user",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:codex/T3",
+            after="not-an-iso-timestamp",
+        )
+        self.assertEqual(rc_bad_after, 1, out_bad_after)
+        self.assertIn("--after", out_bad_after.strip().splitlines()[-1])
+
+        # Valid user hold records resume follow-up.
+        rc, out = self._defer(
+            ap,
+            ref="batch-user",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:codex/T3",
+            after="2026-11-23T08:02:00+00:00",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("followup recorded: [resume] batch-user", out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(last, "action: hold batch-user as the user asked; follow-up recorded: schedule its wakeup")
+        fus = orch.load_file(ap).get("followups") or []
+        self.assertEqual(len(fus), 1)
+        self.assertEqual(fus[0]["kind"], "resume")
+        self.assertEqual(fus[0]["ref"], "batch-user")
+        self.assertEqual(fus[0]["needs"], "provider:codex/T3")
+        self.assertEqual(fus[0]["after"], "2026-11-23T08:02:00+00:00")
+
+        # Repeated identical user hold says follow-up in place.
+        rc2, out2 = self._defer(
+            ap,
+            ref="batch-user",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:codex/T3",
+            after="2026-11-23T08:02:00+00:00",
+        )
+        self.assertEqual(rc2, 0, out2)
+        self.assertIn("followup already scheduled: [resume] batch-user", out2)
+        self.assertEqual(
+            out2.strip().splitlines()[-1],
+            "action: hold batch-user as the user asked; follow-up in place: schedule its wakeup",
+        )
+
+    def test_defer_user_hold_canonicalizes_needs_and_warns_on_unlisted_provider(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: antigravity\n    status: ok\n    groups:\n"
+            '      - name: "Gemini Models"\n        models: [gemini-4-neon, gemini-4-hydrogen]\n        status: exhausted\n'
+            "        exhausted_until: 2026-11-23T08:00:00+00:00\n"
+            "  - id: codex\n    status: ok\n",
+            "canon-needs.yaml",
+        )
+        # Group shorthand + model display-name alias rewrite to canonical group name and model id so _model_matches_need matches.
+        rc_g, out_g = self._defer(
+            ap,
+            ref="user-grp",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:antigravity/Gemini/T4",
+            after="2026-11-23T08:02:00+00:00",
+        )
+        self.assertEqual(rc_g, 0, out_g)
+        rc_m, out_m = self._defer(
+            ap,
+            ref="user-alias",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="GPT-6.2 Sol",
+            after="2026-11-23T08:02:00+00:00",
+        )
+        self.assertEqual(rc_m, 0, out_m)
+        by_ref = {fu["ref"]: fu for fu in (orch.load_file(ap).get("followups") or [])}
+        self.assertEqual(by_ref["user-grp"]["needs"], "provider:antigravity/Gemini Models/T4")
+        self.assertEqual(by_ref["user-alias"]["needs"], "gpt-6-2-sol")
+
+        # Verify find_usable_in_available actually matches both stored canonical needs once renewed.
+        cat = orch.load_file(CATALOG_PATH)
+        loaded = orch.load_file(ap)
+        after_reset = orch.get_now("2026-11-23T08:05:00Z")
+        self.assertTrue(
+            orch.find_usable_in_available(cat, loaded, after_reset, by_ref["user-grp"]["needs"], ["antigravity:gemini-4-neon"])
+        )
+        self.assertTrue(
+            orch.find_usable_in_available(cat, loaded, after_reset, by_ref["user-alias"]["needs"], ["codex:gpt-6-2-sol"])
+        )
+
+        # Model id used as a group name must be rejected rather than stored as a group.
+        rc_bad_grp, out_bad_grp = self._defer(
+            ap,
+            ref="user-bad-grp",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:antigravity/gemini-4-neon/T4",
+        )
+        self.assertEqual(rc_bad_grp, 1, out_bad_grp)
+        self.assertIn("unknown quota group", out_bad_grp)
+
+        # Unlisted provider is allowed with a note (unlisted providers default to ok).
+        rc_unlisted, out_unlisted = self._defer(
+            ap,
+            ref="user-unlisted",
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:new-prov/T3",
+            after="2026-11-23T08:02:00+00:00",
+        )
+        self.assertEqual(rc_unlisted, 0, out_unlisted)
+        self.assertIn("note: provider new-prov is not in assets.yaml (unlisted providers default to ok)", out_unlisted)
+        self.assertIn("followup recorded: [resume] user-unlisted", out_unlisted)
+
+    def test_defer_role_orchestrator_ladder_cap_hold_and_validation(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: ok\n",
+            "orch-defer.yaml",
+        )
+        # Usable orchestrator exists -> refuses deferral with rc=5 and names launch target.
+        rc, out = self._defer(
+            ap,
+            ref="orch-1",
+            role="orchestrator",
+            complexity=None,
+            risk=None,
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc, 5, out)
+        self.assertIn("orchestrator tier T3", out)
+        self.assertIn("ladder:", out)
+        last = out.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("action: launch the orchestrator on "), out)
+        self.assertIn("; do not defer orch-1;", last)
+        self.assertTrue(last.endswith("; log it with --role orchestrator --rubric <rubric>"), out)
+
+        # Only usable orchestrator pool is at cap -> queues for next batch without quota follow-up.
+        ap_cap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: ok\n",
+            "orch-cap.yaml",
+        )
+        rc_cap, out_cap = self._defer(
+            ap_cap,
+            ref="orch-cap",
+            role="orchestrator",
+            complexity=None,
+            risk=None,
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+            pool_busy="codex=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_cap, 0, out_cap)
+        self.assertEqual(
+            out_cap.strip().splitlines()[-1],
+            "action: queue orch-cap for the next batch (pool codex at cap 2/2); treat as a batch cap, not a quota wait",
+        )
+        self.assertFalse((orch.load_file(ap_cap) or {}).get("followups"))
+
+        # All T3 orchestrator models exhausted -> passes through hold and records resume follow-up.
+        ap_hold = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: exhausted\n    exhausted_until: 2026-11-22T08:00:00+00:00\n",
+            "orch-hold.yaml",
+        )
+        rc_h, out_h = self._defer(
+            ap_hold,
+            ref="orch-hold",
+            role="orchestrator",
+            complexity=None,
+            risk=None,
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc_h, 0, out_h)
+        self.assertIn("followup recorded: [resume] orch-hold", out_h)
+        self.assertIn("action: hold until 2026-11-22T06:52:00+00:00", out_h.strip().splitlines()[-1])
+
+        # Validation errors: missing --coordination, worker flags on orchestrator, --coordination on implementer.
+        rc_e1, out_e1 = self._defer(ap, role="orchestrator", complexity=None, risk=None, coordination=None)
+        self.assertEqual(rc_e1, 1, out_e1)
+        self.assertIn("--coordination 0|1|2", out_e1)
+        rc_e2, out_e2 = self._defer(ap, role="orchestrator", complexity="hard", risk="medium", coordination=2)
+        self.assertEqual(rc_e2, 1, out_e2)
+        self.assertIn("does not accept worker flags", out_e2)
+        rc_e3, out_e3 = self._defer(ap, role="implementer", coordination=2)
+        self.assertEqual(rc_e3, 1, out_e3)
+        self.assertIn("--coordination only applies with --role orchestrator", out_e3)
+
+    def test_defer_ui_fallback_defer_records_followup_and_ask_passes_through(self):
+        ap_defer = self._write_assets(
+            "version: 1\npreferences:\n  ui_fallback: defer\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: ok\n",
+            "ui-defer.yaml",
+        )
+        rc, out = self._defer(
+            ap_defer,
+            ref="PR-ui",
+            complexity="standard",
+            risk="low",
+            ui=True,
+            available="claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("followup recorded: [resume] PR-ui (needs ui-ux-review, after 2026-11-22T06:52:00+00:00)", out)
+        self.assertEqual(
+            out.strip().splitlines()[-1],
+            "action: hold until 2026-11-22T06:52:00+00:00 (preferred ui-ux-review exhausted); follow-up recorded: schedule its wakeup",
+        )
+        fus = orch.load_file(ap_defer).get("followups") or []
+        self.assertEqual(len(fus), 1)
+        self.assertEqual(fus[0]["needs"], "ui-ux-review")
+        self.assertEqual(fus[0]["after"], "2026-11-22T06:52:00+00:00")
+
+        ap_ask = self._write_assets(
+            "version: 1\npreferences:\n  ui_fallback: ask\nproviders:\n"
+            "  - id: claudeAgent\n    status: exhausted\n    exhausted_until: 2026-11-22T06:50:00+00:00\n"
+            "  - id: codex\n    status: ok\n",
+            "ui-ask.yaml",
+        )
+        rc_a, out_a = self._defer(
+            ap_ask,
+            ref="PR-ui-ask",
+            complexity="standard",
+            risk="low",
+            ui=True,
+            available="claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc_a, 0, out_a)
+        self.assertTrue(out_a.strip().splitlines()[-1].startswith("action: ask the user once (preferred ui-ux-review exhausted"), out_a)
+
+        # B.6: ask outcome with a capped pool notes the capped pool so the user knows the fallback is also at cap.
+        rc_ac, out_ac = self._defer(
+            ap_ask,
+            ref="PR-ui-ask-cap",
+            complexity="standard",
+            risk="low",
+            ui=True,
+            available="claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol",
+            pool_busy="codex=2",
+            pool_cap=2,
+        )
+        self.assertEqual(rc_ac, 0, out_ac)
+        self.assertIn("note: pool(s) at cap: codex (2/2)", out_ac)
+        self.assertTrue(out_ac.strip().splitlines()[-1].startswith("action: ask the user once (preferred ui-ux-review exhausted"), out_ac)
+
+    def test_exhaust_with_selection_args_ends_with_next_dispatch_action(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: codex\n    status: ok\n"
+            "  - id: claudeAgent\n    status: ok\n"
+        )
+        rc, out = self._exhaust(
+            ap,
+            "codex",
+            "You've hit your usage limit · resets Nov 22, 6:50am (UTC)",
+            complexity="standard",
+            risk="medium",
+            available="codex:gpt-6-2-sol,claudeAgent:claude-sonnet-5-5",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("codex: exhausted until 2026-11-22T06:50:00+00:00", out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(last, "action: dispatch claudeAgent/claude-sonnet-5-5 @ high now; choose the reviewer when its step starts")
+
+    def test_exhaust_with_reviewer_role_dispatches_next_reviewer(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: codex\n    status: ok\n"
+            "  - id: claudeAgent\n    status: ok\n"
+        )
+        rc, out = self._exhaust(
+            ap,
+            "codex",
+            "You've hit your usage limit · resets Nov 22, 6:50am (UTC)",
+            complexity="standard",
+            risk="medium",
+            available="codex:gpt-6-2-sol,claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5",
+            role="reviewer",
+            implementer="claudeAgent:claude-opus-5-5",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("codex: exhausted until 2026-11-22T06:50:00+00:00", out)
+        self.assertIn("[note] reviewer degraded:", out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(
+            last,
+            "action: dispatch reviewer claudeAgent/claude-sonnet-5-5 @ high now; state the reviewer degradation in the report",
+        )
+
+    def test_exhaust_without_selection_args_keeps_line_and_adds_action(self):
+        ap = self._write_assets("version: 1\nproviders:\n  - id: claude\n    status: ok\n")
+        rc, out = self._exhaust(ap, "claude", "You've hit your weekly limit · resets Nov 23, 3am (UTC)")
+        self.assertEqual(rc, 0, out)
+        lines = out.strip().splitlines()
+        self.assertEqual(lines[0], "claude: exhausted until 2026-11-23T03:00:00+00:00")
+        self.assertEqual(
+            lines[-1],
+            "action: run select (or defer) with the exhausted model removed and follow its action: line",
+        )
+
+    def test_exhaust_self_holds_via_orchestrator_ladder_even_under_below_tier_proceed(self):
+        # B.3 + #30 integration: orchestrator ladder never provisionally drops below its tier even under below_tier: proceed.
+        ap = self._write_assets(
+            "version: 1\npreferences:\n  below_tier: proceed\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: ok\n"
+        )
+        rc, out = self._exhaust(
+            ap,
+            "claudeAgent",
+            "You've hit your weekly limit · resets Nov 22, 6:50am (UTC)",
+            is_self=True,
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:claude-haiku-5-5",
+        )
+        self.assertEqual(rc, 4, out)
+        self.assertIn("followup recorded: [resume] orchestrator-self", out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(last, "action: hold until 2026-11-22T06:52:00+00:00; schedule this conversation's resume")
+
+    def test_exhaust_with_orchestrator_role_dispatches_next_orchestrator_ladder(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: ok\n"
+        )
+        rc, out = self._exhaust(
+            ap,
+            "claudeAgent",
+            "You've hit your weekly limit · resets Nov 23, 3am (UTC)",
+            role="orchestrator",
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("orchestrator tier T3", out)
+        self.assertIn("ladder:", out)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("action: launch the orchestrator on codex/gpt-6-2-sol @ "), out)
+
+    def test_pattern_d_exhaust_self_switches_conversation_or_holds_and_preserves_current_task(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: ok\n"
+            "followups:\n"
+            "  - kind: resume\n    ref: current-task\n    needs: T4\n    after: 2026-11-25T00:00:00+00:00\n"
+        )
+        rc, out = self._exhaust(
+            ap,
+            "claudeAgent",
+            "You've hit your weekly limit · resets Nov 23, 3am (UTC)",
+            is_self=True,
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("claudeAgent: exhausted until 2026-11-23T03:00:00+00:00", out)
+        self.assertIn("orchestrator tier T3", out)
+        self.assertIn("ladder:", out)
+        last = out.strip().splitlines()[-1]
+        self.assertEqual(
+            last,
+            "action: switch this conversation to codex/gpt-6-2-sol @ medium in place, or hand off with orch.py launch <spec> "
+            '(references/harnesses.md "Orchestrator\'s own quota"); log it with --role orchestrator --rubric <rubric>',
+        )
+
+        # Exhaust the last remaining provider without --ref -> defaults to orchestrator-self, preserving current-task!
+        rc2, out2 = self._exhaust(
+            ap,
+            "codex",
+            "You've hit your usage limit · resets Nov 22, 6:50am (UTC)",
+            is_self=True,
+            coordination=2,
+            available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol",
+            ref=None,
+        )
+        self.assertEqual(rc2, 4, out2)
+        self.assertIn("codex: exhausted until 2026-11-22T06:50:00+00:00", out2)
+        self.assertIn("followup recorded: [resume] orchestrator-self", out2)
+        last2 = out2.strip().splitlines()[-1]
+        self.assertEqual(last2, "action: hold until 2026-11-22T06:52:00+00:00; schedule this conversation's resume")
+        by_ref = {fu["ref"]: fu for fu in (orch.load_file(ap).get("followups") or [])}
+        self.assertIn("current-task", by_ref)
+        self.assertEqual(by_ref["current-task"]["after"], "2026-11-25T00:00:00+00:00")
+        self.assertIn("orchestrator-self", by_ref)
+        self.assertEqual(by_ref["orchestrator-self"]["after"], "2026-11-22T06:52:00+00:00")
+
+    def test_defer_and_exhaust_error_paths_and_silently_dropped_args(self):
+        ap = self._write_assets("version: 1\nproviders:\n  - id: claude\n    status: ok\n")
+        # defer --role reviewer without --implementer
+        rc, out = self._defer(ap, role="reviewer", implementer=None)
+        self.assertEqual(rc, 1, out)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("action: rerun defer --role reviewer"), out)
+
+        # defer --pool-cap 0
+        rc, out = self._defer(ap, pool_cap=0)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("--pool-cap", out)
+
+        # defer --pool-busy with bare integer instead of pool=N
+        rc, out = self._defer(ap, pool_busy="2")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("--pool-busy", out)
+
+        # N3: defer --pool-busy with unknown provider (e.g. family name) or typo group name -> error rc=1
+        rc, out = self._defer(
+            ap,
+            available="claude:claude-opus-5-5",
+            pool_busy="anthropic=2",
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no entry in --available", out)
+
+        ap_grp = self._write_assets(
+            "version: 1\nproviders:\n"
+            "  - id: antigravity\n    status: ok\n    groups:\n"
+            "      - name: Gemini Models\n        models: [gemini-4-neon]\n        status: ok\n        window: 7d\n",
+            "err-grp.yaml",
+        )
+        rc, out = self._defer(
+            ap_grp,
+            available="antigravity:gemini-4-neon",
+            pool_busy="antigravity/Gemnii=2",
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertIn("does not match any quota group", out)
+
+        # N6/B.1: defer --user-hold with invalid --needs (unknown target, bad group on listed provider, bare any) -> error rc=1
+        for bad_needs in ("claud", "provider:claude/T9", "any"):
+            rc, out = self._defer(
+                ap,
+                user_hold=True,
+                complexity=None,
+                risk=None,
+                available=None,
+                needs=bad_needs,
+            )
+            self.assertEqual(rc, 1, (bad_needs, out))
+            self.assertTrue(out.strip().splitlines()[-1].startswith("action: rerun defer --user-hold"), out)
+        rc, out = self._defer(
+            ap_grp,
+            user_hold=True,
+            complexity=None,
+            risk=None,
+            available=None,
+            needs="provider:antigravity/Gemnii/T4",
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertIn("unknown quota group", out)
+
+        # defer --needs without --user-hold (silently dropped arg -> error)
+        rc, out = self._defer(ap, needs="provider:claude/T3", user_hold=False)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("--user-hold", out)
+
+        # exhaust with partial selection args
+        rc, out = self._exhaust(ap, "claude", "hit limit · resets Nov 23, 3am (UTC)", complexity="standard")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("--complexity, --risk, and --available", out)
+
+        # exhaust with --ref / --ui / --below-tier without core selection args (silently dropped -> error)
+        for extra in ({"ref": "item-1"}, {"ui": True}, {"below_tier": "wait"}):
+            rc, out = self._exhaust(ap, "claude", "hit limit · resets Nov 23, 3am (UTC)", **extra)
+            self.assertEqual(rc, 1, (extra, out))
+            self.assertTrue(out.strip().splitlines()[-1].startswith("action: rerun exhaust"), out)
+
+        # exhaust --self without --coordination/--available or with worker flags
+        rc, out = self._exhaust(ap, "claude", "hit limit · resets Nov 23, 3am (UTC)", is_self=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("exhaust --self requires --coordination 0|1|2 and --available", out)
+
+        rc, out = self._exhaust(
+            ap, "claude", "hit limit · resets Nov 23, 3am (UTC)", is_self=True, available="claude:claude-opus-5-5"
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertIn("exhaust --self requires --coordination 0|1|2 and --available", out)
+
+        rc, out = self._exhaust(
+            ap,
+            "claude",
+            "hit limit · resets Nov 23, 3am (UTC)",
+            is_self=True,
+            complexity="hard",
+            risk="medium",
+            available="claude:claude-opus-5-5",
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertIn("omit worker flags", out)
+
+    def test_exhaust_rejects_malformed_available_before_writing_lockout(self):
+        text = "version: 1\nproviders:\n  - id: claudeAgent\n    status: ok\n  - id: codex\n    status: ok\n"
+        ap = self._write_assets(text, "bad-avail.yaml")
+        msg = "You've hit your weekly limit · resets Nov 23, 3am (UTC)"
+        for kw in (
+            dict(complexity="standard", risk="low"),
+            dict(is_self=True, coordination=2),
+            dict(role="orchestrator", coordination=2),
+        ):
+            rc, out = self._exhaust(ap, "claudeAgent", msg, available="claudeAgent claude-opus-5-5,codex:gpt-6-2-sol", **kw)
+            self.assertEqual(rc, 1, (kw, out))
+            self.assertIn("error: --available entries are not provider:model: ", out)
+            self.assertNotIn("exhausted until", out)
+            self.assertTrue(out.strip().splitlines()[-1].endswith("and rerun exhaust; nothing was recorded"), out)
+            with open(ap, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), text, kw)
+
+    def test_defer_and_exhaust_self_keep_select_orchestrator_action_suffixes(self):
+        text = (
+            "version: 1\nproviders:\n"
+            "  - id: antigravity\n    status: ok\n"
+            "  - id: claudeAgent\n    status: ok\n"
+            "  - id: codex\n    status: ok\n"
+        )
+        avail = "antigravity:gemini-4-argon,claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol"
+        ap_sel = self._write_assets(text, "sfx-select.yaml")
+        rc_s, out_s = _run_orch(
+            orch.select,
+            _Args(
+                role="orchestrator", complexity=None, risk=None, coordination=2, available=avail, ui=False,
+                prefer_family=None, fallback=None, below_tier=None, ref="orch-sfx", fail_on_low=False, implementer=None,
+                catalog=CATALOG_PATH, assets=ap_sel, now=self.NOW, full=False,
+            ),
+        )
+        self.assertEqual(rc_s, 0, out_s)
+        sel_last = out_s.strip().splitlines()[-1]
+        sfx = "; ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>"
+        self.assertTrue(sel_last.endswith(sfx), out_s)
+        # defer and exhaust --self name the phase-boundary rung, so the clause does not read as a gate on the self-switch
+        sw_prefix = "provider switch (phase boundary, ask the user first): "
+        sw = next(l for l in out_s.splitlines() if l.startswith(sw_prefix))[len(sw_prefix):]
+        named = f"; ask the user before the phase-boundary provider switch to {sw}; log it with --role orchestrator --rubric <rubric>"
+
+        ap_def = self._write_assets(text, "sfx-defer.yaml")
+        rc_d, out_d = self._defer(
+            ap_def, ref="orch-sfx", role="orchestrator", complexity=None, risk=None, coordination=2, available=avail
+        )
+        self.assertEqual(rc_d, 5, out_d)
+        def_last = out_d.strip().splitlines()[-1]
+        self.assertTrue(def_last.endswith("; do not defer orch-sfx" + named), out_d)
+        self.assertEqual(def_last.split(";")[0], sel_last.split(";")[0])
+
+        ap_ex = self._write_assets(text, "sfx-exhaust.yaml")
+        rc_e, out_e = self._exhaust(
+            ap_ex, "claudeAgent", "You've hit your weekly limit · resets Nov 23, 3am (UTC)",
+            is_self=True, coordination=2, available=avail,
+        )
+        self.assertEqual(rc_e, 0, out_e)
+        self.assertIn("provider switch (phase boundary, ask the user first): ", out_e)
+        ex_last = out_e.strip().splitlines()[-1]
+        self.assertTrue(ex_last.startswith("action: switch this conversation to "), out_e)
+        self.assertIn("orch.py launch <spec>", ex_last)
+        self.assertTrue(ex_last.endswith(named), out_e)
+
+    def test_defer_user_hold_notes_needs_that_never_become_due(self):
+        ap = self._write_assets(
+            "version: 1\nproviders:\n  - id: claudeAgent\n    status: ok\n  - id: antigravity\n    status: ok\n", "never-due.yaml"
+        )
+        cases = (
+            ("emg-scoped", "provider:claudeAgent/claude-fable-5-2", "note: --needs claude-fable-5-2 is an emergency model"),
+            ("emg-bare", "GPT-6.2 Astra", "note: --needs gpt-6-2-astra is an emergency model"),
+            ("unrated", "provider:antigravity/gemini-pro-orchestrator-neon", "note: --needs gemini-pro-orchestrator-neon is unrated"),
+        )
+        for ref, needs, note in cases:
+            rc, out = self._defer(ap, ref=ref, user_hold=True, complexity=None, risk=None, available=None, needs=needs)
+            self.assertEqual(rc, 0, out)
+            self.assertIn(note + ", so this follow-up never becomes due", out)
+            self.assertTrue(out.strip().splitlines()[-1].startswith(f"action: hold {ref} as the user asked"), out)
+        for ref, needs in (("rated", "provider:claudeAgent/claude-opus-5-5"), ("tier", "provider:claudeAgent/T3"), ("family", "anthropic")):
+            rc, out = self._defer(ap, ref=ref, user_hold=True, complexity=None, risk=None, available=None, needs=needs)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("never becomes due", out)
+
+    def test_usage_lists_exhaust_role_orchestrator_form(self):
+        usage = orch.__doc__.split("Exit codes")[0]
+        exhaust_usage = usage[usage.index("orch.py exhaust"):usage.index("orch.py status")]
+        self.assertIn("--role orchestrator --coordination 0|1|2 --available ...", exhaust_usage)
+        self.assertIn("--self --coordination 0|1|2 --available ...", exhaust_usage)
+
+
 class TestLaunchSpec(unittest.TestCase):
     """`orch.py launch <spec>`: validation, effort option keys, harness model ids, headers, overrides, roles, non-dispatch."""
 

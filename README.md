@@ -12,7 +12,7 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, preferences, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `classify`, `select`, `launch`, `followups`, `log`, `history`, `escalate`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `classify`, `select`, `launch`, `defer`, `followups`, `log`, `history`, `escalate`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
 
 Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
@@ -71,6 +71,8 @@ python3 skills/agent-orchestration/scripts/orch.py select --role orchestrator --
 python3 skills/agent-orchestration/scripts/orch.py launch task.launch.yaml
 python3 skills/agent-orchestration/scripts/orch.py select --complexity standard --risk low --ui --ref "PR #42" \
   --available claude:claude-sonnet-5-5,antigravity:gemini-4-neon
+python3 skills/agent-orchestration/scripts/orch.py defer --ref PR-42 --role implementer --complexity standard --risk low \
+  --available claude:claude-opus-5-5,codex:gpt-6-2-sol
 python3 skills/agent-orchestration/scripts/orch.py followups --due
 python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk high \
   --provider antigravity --model gemini-4-neon --effort high --outcome ok --findings 1 --repo my-app
@@ -78,7 +80,8 @@ python3 skills/agent-orchestration/scripts/orch.py history --last 5   # per ref:
 python3 skills/agent-orchestration/scripts/orch.py history --role implementer --by model,effort   # per model@effort: rework, findings, escalations, cost
 python3 skills/agent-orchestration/scripts/orch.py escalate --role implementer --ref PR-42 --current codex:gpt-6-2-sol@medium \
   --cause rework --complexity standard --risk low --available codex:gpt-6-2-sol,claude:claude-opus-5-5   # next rung up, logged
-python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
+python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s" --model gemini-4-neon \
+  --complexity standard --risk low --available antigravity:gemini-4-neon,codex:gpt-6-2-sol
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # log flags + next action
 python3 skills/agent-orchestration/scripts/orch.py scope --base origin/main --max-files 8 --max-lines 400 --expect "src/**" "tests/**"
@@ -87,9 +90,9 @@ python3 skills/agent-orchestration/scripts/orch.py check
 python3 skills/agent-orchestration/scripts/orch.py check --available claude:claude-opus-5-5,codex:gpt-6-2-sol  # grouped note: lines for assets providers, local models, and follow-ups this harness does not offer
 ```
 
-`probe`, `select`, `followups`, `failure`, and `scope` end with one `action:` line (dispatch now, stage, hold until a time, ask once, trim): follow it instead of reading exit codes. Output is compact by default: lists stop at 10 items with `… N more (rerun with --full)`, repeated notes group by reason, and `--full` prints every detail line. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, loading repo `Known failures:` automatically or overriding with `--known REGEX=>ACTION`), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files. `policy` parses and validates `.agents/orchestration.md` or `AGENTS.md` `## Orchestration` (`--check` also verifies relative links and `SKILL.md` paths).
+`probe`, `classify`, `select`, `launch`, `defer`, `escalate`, `exhaust`, `followups`, `failure`, and `scope` end with one `action:` line (dispatch now, launch, stage, hold until a time, queue for the next batch, switch in place, ask once, trim): follow it instead of reading exit codes. Output is compact by default: lists stop at 10 items with `… N more (rerun with --full)`, repeated notes group by reason, and `--full` prints every detail line. `defer` gates quota and reviewer-family deferrals (refusing when `select` would dispatch or stage, queuing when `select`'s pool is at cap and no free pool gives an equally good pick via `--pool-busy` / `--pool-cap`, and recording a `resume` follow-up on `--user-hold` or a real hold). `exhaust` accepts selection arguments (or `--self --coordination <0|1|2>` using the orchestrator ladder) to record the lockout and print the next action in one call. `failure` classifies a child's error text (`quota|infra|context-cap|tool|unknown`, loading repo `Known failures:` automatically or overriding with `--known REGEX=>ACTION`), counts earlier retries for `--ref` from the ledger (`orch.py log --ref ... --failure-class ...`; an `--outcome ok` completion restarts the count), and stops at 2/2. `scope` compares the diff since the merge-base with the brief's file and line budget and lists manifests, lockfiles, files outside `--expect` globs, and stray files. `policy` parses and validates `.agents/orchestration.md` or `AGENTS.md` `## Orchestration` (`--check` also verifies relative links and `SKILL.md` paths).
 
-Exit codes: `0` ok · `1` error · `2` no tier match · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%).
+Exit codes (only the final `action:` line carries the decision): `0` ok · `1` error · `2` no tier match (`select` / `exhaust` with selection args) · `3` blocked by pre-flight threshold or policy gate (`low` ≥85%, gated, or `ui_fallback: defer|ask`) · `4` quota hit (`exhausted` / ≥98%) · `5` `defer` refused (usable model exists).
 
 ## Extending per repository
 
