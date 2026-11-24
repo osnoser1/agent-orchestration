@@ -6071,7 +6071,7 @@ class TestLaunchSpec(unittest.TestCase):
                 "caps: children per pool 2; budget antigravity 10, claudeAgent 4",
                 "workspace: worktree from origin/main; children shared",
                 "rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)",
-                "verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator.md)",
+                "verify: the launcher compares requested vs effective model/effort after launch (references/harnesses.md)",
             ],
         )
 

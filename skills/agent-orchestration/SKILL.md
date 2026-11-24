@@ -33,7 +33,7 @@ Run `scripts/orch.py select` (`--role implementer|reviewer|orchestrator`) and fo
 *Done when*: a primary `provider / model @ effort` (or staged Phase 1 + Phase 2 target), delegation surface, and (for reviewed work) a reviewer from `references/review.md` are selected at step start (held only when `select` says hold or ask, or the user holds work) with quirks noted and logged.
 
 ## 4. Brief
-Send one outcome per worker on the chosen surface (`references/harnesses.md`), filling every field of `references/brief-template.md`; after dispatch, verify requested vs effective model/effort (`references/orchestrator.md`). For staged work and multi-item batches, persist user-local durable state. Start the supervision loop for non-notifying children, and act on each completion notice in the same turn (`references/supervision.md`).
+Send one outcome per worker on the chosen surface (`references/harnesses.md`), filling every applicable field of `references/brief-template.md`; after dispatch, verify requested vs effective model/effort (`references/harnesses.md`). For staged work and multi-item batches, persist user-local durable state. Start the supervision loop for non-notifying children, and act on each completion notice in the same turn (`references/supervision.md`).
 
 *Done when*: every applicable brief-template field is filled (known facts, staged `PHASE`, explicit repo phase skills/commands, proportional verification and checkpoint rules, doc review loop, `STATUS`, closing `## Obstacles / not verified`); requested vs effective model/effort is verified, staged runs and multi-item batches have user-local durable state, and every non-notifying child has an active supervision loop.
 
@@ -41,7 +41,7 @@ Send one outcome per worker on the chosen surface (`references/harnesses.md`), f
 Each gate's rules live in `references/verification.md` unless named otherwise.
 1. **Red→green evidence**: require failing repro/test output before the fix and passing output after, scaled to the user's and repo's evidence priorities.
 2. **Design checkpoints**: for user-visible taste decisions, apply the checkpoint gate.
-3. **Cross-family review**: run `scripts/orch.py scope` first, then review with a different model family given the diff or a shared **evidence pack** (reviewer fallback order: `references/review.md`); agent-facing docs, including your own edits, get the doc review loop. Send fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`). On `rework`, important findings at the escalation threshold, or a child's `STATUS: ESCALATE`, run `scripts/orch.py escalate` (`references/escalation.md`).
+3. **Cross-family review**: run `scripts/orch.py scope` first, then review with a different model family given the diff or a shared **evidence pack** (reviewer fallback order: `references/review.md`); agent-facing docs, including your own edits, get the doc review loop. Send fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`). On `rework`, important findings at the escalation threshold, or a child's `STATUS: ESCALATE`, run `scripts/orch.py escalate` and follow its `action:` line (`references/escalation.md`).
 4. **Final check before landing**: run the pre-landing checklist.
 5. **Land**: follow repo policy `Land:` (`references/repo-policy.md`) or documented process (`AGENTS.md`/`CLAUDE.md`), advance any dependent batch waiting on these paths, and wind down the supervision loop when the batch finishes (`references/supervision.md`).
 6. **Log outcome**: append completion (`ok|failed|quota|stall|rework` + findings count) to the decision ledger (`scripts/orch.py log`, `references/improvement.md`).
@@ -68,11 +68,11 @@ Execute routine choices yourself: in-place model switches, staged Phase 1 launch
 - `references/selection.md` — every run: rubric, tier floors, risk triggers, effort knee, filter and ranking.
 - `references/fallbacks.md` — unavailable model: `ui_fallback`, `below_tier` staging, follow-ups.
 - `references/review.md` — reviewer step: tier, fallback order, re-reviews, evidence pack.
-- `references/orchestrator.md` — orchestrator or launch: ladder, own quota, `orch.py launch`, requested-vs-effective check.
+- `references/orchestrator.md` — orchestrator or launch: ladder, own quota, `orch.py launch`.
 - `references/escalation.md` — escalation: `rework`, findings, `STATUS: ESCALATE`.
 - `references/supervision.md` — batches and children: batching, deferred launch, durable state, completion notices, supervision loop, failure retries, replacements.
 - `references/verification.md` — quality gates: evidence, scope, doc review, design checkpoints, pre-landing, infra reruns.
-- `references/harnesses.md` — harness: delegation surface, quota recovery order, command matrix.
+- `references/harnesses.md` — harness: delegation surface, quota recovery order, requested-vs-effective check, command matrix.
 - `references/brief-template.md` — brief: layout and report sections.
 - `references/repo-policy.md` — repo policy: contract, precedence, brief forwarding.
 - `references/quota-errors.md` — quota error: probe thresholds, exit codes, reset parsing.

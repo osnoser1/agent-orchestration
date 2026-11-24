@@ -1,6 +1,6 @@
-# Orchestrator: ladder, own quota, launch, and verification
+# Orchestrator: ladder, own quota, and launch
 
-Reach this file when you open (or are) a coordinating conversation that delegates children, when its own quota runs `low` or out, when you launch any top-level conversation from a spec, and after every launch or delegation to verify the effective model. Coordination rubric and ladder adapted from [claude-code-multi-agent-orchestrator](https://github.com/mdharastani-pixel/claude-code-multi-agent-orchestrator); launch spec and pool caps inspired by [shinpr/sub-agents-skills](https://github.com/shinpr/sub-agents-skills) and Kraft.
+Reach this file when you open (or are) a coordinating conversation that delegates children, when its own quota runs `low` or out, and when you launch any top-level conversation from a spec. Coordination rubric and ladder adapted from [claude-code-multi-agent-orchestrator](https://github.com/mdharastani-pixel/claude-code-multi-agent-orchestrator); launch spec and pool caps inspired by [shinpr/sub-agents-skills](https://github.com/shinpr/sub-agents-skills) and Kraft.
 
 ## Orchestrator ladder (`select --role orchestrator`)
 
@@ -52,13 +52,3 @@ Use a `<name>.launch.yaml` spec (`assets/orchestrator.launch.example.yaml`) when
 4. **Re-launch after quota renewal**: rerun `python3 scripts/orch.py launch <spec>` on the same spec file when a pool renews to re-probe quota and regenerate the payload. `clientRequestId` ends with `-<YYYYmmddHHMM>` (UTC, from `--now` when given), so a re-launch in a later UTC minute opens a new thread, while a lost-reply retry that resends the same payload file reuses the same id.
 
 *Done when*: `orch.py launch` exits `0`, writes `<name>.payload.json` with the role header prepended to the brief, and the new conversation is launched (or handed to `orch.py select` on exit `3`).
-
-## Post-launch and post-delegation verification
-
-Subagents and launched threads can silently drop effort or model settings (e.g., [anthropics/claude-code#43083](https://github.com/anthropics/claude-code/issues/43083): effort is silently ignored in subagents — pass effort explicitly in the tool call and verify; never rely on frontmatter `effort:`). Verify after **every** `t3_thread_launch` and **every** `delegate_task` (worker children matter most):
-
-1. **Read the effective selection**: for `t3_thread_launch`, call `t3_thread_configure` with only `threadId` to read `{modelSelection: {instanceId, model, options}}` (when `executedModel` from `t3_thread_read` `recentRuns[].executedModel` is non-null, it wins over `model`). For `delegate_task`, read it from the result (`providerInstanceId`, `model`, `options`, and `executedModel` when non-null) or `t3_thread_configure` with only the child's `threadId`. In both cases convert it to `provider:model@effort` with the value of the option whose `id` is the provider's effort key (`effort`, `reasoningEffort`, or `thought_level`).
-2. **Log requested vs effective**: run the `log:` line printed by `orch.py launch` with `--effective <P:M@E>` filled in; for `delegate_task`, run `orch.py log --event select` with the child's role, selection, `--rubric`, `--requested`, and `--effective`.
-3. **Fix mismatches in place**: when `orch.py log` prints `warning: effective … differs from requested …`, reconfigure the child in place (`t3_thread_configure` with the requested `modelSelection`, or the harness's **Switch model in place** command in `references/harnesses.md`) and state the correction in the report. On harnesses whose delegation tool takes no effort parameter (e.g., Claude Code `Agent`) or cannot report the effective model, record `"effort/model not verifiable"` under `## Obstacles / not verified`.
-
-*Done when*: every launched conversation and delegated child has its effective model/effort read, logged against `--requested`, and corrected in place on mismatch (or `"effort/model not verifiable"` recorded under `## Obstacles / not verified` when the harness cannot set or report it).

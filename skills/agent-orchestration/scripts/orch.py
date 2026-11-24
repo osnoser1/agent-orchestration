@@ -3002,7 +3002,7 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
         ws_txt = f"worktree from {ws['base']}" if strat == "worktree" else f"existing_worktree at {ws['worktree_path']}" if strat == "existing_worktree" else "root"
         lines.append(f"workspace: {ws_txt}" + (f"; children {ws['children']}" if ws.get("children") else ""))
     lines.append(f"rubric: {rubric_str} ({complexity}/{risk})")
-    lines.append("verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator.md)")
+    lines.append("verify: the launcher compares requested vs effective model/effort after launch (references/harnesses.md)")
     return lines
 
 
