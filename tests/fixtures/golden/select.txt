@@ -2003,26 +2003,34 @@ followups:
 === select --role reviewer --complexity standard --risk high --implementer claude-opus-5-5 --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 [note] reviewer degraded: no other model usable; using the implementer's model in a fresh conversation. State this in the report.
-action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report
+followup recorded: [preferred-review] current-task (needs !anthropic/T4)
+action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report; a cross-family re-review follow-up was recorded
 --- quota.yaml
 followups:
   - kind: ui-review
     ref: PR-4
     needs: ui-ux-review
     after: 2026-11-23T08:00:00+00:00
+  - kind: preferred-review
+    ref: current-task
+    needs: "!anthropic/T4"
 === select --role reviewer --complexity standard --risk high --implementer claude-opus-5-5 --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 tier T3 (>= 50); reviewer tier T4 (>= 57)
 implementer (given): anthropic / claude-opus-5-5
 reviewer (T4, same model, fresh conversation): claudeAgent_claude_extra / claude-opus-5-5 @ xhigh (score 57.44, policy normal, status low)
 [note] reviewer degraded: no other model usable; using the implementer's model in a fresh conversation. State this in the report.
-action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report
+followup recorded: [preferred-review] current-task (needs !anthropic/T4)
+action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report; a cross-family re-review follow-up was recorded
 --- quota.yaml
 followups:
   - kind: ui-review
     ref: PR-4
     needs: ui-ux-review
     after: 2026-11-23T08:00:00+00:00
+  - kind: preferred-review
+    ref: current-task
+    needs: "!anthropic/T4"
 === select --role reviewer --complexity hard --risk medium --implementer claude-opus-5-5 --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 action: dispatch reviewer antigravity/gemini-4-hydrogen @ high now
@@ -2047,26 +2055,34 @@ followups:
 === select --role reviewer --complexity frontier --risk high --implementer claude-opus-5-5 --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 [note] reviewer degraded: no other model usable; using the implementer's model in a fresh conversation. State this in the report.
-action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report
+followup recorded: [preferred-review] current-task (needs !anthropic/T4)
+action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report; a cross-family re-review follow-up was recorded
 --- quota.yaml
 followups:
   - kind: ui-review
     ref: PR-4
     needs: ui-ux-review
     after: 2026-11-23T08:00:00+00:00
+  - kind: preferred-review
+    ref: current-task
+    needs: "!anthropic/T4"
 === select --role reviewer --complexity frontier --risk high --implementer claude-opus-5-5 --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 tier T4 (>= 57); reviewer tier T4 (>= 57)
 implementer (given): anthropic / claude-opus-5-5
 reviewer (T4, same model, fresh conversation): claudeAgent_claude_extra / claude-opus-5-5 @ xhigh (score 57.44, policy normal, status low)
 [note] reviewer degraded: no other model usable; using the implementer's model in a fresh conversation. State this in the report.
-action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report
+followup recorded: [preferred-review] current-task (needs !anthropic/T4)
+action: dispatch reviewer claudeAgent_claude_extra/claude-opus-5-5 @ xhigh now; state the reviewer degradation in the report; a cross-family re-review follow-up was recorded
 --- quota.yaml
 followups:
   - kind: ui-review
     ref: PR-4
     needs: ui-ux-review
     after: 2026-11-23T08:00:00+00:00
+  - kind: preferred-review
+    ref: current-task
+    needs: "!anthropic/T4"
 === select --role reviewer --complexity standard --risk low --implementer gemini-4-neon --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 action: dispatch reviewer codex/gpt-6-2-sol @ low now

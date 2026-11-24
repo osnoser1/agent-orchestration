@@ -20,7 +20,7 @@ preferences:
   #   defaults: {codex: medium, claude: high}     # starting effort per provider id (raised to meet the tier)
   #   ladder: auto                                # auto | [provider:model@effort, ...]
   #   max_escalations: 2                          # ladder keeps max_escalations + 1 same-provider rungs
-  #   unflagged_findings: 3                       # review findings the brief did not flag that trigger orch.py escalate
+  #   unflagged_findings: 3                       # findings exposing a gap in the brief or plan that trigger orch.py escalate
   #   phase_effort: off                           # on | off: select --phase shifts effort per phase (off until ~10 ledger runs)
 providers:
   # id = provider id your harness uses for delegation.

@@ -1266,12 +1266,13 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
                 self.assertEqual(orch.probe(probe_args), 0)
 
             # Exhaust Gemini Models via --model gemini-4-neon with relative duration "Resets in 3h13m7s."
+            # (a pool message: "Individual quota" would lock only the model, TestRetroSelectionRules)
             exhaust_args = _Args(
                 assets=assets_path,
                 catalog=CATALOG_PATH,
                 now="2026-11-20T21:00:00Z",
                 provider="antigravity",
-                message="Individual quota reached… Resets in 3h13m7s.",
+                message="Quota limit reached… Resets in 3h13m7s.",
                 group=None,
                 model="gemini-4-neon",
             )
@@ -2529,7 +2530,8 @@ class TestAuditBlocking(unittest.TestCase):
             self.assertEqual(rc, 0, out)
             self.assertIn("same model, fresh conversation): antigravity / gemini-4-neon", out)
             self.assertNotIn("NO REVIEWER", out)
-            self.assertEqual(orch.load_file(ap).get("followups") or [], [])
+            self.assertEqual(orch.load_file(ap).get("followups") or [],
+                             [{"kind": "preferred-review", "ref": "rev-high-1", "needs": "!google/T4"}])
 
     # B3: group-scoped needs only when every exhausted target sits in ONE (provider, group)
     def test_b3_needs_stays_tier_wide_when_targets_span_two_groups_of_one_provider(self):
@@ -3249,7 +3251,8 @@ class TestSelectActionLine(unittest.TestCase):
         avail = "claude:claude-opus-5-5,claude:claude-sonnet-5-5,antigravity:gemini-4-hydrogen"
         self.sel(
             assets, avail, 0,
-            "action: dispatch reviewer antigravity/gemini-4-hydrogen @ xhigh now; state the reviewer degradation in the report",
+            "action: dispatch reviewer antigravity/gemini-4-hydrogen @ xhigh now; state the reviewer degradation in the report; "
+            "a cross-family re-review follow-up was recorded",
             complexity="standard", risk="high", below_tier="proceed",
             now="2026-11-21T20:00:00Z", implementer="gemini-4-hydrogen",
         )
@@ -4492,9 +4495,9 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         lines = out.strip().splitlines()
         self.assertEqual(lines[0], "orchestrator tier T3 (>= 50; coordination 2)")
-        self.assertEqual(
+        self.assertEqual(  # Argon (confidence low) ranks after Neon on T3+ work and scores below the ladder top
             lines[1],
-            "ladder: antigravity/gemini-4-argon @ high -> antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high",
+            "ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high",
         )
         self.assertEqual(
             lines[2],
@@ -4505,7 +4508,7 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         self.assertIn("antigravity:gemini-pro-orchestrator-g1-pro", out)
         self.assertEqual(
             lines[-1],
-            "action: launch the orchestrator on antigravity/gemini-4-argon @ high; "
+            "action: launch the orchestrator on antigravity/gemini-4-neon @ medium; "
             "climb the ladder only on an escalation trigger (references/selection.md); "
             "ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>",
         )
@@ -4531,9 +4534,9 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         self.assertIn("max_effort", out)
         self.assertNotIn("provider switch", out)
 
-        # max_escalations: 1 caps same-provider ladder to 2 rungs (1 + 1)
+        # max_escalations: 1 caps same-provider ladder to 2 rungs (1 + 1); T2, where the cheaper Argon starts
         rc2, out2 = self._orch_sel(
-            "antigravity:gemini-4-argon,antigravity:gemini-4-neon", coordination=2, assets=ap, full=False
+            "antigravity:gemini-4-argon,antigravity:gemini-4-neon", coordination=1, assets=ap, full=False
         )
         self.assertEqual(rc2, 0, out2)
         self.assertIn(
@@ -5124,7 +5127,7 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
             pool_cap=2,
         )
         self.assertEqual(rc_g2, 0, out_g2)
-        self.assertIn("pool antigravity/Gemini 4 Argon at cap 2/2", out_g2.strip().splitlines()[-1])
+        self.assertIn("pool antigravity/Gemini Models at cap 2/2", out_g2.strip().splitlines()[-1])
 
     def test_defer_pool_cap_with_hold_and_with_stage(self):
         # All exhausted + pool-busy -> still holds and records follow-up.
@@ -5866,7 +5869,10 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
             is_self=True, coordination=2, available=avail,
         )
         self.assertEqual(rc_e, 0, out_e)
-        self.assertIn("provider switch (phase boundary, ask the user first): ", out_e)
+        self.assertIn(sw_prefix, out_e)
+        # exhausting claudeAgent can change the switch rung, so the action names exhaust's own rung
+        sw_e = next(l for l in out_e.splitlines() if l.startswith(sw_prefix))[len(sw_prefix):]
+        named = f"; ask the user before the phase-boundary provider switch to {sw_e}; log it with --role orchestrator --rubric <rubric>"
         ex_last = out_e.strip().splitlines()[-1]
         self.assertTrue(ex_last.startswith("action: switch this conversation to "), out_e)
         self.assertIn("orch.py launch <spec>", ex_last)
@@ -6059,8 +6065,9 @@ class TestLaunchSpec(unittest.TestCase):
                 "model: codex/gpt-6.2-sol @ medium (rung 1 of 2)",
                 "ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high",
                 "provider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high",
-                "escalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; "
-                "at most 2 escalations; never step down mid-phase",
+                "escalate on (orch.py escalate): outcome rework | 3+ findings exposing a gap in your brief or plan (references/supervision.md) "
+                "(workers: 3+) | a child's STATUS: ESCALATE",
+                "escalation cap: at most 2 escalations; never step down mid-phase",
                 "caps: children per pool 2; budget antigravity 10, claudeAgent 4",
                 "workspace: worktree from origin/main; children shared",
                 "rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)",
@@ -6671,7 +6678,9 @@ class TestQualityEscalation(unittest.TestCase):
         ws = {"present": False}
         line = next(l for l in orch._build_launch_header("orchestrator", cand, [cand], None, 2, {}, ws, "r", "hard", "low", thresholds=(5, 4))
                     if l.startswith("escalate on"))
-        self.assertIn("| 4+ review findings your brief did not flag (workers: 5+) |", line)
+        self.assertIn("| 4+ findings exposing a gap in your brief or plan (references/supervision.md) (workers: 5+) |", line)
+        self.assertIn("escalation cap: at most 2 escalations; never step down mid-phase",
+                      orch._build_launch_header("orchestrator", cand, [cand], None, 2, {}, ws, "r", "hard", "low"))
 
     def test_history_by_rework_rate_effortless_rows_and_catalog(self):
         cat = os.path.join(self.dir, "cat.yaml")
@@ -6834,6 +6843,287 @@ class TestLedgerProviderIdsDuplicatesAndAvailableFile(unittest.TestCase):
             self.assertEqual(lines[0], f"error: --available file {missing} is not readable")
             self.assertTrue(lines[-1].startswith("error: 1 problem(s); action: fix --available "), lines)
             self.assertTrue(lines[-1].endswith(f"and rerun {cmd[0]}"), lines)
+
+
+class TestRetroSelectionRules(unittest.TestCase):
+    """An individual quota locks one model (C3), weak candidates rank last on T3+ (C2), a degraded high-risk review queues a
+    cross-family re-review (C6), and the orchestrator's findings trigger without a same-provider rung continues (C4)."""
+
+    PROVIDERS = (
+        "version: 1\nproviders:\n"
+        "  - id: antigravity\n    status: ok\n"
+        "  - id: claudeAgent\n    status: ok\n"
+        "  - id: codex\n    status: ok\n"
+    )
+    ULTRA = (  # an Ultra plan: Argon draws from the Gemini Models pool, at 65 %
+        "version: 1\nproviders:\n"
+        "  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n    groups:\n"
+        "      - name: Gemini Models\n        models: [gemini-4-neon, gemini-4-hydrogen, gemini-4-argon]\n        status: ok\n"
+        "        used_percent: 65\n        window: 7d\n        resets_at: 2026-11-26T15:58:04+00:00\n"
+        "      - name: Claude and GPT models\n        models: [claude-opus-5-5, claude-sonnet-5-5]\n        status: ok\n"
+        "        used_percent: 10\n        window: 7d\n"
+    )
+    INDIVIDUAL = "Individual quota reached. You have reached the quota for this model. Resets in 2h47m8s."
+    UNTIL = "2026-11-20T23:47:08+00:00"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.assets = os.path.join(self.dir, "assets.yaml")
+        self.ledger = os.path.join(self.dir, "ledger.jsonl")
+        _write(self.assets, self.PROVIDERS)
+
+    def last(self, out):
+        return out.strip().splitlines()[-1]
+
+    def group(self, name="Gemini Models"):
+        ag = orch.load_file(self.assets)["providers"][0]
+        return ag, next(g for g in ag["groups"] if g["name"] == name)
+
+    def probe(self, data, now):
+        fake = subprocess.CompletedProcess(args=["agy"], returncode=0, stdout=json.dumps(data), stderr="")
+        args = _Args(assets=self.assets, catalog=CATALOG_PATH, now=now, provider="antigravity", low_threshold=None,
+                     exhausted_threshold=None, available=None, full=False)
+        with mock.patch("shutil.which", return_value="/usr/bin/agy"), mock.patch("subprocess.run", return_value=fake):
+            return _run(orch.probe, args)
+
+    # ---------- C3: an individual quota locks only that model ----------
+    def test_individual_quota_locks_only_that_model_until_its_reset(self):
+        _write(self.assets, self.ULTRA)
+        rc, out = _run(orch.exhaust, _exh(self.assets, "antigravity", self.INDIVIDUAL, model="gemini-4-argon"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"antigravity (gemini-4-argon in Gemini Models): individually exhausted until {self.UNTIL}", out)
+        ag, gm = self.group()
+        self.assertEqual((ag["status"], gm["status"], gm["used_percent"]), ("ok", "ok", 65))
+        self.assertEqual(gm["exhausted_models"], {"gemini-4-argon": self.UNTIL})
+        self.assertNotIn("exhausted_until", gm)
+        # the sibling stays usable (it held before the fix); the locked model is noted and skipped
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-neon", risk="low", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-neon @ medium now"), out)
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", risk="low", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"note: model individually exhausted (until {self.UNTIL}): antigravity:gemini-4-argon", out)
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-neon @ medium now"), out)
+        # only the locked model offered: hold until its reset, then the resume follow-up comes due once the lock expires
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="low", ref="PR-X", full=False))
+        self.assertEqual(rc, 4, out)
+        self.assertTrue(self.last(out).startswith("action: hold until 2026-11-20T23:49:08+00:00"), out)
+        _assert_none_due(self, _run(orch.followups_cmd, _fu(self.assets, due=True, available="antigravity:gemini-4-argon"))[1])
+        rc, out = _run(orch.followups_cmd, _fu(self.assets, now="2026-11-21T00:00:00Z", due=True, available="antigravity:gemini-4-argon"))
+        self.assertIn("followup due: [resume]", out)
+        # an expired lock no longer blocks select, even before a probe clears it
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="low", now="2026-11-21T00:00:00Z", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-argon @ high now"), out)
+
+    def test_group_flag_and_other_messages_keep_the_group_lock(self):
+        for kw, msg in ((dict(group="Gemini Models"), self.INDIVIDUAL),
+                        (dict(model="gemini-4-argon"), "Quota limit reached · Resets in 2h47m8s.")):
+            _write(self.assets, self.ULTRA)
+            rc, out = _run(orch.exhaust, _exh(self.assets, "antigravity", msg, **kw))
+            self.assertEqual(rc, 0, out)
+            self.assertIn(f"antigravity (Gemini Models): exhausted until {self.UNTIL}", out)
+            _, gm = self.group()
+            self.assertEqual((gm["status"], gm["exhausted_until"]), ("exhausted", self.UNTIL))
+            self.assertNotIn("exhausted_models", gm)
+            rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-neon", risk="low", full=False))
+            self.assertEqual(rc, 4, out)
+
+    def test_probe_keeps_an_unexpired_individual_lock_and_clears_an_expired_one(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        groups = data["command"]["data"]["groups"]
+        groups[0]["description"] += ", Gemini 4 Argon"  # Ultra: Argon shares the Gemini Models pool
+        del groups[2]
+        _write(self.assets, "version: 1\nproviders:\n  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n")
+        # no groups yet: the lock is seeded on Argon's own entry, and the first probe moves it into the pool that lists Argon
+        rc, out = _run(orch.exhaust, _exh(self.assets, "antigravity", self.INDIVIDUAL, model="gemini-4-argon"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"antigravity (gemini-4-argon): individually exhausted until {self.UNTIL}", out)
+        for now in ("2026-11-20T21:05:00Z", "2026-11-20T21:10:00Z"):
+            rc, out = self.probe(data, now)
+            self.assertEqual(rc, 0, out)
+            ag, gm = self.group()
+            self.assertEqual([g["name"] for g in ag["groups"]], ["Gemini Models", "Claude and GPT models"])
+            self.assertEqual((ag["status"], gm["status"]), ("ok", "ok"))
+            self.assertEqual(gm["exhausted_models"], {"gemini-4-argon": self.UNTIL})
+            rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", risk="low",
+                                             now=now, full=False))
+            self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-neon @ medium now"), out)
+        rc, out = self.probe(data, "2026-11-21T00:00:00Z")
+        self.assertIn("antigravity (gemini-4-argon): expired individual lockout cleared -> ok", out)
+        _, gm = self.group()
+        self.assertNotIn("exhausted_models", gm)
+
+    def test_probe_keeps_a_lock_whose_model_left_every_pool_on_a_carrier_entry(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        del data["command"]["data"]["groups"][2]  # no probed pool lists Argon any more
+        _write(self.assets, self.ULTRA.replace("    status: ok\n    probe:", "    status: ok\n    policy: normal\n    probe:")
+               .replace("        resets_at: 2026-11-26T15:58:04+00:00\n",
+                        f"        resets_at: 2026-11-26T15:58:04+00:00\n        exhausted_models: {{gemini-4-argon: {self.UNTIL}}}\n"))
+        for now in ("2026-11-20T21:05:00Z", "2026-11-20T21:10:00Z"):
+            rc, out = self.probe(data, now)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("antigravity: ok (1/2 groups usable", out)  # the carrier is not a pool
+            ag, carrier = self.group("gemini-4-argon")
+            self.assertEqual(carrier, {"name": "gemini-4-argon", "models": ["gemini-4-argon"], "exhausted_models": {"gemini-4-argon": self.UNTIL}})
+            self.assertEqual(ag["status"], "ok")
+            rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", risk="low",
+                                             now=now, full=False))
+            self.assertIn(f"note: model individually exhausted (until {self.UNTIL}): antigravity:gemini-4-argon", out)
+        # the provider status summarises real pools only: both exhausted -> exhausted despite the carrier
+        spent = copy.deepcopy(data)
+        for b in spent["command"]["data"]["groups"][0]["buckets"]:
+            b["remaining_fraction"] = 0
+        rc, out = self.probe(spent, "2026-11-20T21:15:00Z")
+        self.assertEqual(rc, 4, out)
+        self.assertEqual(self.group("gemini-4-argon")[0]["status"], "exhausted")
+        # once the lock expires, the carrier goes with it
+        rc, out = self.probe(data, "2026-11-21T00:00:00Z")
+        self.assertIn("antigravity (gemini-4-argon): expired individual lockout cleared -> ok", out)
+        self.assertEqual([g["name"] for g in orch.load_file(self.assets)["providers"][0]["groups"]],
+                         ["Gemini Models", "Claude and GPT models"])
+
+    def test_check_validates_lock_times_and_cross_family_needs(self):
+        def check(text):
+            ap = os.path.join(self.dir, "check.yaml")
+            _write(ap, text)
+            return _run(orch.check, _Args(assets=ap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", full=False))
+        good = self.ULTRA.replace("        window: 7d\n        resets_at:", f"        window: 7d\n        exhausted_models: {{gemini-4-argon: {self.UNTIL}}}\n        resets_at:")
+        good += "followups:\n  - kind: preferred-review\n    ref: PR-X\n    needs: \"!anthropic/T4\"\n"
+        rc, out = check(good)
+        self.assertEqual(rc, 0, out)
+        rc, out = check(good.replace(self.UNTIL, "soon").replace("!anthropic/T4", "!antropic/T9"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("assets antigravity group Gemini Models: exhausted_models must map model ids to timestamps", out)
+        self.assertIn("assets followups[0].needs: bad value !antropic/T9 (expected !<family>/<tier>", out)
+
+    # ---------- C2: weak candidates rank after the others on T3+ work ----------
+    def test_low_confidence_or_near_floor_candidate_ranks_last_on_t3_plus_only(self):
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", risk="medium", full=False))
+        self.assertEqual(rc, 0, out)  # T3: argon is confidence low (51), neon scores 55
+        self.assertEqual(self.last(out), "action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts")
+        # weakness is judged on the best rated score: hydrogen tops out at 54 (>= 50 + 3), so the cheaper hydrogen@high still wins
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-hydrogen,antigravity:gemini-4-neon", risk="low", full=False))
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-hydrogen @ high now"), out)
+        # T4: opus tops out at 57.44 (< 57 + 3) and ranks after neon even from a spend-first pool
+        ap = os.path.join(self.dir, "spend.yaml")
+        _write(ap, self.PROVIDERS.replace("  - id: claudeAgent\n    status: ok\n", "  - id: claudeAgent\n    status: ok\n    policy: spend-first\n"))
+        rc, out = _run(orch.select, _sel(ap, "claudeAgent:claude-opus-5-5,antigravity:gemini-4-neon", complexity="frontier", risk="low",
+                                         full=False))
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-neon @ high now"), out)
+        # never removed: alone, the weak candidate is dispatched
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="medium", full=False))
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-argon @ high now"), out)
+        # below T3 the cheaper low-confidence model still wins on cost
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", complexity="standard",
+                                         risk="low", full=False))
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-argon @ high now"), out)
+        # the orchestrator ladder ranks the same way at T3
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", role="orchestrator",
+                                         coordination=2, complexity=None, risk=None, full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high", out)
+
+    def test_policy_ending_still_wins_when_no_candidate_is_weak(self):
+        ap = os.path.join(self.dir, "policies.yaml")
+        _write(ap, "version: 1\nproviders:\n"
+                   "  - id: antigravity\n    status: ok\n    policy: preserve\n"
+                   "  - id: claudeAgent\n    status: ok\n    policy: spend-first\n"
+                   "  - id: codex\n    status: ok\n    policy: ending\n    renews: 2026-11-22\n")
+        avail = ("claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol,codex:gpt-6-luna,"
+                 "antigravity:gemini-4-neon,antigravity:claude-opus-5-5")
+        rc, out = _run(orch.select, _sel(ap, avail, risk="medium", full=False))
+        self.assertEqual((rc, self.last(out)), (0, "action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts"))
+
+    # ---------- C6: a degraded high-risk review queues a cross-family re-review ----------
+    def review(self, available, risk="high", **kw):
+        return _run(orch.select, _sel(self.assets, available, role="reviewer", complexity="hard", risk=risk,
+                                      implementer="claudeAgent:claude-opus-5-5", full=False, **kw))
+
+    def test_high_risk_review_without_a_cross_family_reviewer_records_a_followup(self):
+        rc, out = self.review("claudeAgent:claude-opus-5-5", ref="PR-X")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("followup recorded: [preferred-review] PR-X (needs !anthropic/T4)", out)
+        self.assertEqual(self.last(out), "action: dispatch reviewer claudeAgent/claude-opus-5-5 @ xhigh now; state the reviewer degradation "
+                                         "in the report; a cross-family re-review follow-up was recorded")
+        self.assertEqual(orch.load_file(self.assets)["followups"],
+                         [{"kind": "preferred-review", "ref": "PR-X", "needs": "!anthropic/T4"}])
+        # without --ref the item is current-task (an assets file exists)
+        rc, out = self.review("claudeAgent:claude-opus-5-5")
+        self.assertIn("followup recorded: [preferred-review] current-task (needs !anthropic/T4)", out)
+        # due only once a usable model of another family meets T4
+        _assert_none_due(self, _run(orch.followups_cmd, _fu(self.assets, due=True,
+                                                             available="claudeAgent:claude-opus-5-5,codex:gpt-6-2-sol,antigravity:gemini-4-hydrogen"))[1])
+        rc, out = _run(orch.followups_cmd, _fu(self.assets, due=True, available="claudeAgent:claude-opus-5-5,antigravity:gemini-4-neon",
+                                               full=False))
+        self.assertIn("followup due: [preferred-review] via antigravity: PR-X, current-task", out)
+
+    def test_defer_refusal_and_missing_ref_keep_the_cross_family_followup(self):
+        args = dict(ref="PR-X", role="reviewer", complexity="hard", risk="high", coordination=None, available="claudeAgent:claude-opus-5-5",
+                    implementer="claudeAgent:claude-opus-5-5", ui=False, prefer_family=None, below_tier=None, user_hold=False, needs=None,
+                    after=None, on_recovery=False, pool_busy=None, pool_cap=2, catalog=CATALOG_PATH, assets=self.assets,
+                    now="2026-11-20T21:00:00Z", full=False)
+        rc, out = _run(orch.defer_cmd, _Args(**args))
+        self.assertEqual(rc, 5, out)
+        self.assertEqual(self.last(out), "action: dispatch reviewer claudeAgent/claude-opus-5-5 @ xhigh now; do not defer PR-X; state the reviewer "
+                                         "degradation in the report; a cross-family re-review follow-up was recorded")
+        self.assertEqual(orch.load_file(self.assets)["followups"], [{"kind": "preferred-review", "ref": "PR-X", "needs": "!anthropic/T4"}])
+        # no assets file and no --ref: the action names the command that queues it
+        rc, out = _run(orch.select, _sel(os.path.join(self.dir, "none.yaml"), "claudeAgent:claude-opus-5-5", role="reviewer", complexity="hard",
+                                         implementer="claudeAgent:claude-opus-5-5", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.last(out).endswith("; no assets file and no --ref, so no follow-up was recorded: queue the cross-family re-review "
+                                                "with followups --add --kind preferred-review --ref <item> --needs '!anthropic/T4'"), out)
+
+    def test_cross_family_step_one_and_lower_risk_record_nothing(self):
+        rc, out = self.review("claudeAgent:claude-opus-5-5,antigravity:gemini-4-neon", ref="PR-X")
+        self.assertEqual((rc, self.last(out)), (0, "action: dispatch reviewer antigravity/gemini-4-neon @ high now"))
+        rc, out = self.review("claudeAgent:claude-opus-5-5", risk="medium", ref="PR-X")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("followup", out)
+        self.assertNotIn("followups", orch.load_file(self.assets))
+
+    def test_cross_family_need_form(self):
+        by = {m["id"]: m for m in orch.load_file(CATALOG_PATH)["models"]}
+        match = orch._model_matches_need
+        self.assertTrue(match(by["gemini-4-neon"], "!anthropic/T4"))  # google, high 60 >= 57
+        self.assertTrue(match(by["gpt-6-2-sol"], "!Anthropic/t3"))
+        self.assertFalse(match(by["claude-opus-5-5"], "!anthropic/T4"))  # same family
+        self.assertFalse(match(by["gemini-4-hydrogen"], "!anthropic/T4"))  # xhigh 54 < 57
+        self.assertFalse(match(by["gpt-6-2-sol"], "!anthropic/T4"))  # 57.26 only at the emergency effort max
+        self.assertTrue(match(by["gemini-4-hydrogen"], "!anthropic"))
+        self.assertFalse(match(by["claude-haiku-5-5"], "!anthropic"))
+
+    # ---------- C4: the orchestrator's findings trigger without a same-provider rung ----------
+    def esc(self, current, available, cause, **kw):
+        base = dict(assets=self.assets, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", ledger=self.ledger, role="orchestrator",
+                    ref="PR-7", current=current, cause=cause, available=available, findings=None, complexity=None, risk=None,
+                    coordination=2, implementer=None, dry_run=False, repo="demo-app", full=False, approved=False, to=None)
+        base.update(kw)
+        rc, out = _run(orch.escalate_cmd, _Args(**base))
+        return rc, out.strip().splitlines()
+
+    def test_orchestrator_findings_continue_without_a_same_provider_rung(self):
+        cont = ("action: no same-provider rung above {}: continue on it "
+                "(the findings trigger asks for a provider switch only when the user requests one)")
+        rc, lines = self.esc("antigravity:gemini-4-argon@high", "antigravity:gemini-4-argon,codex:gpt-6-2-sol", "findings", findings=9)
+        self.assertEqual((rc, lines), (0, [cont.format("antigravity/gemini-4-argon @ high")]))
+        rc, lines = self.esc("antigravity:gemini-4-neon@high", "antigravity:gemini-4-neon,claudeAgent:claude-opus-5-5", "findings", findings=9)
+        self.assertEqual((rc, lines[-1]), (0, cont.format("antigravity/gemini-4-neon @ high")))  # no higher rung anywhere
+        self.assertFalse(os.path.exists(self.ledger))
+        # a same-provider rung still climbs on findings; rework and status keep the provider-switch ask
+        rc, lines = self.esc("antigravity:gemini-4-argon@high", "antigravity:gemini-4-argon,antigravity:gemini-4-neon", "findings",
+                             findings=9, dry_run=True)
+        self.assertEqual(rc, 0, lines)
+        self.assertTrue(lines[-1].startswith("action: switch the orchestrator in place to antigravity/gemini-4-neon @ medium"), lines)
+        for cause in ("rework", "status"):
+            rc, lines = self.esc("antigravity:gemini-4-argon@high", "antigravity:gemini-4-argon,codex:gpt-6-2-sol", cause)
+            self.assertEqual(rc, 3, lines)
+            self.assertTrue(lines[-1].startswith("action: ask the user once before switching the orchestrator's provider to "), lines)
 
 
 if __name__ == "__main__":

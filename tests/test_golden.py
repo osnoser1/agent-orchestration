@@ -92,6 +92,7 @@ def matrix():
         esc("reviewer", "claudeAgent:claude-sonnet-5-5@xhigh", AVAIL["main"], *hl, "--implementer", "claude-opus-5-5"),
         esc("orchestrator", "claudeAgent:claude-opus-5-5@medium", AVAIL["main"], "--coordination", "1", assets="quota-orch.yaml"),
         esc("orchestrator", "codex:gpt-6-2-sol@high", AVAIL["main"], "--coordination", "2"),
+        esc("orchestrator", "codex:gpt-6-2-sol@high", AVAIL["main"], "--coordination", "2", "--findings", "9", cause="findings"),
         esc("orchestrator", "antigravity:gemini-pro-orchestrator-neon@high", AVAIL["main"], "--coordination", "0"),
         esc("implementer", "codex:gpt-6-2-sol@xhigh", AVAIL["main"], *hl, ref="PR-1"),
         esc("implementer", "codex:gpt-6-2-sol@medium", AVAIL["main"], *hl, "--findings", "1", cause="findings"),
@@ -168,7 +169,8 @@ class GoldenOutput(unittest.TestCase):
 class EscalateNeverStepsDown(unittest.TestCase):
     """Every catalog rung as --current, every role: a target scores strictly higher (or, from an unscored rung, is the same
     model at a higher rated effort), a reviewer never lands on the implementer's model, the orchestrator stays on its provider
-    without approval, a target logs exactly one escalate row, and an ask (exit 2/3) logs nothing."""
+    without approval, a target logs exactly one escalate row, and an ask (exit 2/3) logs nothing. On `--cause findings` a
+    scored orchestrator rung either climbs its own provider or continues (exit 0, nothing logged)."""
 
     def test_every_catalog_rung(self):
         catalog = orch.load_file(CATALOG)
@@ -187,13 +189,15 @@ class EscalateNeverStepsDown(unittest.TestCase):
             hl, every = ["--complexity", "hard", "--risk", "low"], pairs(lambda m: True)
             roles = [("implementer", hl, every), ("implementer", ["--complexity", "trivial", "--risk", "low"], every),
                      ("reviewer", hl + ["--implementer", ids[(i + 1) % len(ids)]], every),
-                     ("orchestrator", ["--coordination", "1"], every)]
+                     ("orchestrator", ["--coordination", "1"], every),
+                     ("orchestrator", ["--coordination", "1", "--findings", "9"], every)]
             if fam:  # only same-family models offered and the strongest of them implemented: the reviewer must skip it
                 roles.append(("reviewer", hl + ["--implementer", max(fam, key=best)], pairs(lambda m: m == mid or m in fam)))
             for eff in efforts:
                 for role, more, avail in roles:
+                    findings = "--findings" in more
                     argv = ["escalate", "--role", role, "--ref", "p", "--current", "codex:%s@%s" % (mid, eff), "--cause",
-                            "rework", "--available", avail, *more, "--ledger", ledger,  # real run: logging is under test
+                            "findings" if findings else "rework", "--available", avail, *more, "--ledger", ledger,  # real run: logging is under test
                             "--assets", os.path.join(tmp, "quota.yaml"), "--catalog", CATALOG, "--now", NOW]
                     impl = more[-1] if role == "reviewer" else None
                     case = "%s %s@%s %s" % (role, mid, eff, " ".join(more))
@@ -211,11 +215,16 @@ class EscalateNeverStepsDown(unittest.TestCase):
                         with open(ledger, encoding="utf-8") as fh:
                             rows = [l for l in fh if l.strip()]
                         os.remove(ledger)  # a fresh ledger per case, so the cap never interferes
-                    if len(rows) != (1 if rc == 0 else 0):
+                    cont = "\naction: no same-provider rung above " in "\n" + text
+                    if len(rows) != (1 if rc == 0 and not cont else 0):
                         problems.append("%s: rc %s logged %d row(s)" % (case, rc, len(rows)))
                     if rc != 0:
-                        if rc not in (2, 3):
+                        if rc not in (2, 3) or (findings and orch._rung_score(models[mid], eff) is not None):
                             problems.append("%s: rc %s\n%s" % (case, rc, text))
+                        continue
+                    if cont:
+                        if not findings or rc != 0:
+                            problems.append("%s: continue outside the findings trigger\n%s" % (case, text))
                         continue
                     hit = pat.search(text)
                     if not hit:

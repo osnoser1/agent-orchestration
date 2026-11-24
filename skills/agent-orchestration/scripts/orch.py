@@ -440,19 +440,21 @@ def partitions_quota(p):
     return any(isinstance(g, dict) and g.get("window") for g in (p.get("groups") or []))
 
 
+def _model_keys(mid, model_obj=None):
+    """Normalised spellings of a model: the given id plus the catalog id, name, and aliases."""
+    keys = {norm(mid)}
+    if isinstance(model_obj, dict):
+        for k in [model_obj.get("id"), model_obj.get("name")] + list(model_obj.get("aliases") or []):
+            if k:
+                keys.add(norm(k))
+    return keys
+
+
 def model_group(p, mid, model_obj=None):
     groups = (p or {}).get("groups")
     if not isinstance(groups, list) or not groups:
         return None
-    keys = {norm(mid)}
-    if isinstance(model_obj, dict):
-        if model_obj.get("id"):
-            keys.add(norm(model_obj["id"]))
-        if model_obj.get("name"):
-            keys.add(norm(model_obj["name"]))
-        for alias in (model_obj.get("aliases") or []):
-            if alias:
-                keys.add(norm(alias))
+    keys = _model_keys(mid, model_obj)
     for g in groups:
         if not isinstance(g, dict):
             continue
@@ -473,6 +475,30 @@ def group_state(g, now):
         st = "ok"
         expired = True
     return st, expired
+
+
+def model_lock(g, mid, model_obj, now):
+    """`(until, expired)` of the model's own lock in group `g` (`exhaust` on an "individual quota" message), else None."""
+    locks = (g or {}).get("exhausted_models")
+    if not isinstance(locks, dict):
+        return None
+    keys = _model_keys(mid, model_obj)
+    until = next((parse_time(v, now) for k, v in locks.items() if norm(k) in keys), False)
+    if until is False:
+        return None
+    return until, until is None or until <= now
+
+
+def _is_lock_carrier(g):
+    """A group entry holding only individual-quota locks (no pool data): seeded by `exhaust`, kept by `probe`, never a pool."""
+    return isinstance(g, dict) and bool(g.get("exhausted_models")) and not any(
+        k in g for k in ("status", "used_percent", "window", "exhausted_until", "resets_at"))
+
+
+def _locked(g, mid, model_obj, now):
+    """The unexpired individual lock's end time, else None."""
+    lock = model_lock(g, mid, model_obj, now) if g is not None else None
+    return lock[0] if lock and not lock[1] else None
 
 
 def candidate_next_reset(p, g, now):
@@ -556,6 +582,11 @@ def _model_matches_need(m, need, floors=None, emerg=None, provider_id=None, grou
                 return False
             return _model_matches_need(m, parts[2], floors=floors, emerg=emerg)
         return False
+    if n.startswith("!"):  # `!<family>/<tier>`: a model of any other family, meeting the tier when one is given
+        fam, _, tier = n[1:].partition("/")
+        if not fam or str(m.get("family") or "").lower() == fam:
+            return False
+        return not tier or _model_matches_need(m, tier, floors=floors, emerg=emerg)
     t_key = n[len("tier:"):].upper() if n.startswith("tier:") else n.upper()
     if t_key in FLOORS:
         fl = (floors or FLOORS).get(t_key, FLOORS[t_key])
@@ -616,7 +647,7 @@ def find_usable_in_available(catalog, assets, now, need, available, fail_on_low=
             continue
         if g is not None:
             gst, _ = group_state(g, now)
-            if gst in blocked:
+            if gst in blocked or _locked(g, mid, m, now):
                 continue
             _add(f"{prov} ({g.get('name') or 'group'})")
         else:
@@ -664,6 +695,7 @@ def find_usable_in_assets(catalog, assets, now, need, fail_on_low=False):
                         m
                         and m.get("cost") != "emergency"
                         and m.get("rating") != "unrated"
+                        and not _locked(g, mid, m, now)
                         and _model_matches_need(
                             m, need, floors=floors, emerg=emerg, provider_id=pid, group_name=g.get("name")
                         )
@@ -675,7 +707,7 @@ def find_usable_in_assets(catalog, assets, now, need, fail_on_low=False):
             if fam:
                 for m in (catalog or {}).get("models") or []:
                     cap = model_group(p, m["id"], m)
-                    if cap is not None and group_state(cap, now)[0] in blocked:
+                    if cap is not None and (group_state(cap, now)[0] in blocked or _locked(cap, m["id"], m, now)):
                         continue
                     if (
                         str(m.get("family") or "").lower() == fam
@@ -811,7 +843,8 @@ def classify_unmet_preference(catalog, assets, available, need, floor, now, fail
             continue
         g = model_group(p, mid, m)
         st = group_state(g, now)[0] if g is not None else prov_st
-        if prov_st == "exhausted":
+        lock_until = _locked(g, mid, m, now)
+        if prov_st == "exhausted" or lock_until:
             st = "exhausted"
         if st == "exhausted" or (fail_on_low and st == "low"):
             offered_exhausted = True
@@ -819,6 +852,8 @@ def classify_unmet_preference(catalog, assets, available, need, floor, now, fail
                 _collect(parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now))
             elif prov_st == "exhausted":
                 _collect(parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now))
+            elif lock_until:
+                _collect(lock_until)
             else:
                 _collect(candidate_next_reset(p, g, now) if g is not None else provider_next_reset(p, now))
 
@@ -859,10 +894,11 @@ def exhausted_tier_candidates(
             continue
         g = model_group(p, mid, m)
         gst = group_state(g, now)[0] if g is not None else "ok"
-        if prov_st != "exhausted" and gst != "exhausted":
+        lock_until = _locked(g, mid, m, now)
+        if prov_st != "exhausted" and gst != "exhausted" and not lock_until:
             continue
 
-        dts = []
+        dts = [lock_until] if lock_until else []
         if g is not None and gst == "exhausted":
             dt = parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now)
             if dt and dt > now:
@@ -972,6 +1008,13 @@ def candidates(
                 notes.append(f"{pair}: group {gname} exhausted")
                 reasons["exhausted"] += 1
                 continue
+            lock = model_lock(g, mid, m, now)
+            if lock and lock[1]:
+                notes.append(f"{pair}: previous individual exhaustion expired -> treating as ok")
+            elif lock:
+                notes.append(f"{pair}: model individually exhausted (until {lock[0].isoformat(timespec='seconds')})")
+                reasons["exhausted"] += 1
+                continue
             if fail_on_low and st == "low":
                 notes.append(f"{pair}: group {gname} low (blocked by pre-flight threshold)")
                 reasons["threshold"] += 1
@@ -1019,6 +1062,9 @@ def candidates(
         policy = p.get("policy", "normal")
         pol_rank = POLICY.get(policy, 2)
         low_pen = 1 if (st == "low" and eff_floor >= t3_floor) else 0
+        # Weak on T3+ work: a low-confidence score, or a best rated score (<= max_effort) less than 3 points above the floor.
+        top = top_effort(m, emerg, max_effort=max_effort) or be
+        weak = 1 if eff_floor >= t3_floor and (m.get("confidence") == "low" or top[1] < eff_floor + 3) else 0
         nxt = candidate_next_reset(p, g, now)
         reset_ts = nxt.timestamp() if nxt else float("inf")
         ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
@@ -1027,6 +1073,7 @@ def candidates(
             ui_rank,
             fam_rank,
             low_pen,
+            weak,
             pol_rank,
             reset_ts,
             COST[m["cost"]],
@@ -1336,11 +1383,23 @@ def _eval_select_reviewer(
             f"dispatch reviewer {_cand_ref(pick[1])} now"
             + ("" if pick[0] == 1 else "; state the reviewer degradation in the report")
         )
+        fu_suffix = ""
+        if a.risk == "high" and pick[0] != 1 and record_followups:  # queue the cross-family review this pick could not give
+            needs = f"!{m['family']}/{rt}"
+            if ref:
+                record_followup(ap, {"kind": "preferred-review", "ref": ref, "needs": needs}, now=now)
+                lines.append(f"followup recorded: [preferred-review] {ref} (needs {needs})")
+                fu_suffix = "; a cross-family re-review follow-up was recorded"
+            else:
+                fu_suffix = ("; no assets file and no --ref, so no follow-up was recorded: queue the cross-family re-review "
+                             f"with followups --add --kind preferred-review --ref <item> --needs '{needs}'")
+        act += fu_suffix
         return {
             "rc": 0,
             "kind": "dispatch_reviewer",
             "lines": lines,
             "action": act,
+            "followup_suffix": fu_suffix,
             "candidate": pick[1],
             "provider": pick[1]["provider"],
             "reviewer_stage": pick[0],
@@ -2510,6 +2569,7 @@ def _defer_refuse(res, ref):
         act = f"dispatch reviewer {_cand_ref(res['candidate'])} now; do not defer {ref}"
         if res["reviewer_stage"] != 1:
             act += "; state the reviewer degradation in the report"
+        act += res.get("followup_suffix") or ""
     elif res["kind"] == "dispatch_orchestrator":
         act = f"launch the orchestrator on {_cand_ref(res['candidate'])}; do not defer {ref}" + _orch_action_suffix(res.get("switch_rung"), name_rung=True)
     else:
@@ -2924,9 +2984,10 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
             lines.append(f"provider switch (phase boundary, ask the user first): {_launch_ref(switch_rung)}")
         esc_noun = "escalation" if max_esc == 1 else "escalations"
         lines.append(
-            f"escalate on (orch.py escalate): outcome rework | {thresholds[1]}+ review findings your brief did not flag "
-            f"(workers: {thresholds[0]}+) | a child's STATUS: ESCALATE; at most {max_esc} {esc_noun}; never step down mid-phase"
+            f"escalate on (orch.py escalate): outcome rework | {thresholds[1]}+ findings exposing a gap in your brief or plan "
+            f"(references/supervision.md) (workers: {thresholds[0]}+) | a child's STATUS: ESCALATE"
         )
+        lines.append(f"escalation cap: at most {max_esc} {esc_noun}; never step down mid-phase")
     else:
         lines.append(f"model: {_launch_ref(cand)}")
         if deg_line:
@@ -3268,6 +3329,8 @@ def _format_yaml_field(ind, k, v):
                         continue
                     if isinstance(iv, list):
                         rendered = "[" + ", ".join(_yaml_scalar(x) for x in iv) + "]"
+                    elif isinstance(iv, dict):
+                        rendered = "{" + ", ".join(f"{dk}: {_yaml_scalar(dv)}" for dk, dv in iv.items()) + "}"
                     else:
                         rendered = _yaml_scalar(iv)
                     prefix = f"{pad}  - " if first else f"{pad}    "
@@ -3584,6 +3647,9 @@ def exhaust(a):
     ap = _opt_str(a, "assets") or def_assets()
     group_arg = _opt_str(a, "group")
     model_arg = _opt_str(a, "model")
+    # A per-model quota inside a shared pool (Antigravity "Individual quota reached"): lock only that model.
+    individual = bool(model_arg and not group_arg and re.search(r"individual quota", a.message, re.IGNORECASE))
+    unparsed_txt = "" if t else " (unparsed, +1h default)"
 
     if not group_arg and not model_arg and os.path.exists(ap):
         cur = load_file(ap) or {}
@@ -3618,6 +3684,14 @@ def exhaust(a):
                 print(f"error: {a.provider}: no matching quota group for {group_arg or model_arg}")
                 _action("rerun exhaust with a --group name or --model id listed in the provider's groups in assets.yaml")
                 return 1
+            if individual:
+                name_map = _catalog_name_map(catalog)
+                raw_mid = model_arg.partition(":")[2] if ":" in model_arg else model_arg
+                cid = name_map.get(norm(raw_mid)) or raw_mid
+                target_g["exhausted_models"] = {**(target_g.get("exhausted_models") or {}), cid: until}
+                edit_provider(ap, a.provider, {"groups": groups}, now=now)
+                print(f"{a.provider} ({cid} in {target_g.get('name')}): individually exhausted until {until}{unparsed_txt}")
+                return _exhaust_next_action(a, ap)
             target_g["status"] = "exhausted"
             target_g["exhausted_until"] = until
             target_g["status_note"] = raw_note
@@ -3649,18 +3723,21 @@ def exhaust(a):
         raw_mid = (model_arg.partition(":")[2] if ":" in model_arg else model_arg) if model_arg else None
         cid = (name_map.get(norm(raw_mid)) or raw_mid) if raw_mid else None
         gname = group_arg or cid or "default"
-        seeded = {
-            "name": gname,
-            "models": [cid] if cid else [],
-            "status": "exhausted",
-            "exhausted_until": until,
-            "status_note": raw_note,
-        }
-        if not t:
-            seeded["unparsed"] = True
+        if individual:  # the first probe moves this lock into the pool that lists the model
+            seeded = {"name": gname, "models": [cid], "exhausted_models": {cid: until}}
+        else:
+            seeded = {
+                "name": gname,
+                "models": [cid] if cid else [],
+                "status": "exhausted",
+                "exhausted_until": until,
+                "status_note": raw_note,
+            }
+            if not t:
+                seeded["unparsed"] = True
         prov_st = (p or {}).get("status", "ok")
         edit_provider(ap, a.provider, {"status": prov_st, "groups": [seeded]}, now=now)
-        print(f"{a.provider} ({gname}): exhausted until {until}" + ("" if t else " (unparsed, +1h default)"))
+        print(f"{a.provider} ({gname}): {'individually ' if individual else ''}exhausted until {until}{unparsed_txt}")
         return _exhaust_next_action(a, ap)
 
     f = {"status": "exhausted", "exhausted_until": until, "status_note": quoted_note}
@@ -3998,7 +4075,7 @@ def _summarize_groups(groups, now):
             return (st_rank, r_ts, pct)
         return (st_rank, pct, r_ts)
 
-    return min(groups, key=_sort_key)
+    return min([g for g in groups if not _is_lock_carrier(g)] or groups, key=_sort_key)
 
 
 def _is_error_exhaustion(entry):
@@ -4234,6 +4311,24 @@ def _probe(a, ap, cache_home=None, unsaved=False):
                 if g_reset and g_reset <= now:
                     g.pop("resets_at", None)
                 cleared_names.append(g.get("name") or "group")
+        cleared_locks = []
+        for g in list(groups if has_groups else []):
+            locks = g.get("exhausted_models") if isinstance(g, dict) else None
+            if isinstance(locks, dict) and locks:
+                carrier = _is_lock_carrier(g)
+                live = {k: v for k, v in locks.items() if (parse_time(v, now) or now) > now}
+                cleared_locks.extend(k for k in locks if k not in live)
+                if live:
+                    g["exhausted_models"] = live
+                else:
+                    g.pop("exhausted_models", None)
+                    if carrier:
+                        groups.remove(g)
+        if cleared_locks:
+            has_groups = bool(groups)
+            edit_provider(ap, pid, {"groups": groups} if groups else {}, now=now, clear_keys=() if groups else ("groups",))
+            for mid in cleared_locks:
+                emit(f"{pid} ({mid}): expired individual lockout cleared -> ok")
 
         p_until = parse_time(p.get("exhausted_until") or p.get("resets_at"), now)
         p_expired = p.get("status") == "exhausted" and p_until is not None and p_until <= now
@@ -4318,7 +4413,8 @@ def _probe(a, ap, cache_home=None, unsaved=False):
             continue
 
         if "groups" in result:
-            existing_groups = [eg for eg in (p.get("groups") or []) if isinstance(eg, dict)]
+            all_groups = [eg for eg in (p.get("groups") or []) if isinstance(eg, dict)]
+            existing_groups = [eg for eg in all_groups if not _is_lock_carrier(eg)]
             g_model_map = {}
             for eg in existing_groups:
                 for em in eg.get("models") or []:
@@ -4366,6 +4462,18 @@ def _probe(a, ap, cache_home=None, unsaved=False):
                 for eg in existing_groups:
                     if id(eg) not in matched_ids:
                         persisted_groups.append(eg)
+            # Individual-quota model locks outlive the probe until they expire: each moves to the pool that lists its model,
+            # else to a one-model carrier entry that the provider summary ignores.
+            carriers = []
+            for eg in all_groups:
+                for mid, until in (eg.get("exhausted_models") or {}).items():
+                    if not _locked(eg, mid, None, now):
+                        continue
+                    tgt = next((g for g in persisted_groups if norm(mid) in {norm(x) for x in g.get("models") or []}), None)
+                    if tgt is None:
+                        tgt = {"name": mid, "models": [mid]}
+                        carriers.append(tgt)
+                    tgt["exhausted_models"] = {**(tgt.get("exhausted_models") or {}), mid: until}
 
             best = _summarize_groups(persisted_groups, now)
             st = best["status"]
@@ -4405,7 +4513,7 @@ def _probe(a, ap, cache_home=None, unsaved=False):
                 "status": st,
                 "used_percent": best["used_percent"],
                 "window": best["window"],
-                "groups": persisted_groups,
+                "groups": persisted_groups + carriers,
             }
             clear = []
             if best.get("resets_at"):
@@ -4617,7 +4725,7 @@ def log_cmd(a):
     }
     if _opt_bool(a, "provisional"):
         entry["provisional"] = True
-    if _opt_int(a, "unflagged") is not None:  # orchestrator: review findings its brief did not flag
+    if _opt_int(a, "unflagged") is not None:  # orchestrator: findings exposing a gap in its brief or plan (references/supervision.md)
         entry["unflagged"] = _opt_int(a, "unflagged")
     ref = _opt_str(a, "ref")
     if ref:
@@ -4915,7 +5023,7 @@ def _emergency_higher(catalog, assets, avail, now, cur_sc, exclude_model=None):
         if not m or st == "exhausted" or p.get("pay_per_use") or p.get("policy") == "avoid" or (exclude_model and m["id"] == exclude_model["id"]):
             continue
         g = model_group(p, mid, m)
-        if g is not None and group_state(g, now)[0] == "exhausted":
+        if g is not None and (group_state(g, now)[0] == "exhausted" or _locked(g, mid, m, now)):
             continue
         em_model = m.get("cost") == "emergency"
         nums = [(e, v) for e, v in (m.get("scores") or {}).items() if (em_model or e in emerg) and isinstance(v, (int, float)) and not isinstance(v, bool)]
@@ -5040,6 +5148,10 @@ def escalate_cmd(a):
     else:
         if role == "orchestrator":
             target, cross, notes = _orchestrator_escalation(catalog, assets, avail, floors, coord, now, cur, m_cur, cur_sc)
+            if cause == "findings" and cur_sc is not None and (target is None or cross):
+                _action(f"no same-provider rung above {here}: continue on it "
+                        "(the findings trigger asks for a provider switch only when the user requests one)")
+                return 0
             ask = None
         else:
             target, cross = escalation_target(catalog, assets, avail, floors, tier, now, cur, exclude_model=impl), False
@@ -5630,6 +5742,9 @@ def check(a):
                             errs.append(f"assets {p.get('id')} group {g.get('name')}: bad status")
                         if g.get("models") is not None and not isinstance(g.get("models"), list):
                             errs.append(f"assets {p.get('id')} group {g.get('name')}: models must be a list")
+                        em = g.get("exhausted_models")
+                        if em is not None and (not isinstance(em, dict) or any(parse_time(v, now) is None for v in em.values())):
+                            errs.append(f"assets {p.get('id')} group {g.get('name')}: exhausted_models must map model ids to timestamps")
         followups = loaded_assets.get("followups")
         if followups is not None:
             if not isinstance(followups, list):
@@ -5657,6 +5772,12 @@ def check(a):
                             errs.append(
                                 f"assets followups[{idx}].needs: bad value {needs_val} "
                                 "(expected provider:<id>/<tier|model> or provider:<id>/<group>/<tier>)"
+                            )
+                    elif needs_val.startswith("!"):
+                        fam, _, tier = needs_val[1:].lower().partition("/")
+                        if fam not in {str(m.get("family") or "").lower() for m in c.get("models", [])} or tier.upper() not in FLOORS:
+                            errs.append(
+                                f"assets followups[{idx}].needs: bad value {needs_val} (expected !<family>/<tier>: a catalog family and T1-T4)"
                             )
         if "compat" in loaded_assets:
             errs.append("assets compat: removed in 0.14.0 (legacy repo policy is no longer supported); delete the key")
@@ -6448,7 +6569,7 @@ def build_parser():
             p.add_argument("--reviewer")
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
-            p.add_argument("--unflagged", type=int, metavar="N", help="orchestrator: review findings its brief did not flag")
+            p.add_argument("--unflagged", type=int, metavar="N", help="orchestrator: findings exposing a gap in its brief or plan")
             p.add_argument("--repo", help=argparse.SUPPRESS)
             p.add_argument("--provisional", action="store_true",
                            help="work ran below the required tier (below_tier or ui_fallback proceed); needs a tier-meeting re-review")

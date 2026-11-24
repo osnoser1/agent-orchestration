@@ -95,6 +95,12 @@ action: ask the user once before switching the orchestrator's provider to antigr
 === escalate --role orchestrator --ref item-9 --current codex:gpt-6-2-sol@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 2 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 3
 action: ask the user once before switching the orchestrator's provider to antigravity/gemini-4-neon @ medium (phase boundary only); once approved, rerun this escalate with --approved --to antigravity:gemini-4-neon@medium
+=== escalate --role orchestrator --ref item-9 --current codex:gpt-6-2-sol@high --cause findings --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 2 --findings 9 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+action: no same-provider rung above codex/gpt-6-2-sol @ high: continue on it (the findings trigger asks for a provider switch only when the user requests one)
+=== escalate --role orchestrator --ref item-9 --current codex:gpt-6-2-sol@high --cause findings --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 2 --findings 9 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+action: no same-provider rung above codex/gpt-6-2-sol @ high: continue on it (the findings trigger asks for a provider switch only when the user requests one)
 === escalate --role orchestrator --ref item-9 --current antigravity:gemini-pro-orchestrator-neon@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 0 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 3
 note: --current pair added to --available
