@@ -33,11 +33,9 @@
   orch.py failure   "<error text>" --ref ITEM [--known REGEX=>ACTION ...] [--repo DIR] [--ledger F] [--assets F] [--now ISO]
   orch.py scope     --base REF [--max-files N] [--max-lines N] [--expect GLOB ...] [--repo DIR]
   orch.py policy    [--repo DIR] [--check] [--catalog F] [--assets F]
-  Every command also takes --full.
 
 Exit codes (only the final `action:` line carries the decision):
-  0  ok
-  1  validation or invocation error
+  0  ok;  1  validation or invocation error
   2  no candidate meets the required tier (select / exhaust with selection args), no reviewer is usable, or no higher rung (escalate)
   3  blocked by pre-flight quota threshold (probe >= low_threshold, or select / exhaust blocked on low/gated/fallback policy),
      or escalate stops at its cap or asks the user
