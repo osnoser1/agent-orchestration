@@ -37,9 +37,9 @@ class FakeRun:
         self.answers = {
             ("git", "status", "--porcelain"): (0, ""),
             ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "main\n"),
-            ("git", "fetch", "--quiet", "origin", "main"): (0, ""),
+            ("git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"): (0, ""),
             ("git", "rev-parse", "HEAD"): (0, "abc123\n"),
-            ("git", "rev-parse", "origin/main"): (0, "abc123\n"),
+            ("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"): (0, "abc123\n"),
             ("git", "remote", "get-url", "origin"): (0, "git@github.com:acme/widgets.git\n"),
             LOCAL_TAG: (1, ""),
             LS_REMOTE: (0, ""),
@@ -153,7 +153,7 @@ class TestBump(unittest.TestCase):
 
 
 class TestRelease(unittest.TestCase):
-    TAG = ("git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0")
+    TAG = ("git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0", "abc123")
     PUSH = ("git", "push", "origin", "refs/tags/v1.0.0")
     GH = ("gh", "release", "create", "v1.0.0", "--repo", "acme/widgets", "--generate-notes", "--verify-tag")
     ALL = [TAG, PUSH, GH]
@@ -174,11 +174,50 @@ class TestRelease(unittest.TestCase):
     def test_dirty_tree(self):
         self.assertBlocked(FakeRun({("git", "status", "--porcelain"): (0, " M x\n")}), "working tree is not clean")
 
-    def test_not_on_main(self):
-        self.assertBlocked(FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "feat/x\n")}), "not on main (on feat/x)")
+    def test_detached_head_at_origin_main_releases(self):
+        rc, lines = self.release(FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "HEAD\n")}))
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("note: releasing from detached HEAD at origin/main", lines)
+
+    def test_branch_at_origin_main_releases_with_note(self):
+        run = FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "feat/x\n")})
+        rc, lines = self.release(run, publish=True)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("note: releasing from feat/x at origin/main", lines)
+        self.assertEqual([c for c in run.calls if c in self.ALL], self.ALL)
+
+    def test_on_main_adds_no_branch_note(self):
+        rc, lines = self.release(FakeRun())
+        self.assertEqual(rc, 0, lines)
+        self.assertFalse(any("releasing from" in l for l in lines), lines)
+
+    def test_branch_not_at_origin_main_is_blocked(self):
+        self.assertBlocked(FakeRun({
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "feat/x\n"),
+            ("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"): (0, "def456\n"),
+        }), "HEAD is not origin/main")
+
+    def test_branch_note_only_after_head_matches_origin(self):
+        state = repo.release_state(".", run=FakeRun({
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "old\n"),
+            ("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"): (0, "def456\n"),
+        }), check_fn=lambda root: repo.Report())
+        self.assertFalse(any("releasing from" in n for n in state["notes"]), state["notes"])
+
+    def test_unreadable_branch_name_neither_blocks_nor_notes(self):
+        rc, lines = self.release(FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (128, "")}))
+        self.assertEqual(rc, 0, lines)
+        self.assertFalse(any("releasing from" in l for l in lines), lines)
+
+    def test_fetch_updates_origin_main_explicitly_and_tags_the_checked_commit(self):
+        run = FakeRun()
+        rc, _ = self.release(run, publish=True)
+        self.assertEqual(rc, 0)
+        self.assertIn(("git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"), run.calls)
+        self.assertIn(("git", "tag", "-a", "v1.0.0", "-m", "Release v1.0.0", "abc123"), run.calls)
 
     def test_head_differs_from_origin(self):
-        self.assertBlocked(FakeRun({("git", "rev-parse", "origin/main"): (0, "def456\n")}), "HEAD is not origin/main")
+        self.assertBlocked(FakeRun({("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"): (0, "def456\n")}), "HEAD is not origin/main")
 
     def test_failing_check_blocks_release(self):
         rc, lines = self.release(FakeRun(), publish=True, check_fn=failing_check)
@@ -197,13 +236,13 @@ class TestRelease(unittest.TestCase):
     def test_all_problems_are_reported_together(self):
         rc, lines = self.release(FakeRun({
             ("git", "status", "--porcelain"): (0, " M x\n"),
-            ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "dev\n"),
+            ("git", "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{commit}"): (0, "def456\n"),
         }))
         self.assertEqual(rc, 1)
         self.assertEqual(len([l for l in lines if l.startswith("error: release:")]), 2)
 
     def test_unreachable_origin_blocks_release(self):
-        self.assertBlocked(FakeRun({("git", "fetch", "--quiet", "origin", "main"): (1, "")}), "git fetch origin main failed")
+        self.assertBlocked(FakeRun({("git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"): (1, "")}), "git fetch origin main failed")
         self.assertBlocked(FakeRun({LS_REMOTE: (128, "")}), "cannot query origin tags")
 
     def test_origin_url_must_name_a_github_repo(self):
