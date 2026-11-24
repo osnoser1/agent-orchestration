@@ -7399,6 +7399,18 @@ class TestLandCheck(unittest.TestCase):
             if want == 1:
                 self.assertIn("preferences.land_hold_hours", out)
 
+    def test_usable_review_clears_every_matching_ref_and_names_stale_current_task(self):
+        fus = ("  - kind: preferred-review\n    ref: current-task\n    needs: '!anthropic/T4'\n"
+               "  - kind: preferred-review\n    ref: PR-37\n    needs: '!anthropic/T4'\n"
+               "  - kind: preferred-review\n    ref: bob's fix\n    needs: '!anthropic/T4'\n")
+        self.write_assets("  - id: antigravity\n    status: ok\n", fus)
+        rc, out = self.run_lc(ref="PR-37")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("followups --done current-task; followups --done PR-37", out)
+        self.assertIn("if current-task is from other work: followups --done current-task, then rerun land-check", out)
+        rc, out = self.run_lc(ref="bob's fix")
+        self.assertIn("""followups --done 'bob'"'"'s fix'""", out)
+
     def test_ref_normalization_current_task_mixed_kinds_and_dedup(self):
         ex30 = "  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-20T21:30:00+00:00\n"
         # Blocker: current-task entry matches any --ref and names stored ref in --done when usable
@@ -7422,12 +7434,12 @@ class TestLandCheck(unittest.TestCase):
         self.write_assets("  - id: antigravity\n    status: ok\n", mixed)
         rc, out = self.run_lc()
         self.assertEqual(rc, 3, out)
-        self.assertIn("would also clear ui-review", out)
+        self.assertIn("remove only the review entry of PR-37 (also has ui-review) in assets.yaml", out)
         self.assertNotIn("then clear it with followups --done PR-37", out)
         self.write_assets("  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-21T07:00:00+00:00\n", mixed)
         rc, out = self.run_lc()
         self.assertEqual(rc, 0, out)
-        self.assertIn("would also clear ui-review", out)
+        self.assertIn("(also has ui-review)", out)
         # Duplicate identical follow-ups group as (×2)
         self.write_assets(ex30, self.FU + self.FU)
         rc, out = self.run_lc()

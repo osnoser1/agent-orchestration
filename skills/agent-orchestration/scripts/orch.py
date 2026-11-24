@@ -4762,13 +4762,24 @@ def _land_ref_key(ref):
     return re.sub(r"[^a-z0-9]+", "-", _clean_ref(s).lower()).strip("-") if s else ""
 
 
-def _done_hint(all_fus, done_ref, lead="then clear it with"):
-    qref = f"'{done_ref}'" if re.search(r"[\s#'\"$]", done_ref) else done_ref
-    others = [x for x in all_fus if str(x.get("ref") or "") == done_ref and not _is_land_followup(x)]
-    if not others:
-        return f"{lead} followups --done {qref}"
-    kinds = ", ".join(dict.fromkeys(str(x.get("kind") or "other") for x in others))
-    return f"then remove only this entry in assets.yaml (followups --done {qref} would also clear {kinds})"
+def _done_hint(all_fus, done_refs, lead="then clear it with"):
+    """`followups --done` for every stored ref the review satisfies; refs that also carry other follow-up kinds are named
+    for a manual edit of assets.yaml instead, since `--done` clears every entry of a ref."""
+    import shlex
+    refs = list(dict.fromkeys(done_refs if isinstance(done_refs, (list, tuple)) else [done_refs]))
+    clear, manual = [], []
+    for ref in refs:
+        others = [x for x in all_fus if str(x.get("ref") or "") == ref and not _is_land_followup(x)]
+        short = ref if len(ref) <= 40 else ref[:37] + "..."
+        if others:
+            kinds = ", ".join(dict.fromkeys(str(x.get("kind") or "other") for x in others))
+            manual.append(f"{shlex.quote(short)} (also has {kinds})")
+        else:
+            clear.append("followups --done " + shlex.quote(ref if len(ref) <= 60 else short))
+    parts = ([f"{lead} " + "; ".join(clear)] if clear else [])
+    if manual:
+        parts.append("remove only the review entry of " + ", ".join(manual) + " in assets.yaml")
+    return "; ".join(parts) if parts else lead.replace(" with", "")
 
 
 def land_check_cmd(a):
@@ -4795,7 +4806,8 @@ def land_check_cmd(a):
     if not fus:
         _action("land now")
         return 0
-    lines, usable_pick, soon_dts, later_picks, all_needs = [], None, [], [], []
+    lines, usable_pick, soon_dts, later_picks, all_needs, usable_refs = [], None, [], [], [], []
+    stale_tail = "; if current-task is from other work: followups --done current-task, then rerun land-check" if any(x[2] for x in fus) else ""
     cutoff = now + timedelta(hours=hold_hours)
     for fu, stored_ref, any_ref in fus:
         need, fol = str(fu.get("needs") or "").strip(), fu.get("fail_on_low") is True
@@ -4803,7 +4815,8 @@ def land_check_cmd(a):
         usable = find_usable_in_available(catalog, assets, now, need, avail, fail_on_low=fol) if avail is not None else find_usable_in_assets(catalog, assets, now, need, fail_on_low=fol)
         if usable:
             status = "usable now"
-            usable_pick = usable_pick or (need, stored_ref)
+            usable_pick = usable_pick or need
+            usable_refs.append(stored_ref)
         else:
             matched, dt = _earliest_need_reset(catalog, assets, now, need, available=avail, fail_on_low=fol)
             if dt is not None:
@@ -4822,11 +4835,10 @@ def land_check_cmd(a):
     for line in _capped([f"{line} (×{n})" if n > 1 else line for line, n in counts.items()]):
         print(line)
     if usable_pick is not None:
-        need, done_ref = usable_pick
-        _action(f"hold landing: run the cross-family review now (needs {need}; select --role reviewer …), {_done_hint(all_fus, done_ref)}")
+        _action(f"hold landing: run the cross-family review now (needs {usable_pick}; select --role reviewer …), {_done_hint(all_fus, usable_refs)}{stale_tail}")
         return 3
     if soon_dts:
-        _action(f"hold landing until {_plus_margin(min(soon_dts))}; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check")
+        _action(f"hold landing until {_plus_margin(min(soon_dts))}; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check{stale_tail}")
         return 3
     if later_picks:
         dt, need, done_ref = min(later_picks, key=lambda x: x[0])
