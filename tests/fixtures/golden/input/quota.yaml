@@ -1,0 +1,44 @@
+# Golden-test quota state: one provider per status, an exhausted Antigravity group, an instance id, a pay-per-use API.
+version: 1
+preferences:
+  pay_per_use: never
+providers:
+  - id: claudeAgent
+    policy: preserve
+    status: ok
+  - id: claudeAgent_claude_extra
+    policy: normal
+    status: low
+    used_percent: 90
+  - id: codex
+    policy: ending
+    status: ok
+  - id: antigravity
+    policy: spend-first
+    status: ok
+    groups:
+      - name: "Gemini Models"
+        models: [gemini-4-neon, gemini-4-hydrogen, gemini-pro-orchestrator-neon, gemini-3-8-flash]
+        status: ok
+        used_percent: 50
+        window: 7d
+        resets_at: 2026-12-01T00:00:00+00:00
+      - name: "Claude and GPT models"
+        models: [claude-opus-5-5, claude-sonnet-5-5, gpt-oss-120b]
+        status: exhausted
+        used_percent: 100
+        window: 7d
+        resets_at: 2026-12-02T00:00:00+00:00
+  - id: spent
+    policy: normal
+    status: exhausted
+    exhausted_until: 2026-11-25T00:00:00+00:00
+  - id: openai-api
+    policy: avoid
+    pay_per_use: true
+    status: ok
+followups:
+  - kind: ui-review
+    ref: PR-4
+    needs: ui-ux-review
+    after: 2026-11-23T08:00:00+00:00

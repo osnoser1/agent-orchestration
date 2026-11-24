@@ -1,0 +1,151 @@
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@medium --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+escalate: implementer codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to codex/gpt-6-2-sol @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@medium --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+escalate: implementer codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to codex/gpt-6-2-sol @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current claudeAgent:claude-haiku-5-5@xhigh --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity standard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+note: --current pair added to --available
+escalate: implementer claudeAgent/claude-haiku-5-5 @ xhigh -> claudeAgent/claude-sonnet-5-5 @ high (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to claudeAgent/claude-sonnet-5-5 @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current claudeAgent:claude-haiku-5-5@xhigh --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity standard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+note: --current pair added to --available
+escalate: implementer claudeAgent/claude-haiku-5-5 @ xhigh -> claudeAgent/claude-sonnet-5-5 @ high (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to claudeAgent/claude-sonnet-5-5 @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@xhigh --cause rework --available codex:gpt-6-2-sol --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+action: ask the user once (only emergency models or efforts are higher: codex:gpt-6-2-sol@max); once approved, rerun this escalate with --approved --to codex:gpt-6-2-sol@max
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@xhigh --cause rework --available codex:gpt-6-2-sol --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+action: ask the user once (only emergency models or efforts are higher: codex:gpt-6-2-sol@max); once approved, rerun this escalate with --approved --to codex:gpt-6-2-sol@max
+=== escalate --role implementer --ref item-9 --current claudeAgent:claude-fable-5-2@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+note: --current pair added to --available
+note: no non-emergency effort reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
+note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
+note: emergency, skipped: claudeAgent:claude-fable-5-2
+action: ask the user once (current rung claudeAgent/claude-fable-5-2 @ high has no rated score, so no higher rung can be proven); once approved, rerun this escalate with --approved --to <P:M@E>
+=== escalate --role implementer --ref item-9 --current claudeAgent:claude-fable-5-2@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+note: --current pair added to --available
+  note: claudeAgent:claude-sonnet-5-5: no non-emergency effort reaches 50
+  note: codex:gpt-6-luna: no non-emergency effort reaches 50
+  note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
+  note: claudeAgent:claude-fable-5-2: emergency, skipped
+action: ask the user once (current rung claudeAgent/claude-fable-5-2 @ high has no rated score, so no higher rung can be proven); once approved, rerun this escalate with --approved --to <P:M@E>
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-1-terra@none --cause rework --available codex:gpt-6-2-astra,codex:gpt-6-1-terra,antigravity:gemini-pro-orchestrator-neon,claudeAgent:claude-fable-5-2 --complexity standard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+escalate: implementer codex/gpt-6-1-terra @ none -> codex/gpt-6-1-terra @ medium (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to codex/gpt-6-1-terra @ medium (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-1-terra@none --cause rework --available codex:gpt-6-2-astra,codex:gpt-6-1-terra,antigravity:gemini-pro-orchestrator-neon,claudeAgent:claude-fable-5-2 --complexity standard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+escalate: implementer codex/gpt-6-1-terra @ none -> codex/gpt-6-1-terra @ medium (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to codex/gpt-6-1-terra @ medium (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current antigravity:gemini-4-argon@low --cause rework --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --complexity standard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+note: --current pair added to --available
+escalate: implementer antigravity/gemini-4-argon @ low -> antigravity/gemini-4-argon @ high (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to antigravity/gemini-4-argon @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current antigravity:gemini-4-argon@low --cause rework --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --complexity standard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+note: --current pair added to --available
+escalate: implementer antigravity/gemini-4-argon @ low -> antigravity/gemini-4-argon @ high (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to antigravity/gemini-4-argon @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role reviewer --ref item-9 --current antigravity:gemini-4-neon@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --implementer gpt-6-2-sol --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+escalate: reviewer antigravity/gemini-4-neon @ high -> antigravity/gemini-4-neon @ xhigh (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the reviewer in place to antigravity/gemini-4-neon @ xhigh (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role reviewer --ref item-9 --current antigravity:gemini-4-neon@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --implementer gpt-6-2-sol --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+escalate: reviewer antigravity/gemini-4-neon @ high -> antigravity/gemini-4-neon @ xhigh (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the reviewer in place to antigravity/gemini-4-neon @ xhigh (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role reviewer --ref item-9 --current claudeAgent:claude-sonnet-5-5@xhigh --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --implementer claude-opus-5-5 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+escalate: reviewer claudeAgent/claude-sonnet-5-5 @ xhigh -> codex/gpt-6-2-sol @ medium (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the reviewer in place to codex/gpt-6-2-sol @ medium (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role reviewer --ref item-9 --current claudeAgent:claude-sonnet-5-5@xhigh --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --implementer claude-opus-5-5 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+escalate: reviewer claudeAgent/claude-sonnet-5-5 @ xhigh -> codex/gpt-6-2-sol @ medium (cause rework; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the reviewer in place to codex/gpt-6-2-sol @ medium (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role orchestrator --ref item-9 --current claudeAgent:claude-opus-5-5@medium --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 1 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota-orch.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+action: ask the user once before switching the orchestrator's provider to codex/gpt-6-2-sol @ medium (phase boundary only); once approved, rerun this escalate with --approved --to codex:gpt-6-2-sol@medium
+=== escalate --role orchestrator --ref item-9 --current claudeAgent:claude-opus-5-5@medium --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 1 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota-orch.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+action: ask the user once before switching the orchestrator's provider to codex/gpt-6-2-sol @ medium (phase boundary only); once approved, rerun this escalate with --approved --to codex:gpt-6-2-sol@medium
+=== escalate --role orchestrator --ref item-9 --current codex:gpt-6-2-sol@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 2 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+action: ask the user once before switching the orchestrator's provider to antigravity/gemini-4-neon @ medium (phase boundary only); once approved, rerun this escalate with --approved --to antigravity:gemini-4-neon@medium
+=== escalate --role orchestrator --ref item-9 --current codex:gpt-6-2-sol@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 2 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+action: ask the user once before switching the orchestrator's provider to antigravity/gemini-4-neon @ medium (phase boundary only); once approved, rerun this escalate with --approved --to antigravity:gemini-4-neon@medium
+=== escalate --role orchestrator --ref item-9 --current antigravity:gemini-pro-orchestrator-neon@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 0 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+note: --current pair added to --available
+note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
+note: coordinator mode excluded: adds a second coordinator under yours: antigravity:gemini-pro-orchestrator-neon
+action: ask the user once (current rung antigravity/gemini-pro-orchestrator-neon @ high has no rated score, so no higher rung can be proven); once approved, rerun this escalate with --approved --to <P:M@E>
+=== escalate --role orchestrator --ref item-9 --current antigravity:gemini-pro-orchestrator-neon@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --coordination 0 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+note: --current pair added to --available
+  note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
+  note: antigravity:gemini-pro-orchestrator-neon: coordinator mode excluded: adds a second coordinator under yours
+action: ask the user once (current rung antigravity/gemini-pro-orchestrator-neon @ high has no rated score, so no higher rung can be proven); once approved, rerun this escalate with --approved --to <P:M@E>
+=== escalate --role implementer --ref PR-1 --current codex:gpt-6-2-sol@xhigh --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 3
+action: escalation cap reached (2 of 2) for PR-1: report it to the user with the evidence
+=== escalate --role implementer --ref PR-1 --current codex:gpt-6-2-sol@xhigh --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 3
+action: escalation cap reached (2 of 2) for PR-1: report it to the user with the evidence
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@medium --cause findings --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --findings 1 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+action: no escalation (findings below threshold: 1 < 3); continue on codex/gpt-6-2-sol @ medium
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@medium --cause findings --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --findings 1 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+action: no escalation (findings below threshold: 1 < 3); continue on codex/gpt-6-2-sol @ medium
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@medium --cause findings --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --findings 4 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+escalate: implementer codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high (cause findings; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to codex/gpt-6-2-sol @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current codex:gpt-6-2-sol@medium --cause findings --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --findings 4 --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+escalate: implementer codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high (cause findings; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to codex/gpt-6-2-sol @ high (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current claudeAgent:claude-sonnet-5-5@high --cause status --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+note: --current pair added to --available
+escalate: implementer claudeAgent/claude-sonnet-5-5 @ high -> claudeAgent/claude-sonnet-5-5 @ xhigh (cause status; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to claudeAgent/claude-sonnet-5-5 @ xhigh (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current claudeAgent:claude-sonnet-5-5@high --cause status --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+note: --current pair added to --available
+escalate: implementer claudeAgent/claude-sonnet-5-5 @ high -> claudeAgent/claude-sonnet-5-5 @ xhigh (cause status; escalation 1 of 2)
+note: dry run: nothing logged
+action: switch the implementer in place to claudeAgent/claude-sonnet-5-5 @ xhigh (references/harnesses.md, Switch model in place) and continue; re-review after the change
+=== escalate --role implementer --ref item-9 --current codex:no-such-model@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 1
+error: --current codex:no-such-model@high is not a catalog provider:model@effort
+action: fix --current (provider:model@effort, as log --requested takes it) and rerun escalate
+=== escalate --role implementer --ref item-9 --current codex:no-such-model@high --cause rework --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --complexity hard --risk low --dry-run --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 1
+error: --current codex:no-such-model@high is not a catalog provider:model@effort
+action: fix --current (provider:model@effort, as log --requested takes it) and rerun escalate

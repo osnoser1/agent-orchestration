@@ -1,0 +1,9 @@
+version: 1
+role: reviewer
+title: "golden: reviewer launch"
+repo: demo/golden
+brief: brief.md
+implementer: codex:gpt-6.2-sol
+rubric: {size: 1, uncertainty: 1, deps: 1, consequences: 2, verification: 1, coordination: 0}
+available: [codex:gpt-6.2-sol, claudeAgent:claude-opus-5-5, antigravity:gemini-4-neon]
+workspace: {strategy: root}
