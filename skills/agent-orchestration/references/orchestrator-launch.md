@@ -28,7 +28,8 @@ Use a `<name>.launch.yaml` spec (`assets/orchestrator.launch.example.yaml`) when
    model: codex/gpt-6.2-sol @ medium (rung 1 of 2)
    ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high
    provider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high
-   escalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; at most 2 escalations; never step down mid-phase
+   escalate on (orch.py escalate): outcome rework | 3+ findings exposing a gap in your brief or plan (references/supervision.md) (workers: 3+) | a child's STATUS: ESCALATE
+   escalation cap: at most 2 escalations; never step down mid-phase
    caps: children per pool 2; budget antigravity 10, claudeAgent 4
    workspace: worktree from origin/main; children shared
    rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)

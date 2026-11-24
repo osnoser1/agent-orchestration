@@ -5869,7 +5869,10 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
             is_self=True, coordination=2, available=avail,
         )
         self.assertEqual(rc_e, 0, out_e)
-        self.assertIn("provider switch (phase boundary, ask the user first): ", out_e)
+        self.assertIn(sw_prefix, out_e)
+        # exhausting claudeAgent can change the switch rung, so the action names exhaust's own rung
+        sw_e = next(l for l in out_e.splitlines() if l.startswith(sw_prefix))[len(sw_prefix):]
+        named = f"; ask the user before the phase-boundary provider switch to {sw_e}; log it with --role orchestrator --rubric <rubric>"
         ex_last = out_e.strip().splitlines()[-1]
         self.assertTrue(ex_last.startswith("action: switch this conversation to "), out_e)
         self.assertIn("orch.py launch <spec>", ex_last)
@@ -6062,8 +6065,9 @@ class TestLaunchSpec(unittest.TestCase):
                 "model: codex/gpt-6.2-sol @ medium (rung 1 of 2)",
                 "ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high",
                 "provider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high",
-                "escalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; "
-                "at most 2 escalations; never step down mid-phase",
+                "escalate on (orch.py escalate): outcome rework | 3+ findings exposing a gap in your brief or plan (references/supervision.md) "
+                "(workers: 3+) | a child's STATUS: ESCALATE",
+                "escalation cap: at most 2 escalations; never step down mid-phase",
                 "caps: children per pool 2; budget antigravity 10, claudeAgent 4",
                 "workspace: worktree from origin/main; children shared",
                 "rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)",
@@ -6674,7 +6678,9 @@ class TestQualityEscalation(unittest.TestCase):
         ws = {"present": False}
         line = next(l for l in orch._build_launch_header("orchestrator", cand, [cand], None, 2, {}, ws, "r", "hard", "low", thresholds=(5, 4))
                     if l.startswith("escalate on"))
-        self.assertIn("| 4+ review findings your brief did not flag (workers: 5+) |", line)
+        self.assertIn("| 4+ findings exposing a gap in your brief or plan (references/supervision.md) (workers: 5+) |", line)
+        self.assertIn("escalation cap: at most 2 escalations; never step down mid-phase",
+                      orch._build_launch_header("orchestrator", cand, [cand], None, 2, {}, ws, "r", "hard", "low"))
 
     def test_history_by_rework_rate_effortless_rows_and_catalog(self):
         cat = os.path.join(self.dir, "cat.yaml")
@@ -6951,13 +6957,64 @@ class TestRetroSelectionRules(unittest.TestCase):
         _, gm = self.group()
         self.assertNotIn("exhausted_models", gm)
 
+    def test_probe_keeps_a_lock_whose_model_left_every_pool_on_a_carrier_entry(self):
+        with open(FIXTURE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        del data["command"]["data"]["groups"][2]  # no probed pool lists Argon any more
+        _write(self.assets, self.ULTRA.replace("    status: ok\n    probe:", "    status: ok\n    policy: normal\n    probe:")
+               .replace("        resets_at: 2026-11-26T15:58:04+00:00\n",
+                        f"        resets_at: 2026-11-26T15:58:04+00:00\n        exhausted_models: {{gemini-4-argon: {self.UNTIL}}}\n"))
+        for now in ("2026-11-20T21:05:00Z", "2026-11-20T21:10:00Z"):
+            rc, out = self.probe(data, now)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("antigravity: ok (1/2 groups usable", out)  # the carrier is not a pool
+            ag, carrier = self.group("gemini-4-argon")
+            self.assertEqual(carrier, {"name": "gemini-4-argon", "models": ["gemini-4-argon"], "exhausted_models": {"gemini-4-argon": self.UNTIL}})
+            self.assertEqual(ag["status"], "ok")
+            rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", risk="low",
+                                             now=now, full=False))
+            self.assertIn(f"note: model individually exhausted (until {self.UNTIL}): antigravity:gemini-4-argon", out)
+        # the provider status summarises real pools only: both exhausted -> exhausted despite the carrier
+        spent = copy.deepcopy(data)
+        for b in spent["command"]["data"]["groups"][0]["buckets"]:
+            b["remaining_fraction"] = 0
+        rc, out = self.probe(spent, "2026-11-20T21:15:00Z")
+        self.assertEqual(rc, 4, out)
+        self.assertEqual(self.group("gemini-4-argon")[0]["status"], "exhausted")
+        # once the lock expires, the carrier goes with it
+        rc, out = self.probe(data, "2026-11-21T00:00:00Z")
+        self.assertIn("antigravity (gemini-4-argon): expired individual lockout cleared -> ok", out)
+        self.assertEqual([g["name"] for g in orch.load_file(self.assets)["providers"][0]["groups"]],
+                         ["Gemini Models", "Claude and GPT models"])
+
+    def test_check_validates_lock_times_and_cross_family_needs(self):
+        def check(text):
+            ap = os.path.join(self.dir, "check.yaml")
+            _write(ap, text)
+            return _run(orch.check, _Args(assets=ap, catalog=CATALOG_PATH, now="2026-11-20T21:00:00Z", lockfile="", full=False))
+        good = self.ULTRA.replace("        window: 7d\n        resets_at:", f"        window: 7d\n        exhausted_models: {{gemini-4-argon: {self.UNTIL}}}\n        resets_at:")
+        good += "followups:\n  - kind: preferred-review\n    ref: PR-X\n    needs: \"!anthropic/T4\"\n"
+        rc, out = check(good)
+        self.assertEqual(rc, 0, out)
+        rc, out = check(good.replace(self.UNTIL, "soon").replace("!anthropic/T4", "!antropic/T9"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("assets antigravity group Gemini Models: exhausted_models must map model ids to timestamps", out)
+        self.assertIn("assets followups[0].needs: bad value !antropic/T9 (expected !<family>/<tier>", out)
+
     # ---------- C2: weak candidates rank after the others on T3+ work ----------
     def test_low_confidence_or_near_floor_candidate_ranks_last_on_t3_plus_only(self):
         rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon,antigravity:gemini-4-neon", risk="medium", full=False))
         self.assertEqual(rc, 0, out)  # T3: argon is confidence low (51), neon scores 55
         self.assertEqual(self.last(out), "action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts")
-        rc, out = _run(orch.select, _sel(self.assets, "codex:gpt-6-2-sol,antigravity:gemini-4-neon", risk="low", full=False))
-        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-neon @ medium now"), out)  # sol@medium 52.68 < 50 + 3
+        # weakness is judged on the best rated score: hydrogen tops out at 54 (>= 50 + 3), so the cheaper hydrogen@high still wins
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-hydrogen,antigravity:gemini-4-neon", risk="low", full=False))
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-hydrogen @ high now"), out)
+        # T4: opus tops out at 57.44 (< 57 + 3) and ranks after neon even from a spend-first pool
+        ap = os.path.join(self.dir, "spend.yaml")
+        _write(ap, self.PROVIDERS.replace("  - id: claudeAgent\n    status: ok\n", "  - id: claudeAgent\n    status: ok\n    policy: spend-first\n"))
+        rc, out = _run(orch.select, _sel(ap, "claudeAgent:claude-opus-5-5,antigravity:gemini-4-neon", complexity="frontier", risk="low",
+                                         full=False))
+        self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-neon @ high now"), out)
         # never removed: alone, the weak candidate is dispatched
         rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="medium", full=False))
         self.assertTrue(self.last(out).startswith("action: dispatch antigravity/gemini-4-argon @ high now"), out)
@@ -6970,6 +7027,17 @@ class TestRetroSelectionRules(unittest.TestCase):
                                          coordination=2, complexity=None, risk=None, full=False))
         self.assertEqual(rc, 0, out)
         self.assertIn("ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high", out)
+
+    def test_policy_ending_still_wins_when_no_candidate_is_weak(self):
+        ap = os.path.join(self.dir, "policies.yaml")
+        _write(ap, "version: 1\nproviders:\n"
+                   "  - id: antigravity\n    status: ok\n    policy: preserve\n"
+                   "  - id: claudeAgent\n    status: ok\n    policy: spend-first\n"
+                   "  - id: codex\n    status: ok\n    policy: ending\n    renews: 2026-11-22\n")
+        avail = ("claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6-2-sol,codex:gpt-6-luna,"
+                 "antigravity:gemini-4-neon,antigravity:claude-opus-5-5")
+        rc, out = _run(orch.select, _sel(ap, avail, risk="medium", full=False))
+        self.assertEqual((rc, self.last(out)), (0, "action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts"))
 
     # ---------- C6: a degraded high-risk review queues a cross-family re-review ----------
     def review(self, available, risk="high", **kw):
@@ -6993,6 +7061,23 @@ class TestRetroSelectionRules(unittest.TestCase):
         rc, out = _run(orch.followups_cmd, _fu(self.assets, due=True, available="claudeAgent:claude-opus-5-5,antigravity:gemini-4-neon",
                                                full=False))
         self.assertIn("followup due: [preferred-review] via antigravity: PR-X, current-task", out)
+
+    def test_defer_refusal_and_missing_ref_keep_the_cross_family_followup(self):
+        args = dict(ref="PR-X", role="reviewer", complexity="hard", risk="high", coordination=None, available="claudeAgent:claude-opus-5-5",
+                    implementer="claudeAgent:claude-opus-5-5", ui=False, prefer_family=None, below_tier=None, user_hold=False, needs=None,
+                    after=None, on_recovery=False, pool_busy=None, pool_cap=2, catalog=CATALOG_PATH, assets=self.assets,
+                    now="2026-11-20T21:00:00Z", full=False)
+        rc, out = _run(orch.defer_cmd, _Args(**args))
+        self.assertEqual(rc, 5, out)
+        self.assertEqual(self.last(out), "action: dispatch reviewer claudeAgent/claude-opus-5-5 @ xhigh now; do not defer PR-X; state the reviewer "
+                                         "degradation in the report; a cross-family re-review follow-up was recorded")
+        self.assertEqual(orch.load_file(self.assets)["followups"], [{"kind": "preferred-review", "ref": "PR-X", "needs": "!anthropic/T4"}])
+        # no assets file and no --ref: the action names the command that queues it
+        rc, out = _run(orch.select, _sel(os.path.join(self.dir, "none.yaml"), "claudeAgent:claude-opus-5-5", role="reviewer", complexity="hard",
+                                         implementer="claudeAgent:claude-opus-5-5", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.last(out).endswith("; no assets file and no --ref, so no follow-up was recorded: queue the cross-family re-review "
+                                                "with followups --add --kind preferred-review --ref <item> --needs '!anthropic/T4'"), out)
 
     def test_cross_family_step_one_and_lower_risk_record_nothing(self):
         rc, out = self.review("claudeAgent:claude-opus-5-5,antigravity:gemini-4-neon", ref="PR-X")

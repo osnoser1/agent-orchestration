@@ -134,7 +134,7 @@ rc: 0
 note: no non-emergency effort reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 followup due: [ui-review] via claudeAgent: PR-4
-action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts
+action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -144,13 +144,13 @@ followups:
 === select --complexity standard --risk high --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 tier T3 (>= 50)
-implementer: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
-reviewer (T4, different family): claudeAgent / claude-opus-5-5 @ xhigh (score 57.44, policy preserve)
+implementer: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+reviewer (T4, different family): antigravity / gemini-4-neon @ high (score 60, policy spend-first)
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort reaches 50
   note: codex:gpt-6-luna: no non-emergency effort reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 followup due: [ui-review] PR-4 (needs ui-ux-review; usable via claudeAgent)
-action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts
+action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -162,7 +162,7 @@ rc: 0
 note: no non-emergency effort reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 followup due: [ui-review] via claudeAgent: PR-4
-action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts
+action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -172,13 +172,13 @@ followups:
 === select --complexity hard --risk low --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 tier T3 (>= 50)
-implementer: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
-reviewer (T3, different family): codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+implementer: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+reviewer (T3, different family): antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort reaches 50
   note: codex:gpt-6-luna: no non-emergency effort reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 followup due: [ui-review] PR-4 (needs ui-ux-review; usable via claudeAgent)
-action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts
+action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -190,7 +190,7 @@ rc: 0
 note: no non-emergency effort reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 followup due: [ui-review] via claudeAgent: PR-4
-action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts
+action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -200,13 +200,13 @@ followups:
 === select --complexity hard --risk medium --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 tier T3 (>= 50)
-implementer: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
-reviewer (T3, different family): codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+implementer: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+reviewer (T3, different family): antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort reaches 50
   note: codex:gpt-6-luna: no non-emergency effort reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 followup due: [ui-review] PR-4 (needs ui-ux-review; usable via claudeAgent)
-action: dispatch antigravity/gemini-4-neon @ medium now; choose the reviewer when its step starts
+action: dispatch codex/gpt-6-2-sol @ medium now; choose the reviewer when its step starts
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -1939,7 +1939,7 @@ followups:
     after: 2026-11-23T08:00:00+00:00
 === select --role reviewer --complexity hard --risk medium --implementer claude-opus-5-5 --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
-action: dispatch reviewer antigravity/gemini-4-neon @ medium now
+action: dispatch reviewer codex/gpt-6-2-sol @ medium now
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -1950,8 +1950,8 @@ followups:
 rc: 0
 tier T3 (>= 50); reviewer tier T3 (>= 50)
 implementer (given): anthropic / claude-opus-5-5
-reviewer (T3, different family): antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
-action: dispatch reviewer antigravity/gemini-4-neon @ medium now
+reviewer (T3, different family): codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+action: dispatch reviewer codex/gpt-6-2-sol @ medium now
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2316,12 +2316,11 @@ followups:
 === select --role orchestrator --coordination 2 --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 orchestrator tier T3 (>= 50; coordination 2)
-ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high
-provider switch (phase boundary, ask the user first): codex/gpt-6-2-sol @ high
+ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
+provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: no non-emergency effort (<= high) reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-note: provider switch is not an escalation (score 54.89 <= ladder top 60)
-action: launch the orchestrator on antigravity/gemini-4-neon @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2331,16 +2330,15 @@ followups:
 === select --role orchestrator --coordination 2 --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 orchestrator tier T3 (>= 50; coordination 2)
-ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high
-provider switch (phase boundary, ask the user first): codex/gpt-6-2-sol @ high
-  rung: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
-  rung: antigravity / gemini-4-neon @ high (score 60, policy spend-first)
-  switch: codex / gpt-6-2-sol @ high (score 54.89, policy ending)
+ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
+provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
+  rung: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+  rung: codex / gpt-6-2-sol @ high (score 54.89, policy ending)
+  switch: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort (<= high) reaches 50
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-  note: provider switch is not an escalation (score 54.89 <= ladder top 60)
-action: launch the orchestrator on antigravity/gemini-4-neon @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2799,12 +2797,11 @@ followups:
 === select --role orchestrator --coordination 2 --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota-orch.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 orchestrator tier T3 (>= 50; coordination 2)
-ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high
-provider switch (phase boundary, ask the user first): codex/gpt-6-2-sol @ high
+ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
+provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: no non-emergency effort (<= high) reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-note: provider switch is not an escalation (score 54.89 <= ladder top 60)
-action: launch the orchestrator on antigravity/gemini-4-neon @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2814,16 +2811,15 @@ followups:
 === select --role orchestrator --coordination 2 --available claudeAgent:claude-opus-5-5,claudeAgent:claude-sonnet-5-5,codex:gpt-6.2-sol,codex:gpt-6-luna,antigravity:gemini-4-neon,antigravity:claude-opus-5-5 --assets <TMP>/quota-orch.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 orchestrator tier T3 (>= 50; coordination 2)
-ladder: antigravity/gemini-4-neon @ medium -> antigravity/gemini-4-neon @ high
-provider switch (phase boundary, ask the user first): codex/gpt-6-2-sol @ high
-  rung: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
-  rung: antigravity / gemini-4-neon @ high (score 60, policy spend-first)
-  switch: codex / gpt-6-2-sol @ high (score 54.89, policy ending)
+ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
+provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
+  rung: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+  rung: codex / gpt-6-2-sol @ high (score 54.89, policy ending)
+  switch: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort (<= high) reaches 50
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-  note: provider switch is not an escalation (score 54.89 <= ladder top 60)
-action: launch the orchestrator on antigravity/gemini-4-neon @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review

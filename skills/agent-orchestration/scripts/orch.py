@@ -489,6 +489,12 @@ def model_lock(g, mid, model_obj, now):
     return until, until is None or until <= now
 
 
+def _is_lock_carrier(g):
+    """A group entry holding only individual-quota locks (no pool data): seeded by `exhaust`, kept by `probe`, never a pool."""
+    return isinstance(g, dict) and bool(g.get("exhausted_models")) and not any(
+        k in g for k in ("status", "used_percent", "window", "exhausted_until", "resets_at"))
+
+
 def _locked(g, mid, model_obj, now):
     """The unexpired individual lock's end time, else None."""
     lock = model_lock(g, mid, model_obj, now) if g is not None else None
@@ -1056,8 +1062,9 @@ def candidates(
         policy = p.get("policy", "normal")
         pol_rank = POLICY.get(policy, 2)
         low_pen = 1 if (st == "low" and eff_floor >= t3_floor) else 0
-        # Weak on T3+ work: a low-confidence score, or one less than 3 points above the floor, may not really meet it.
-        weak = 1 if eff_floor >= t3_floor and (m.get("confidence") == "low" or be[1] < eff_floor + 3) else 0
+        # Weak on T3+ work: a low-confidence score, or a best rated score (<= max_effort) less than 3 points above the floor.
+        top = top_effort(m, emerg, max_effort=max_effort) or be
+        weak = 1 if eff_floor >= t3_floor and (m.get("confidence") == "low" or top[1] < eff_floor + 3) else 0
         nxt = candidate_next_reset(p, g, now)
         reset_ts = nxt.timestamp() if nxt else float("inf")
         ui_rank = (0 if "ui-ux-review" in (m.get("strengths") or []) else 1) if ui_primary else 0
@@ -1376,19 +1383,23 @@ def _eval_select_reviewer(
             f"dispatch reviewer {_cand_ref(pick[1])} now"
             + ("" if pick[0] == 1 else "; state the reviewer degradation in the report")
         )
+        fu_suffix = ""
         if a.risk == "high" and pick[0] != 1 and record_followups:  # queue the cross-family review this pick could not give
             needs = f"!{m['family']}/{rt}"
             if ref:
                 record_followup(ap, {"kind": "preferred-review", "ref": ref, "needs": needs}, now=now)
                 lines.append(f"followup recorded: [preferred-review] {ref} (needs {needs})")
-                act += "; a cross-family re-review follow-up was recorded"
+                fu_suffix = "; a cross-family re-review follow-up was recorded"
             else:
-                act += f"; no assets file and no --ref, so queue the cross-family re-review (needs {needs}) yourself"
+                fu_suffix = ("; no assets file and no --ref, so no follow-up was recorded: queue the cross-family re-review "
+                             f"with followups --add --kind preferred-review --ref <item> --needs '{needs}'")
+        act += fu_suffix
         return {
             "rc": 0,
             "kind": "dispatch_reviewer",
             "lines": lines,
             "action": act,
+            "followup_suffix": fu_suffix,
             "candidate": pick[1],
             "provider": pick[1]["provider"],
             "reviewer_stage": pick[0],
@@ -2558,6 +2569,7 @@ def _defer_refuse(res, ref):
         act = f"dispatch reviewer {_cand_ref(res['candidate'])} now; do not defer {ref}"
         if res["reviewer_stage"] != 1:
             act += "; state the reviewer degradation in the report"
+        act += res.get("followup_suffix") or ""
     elif res["kind"] == "dispatch_orchestrator":
         act = f"launch the orchestrator on {_cand_ref(res['candidate'])}; do not defer {ref}" + _orch_action_suffix(res.get("switch_rung"), name_rung=True)
     else:
@@ -2972,9 +2984,10 @@ def _build_launch_header(role, cand, same_rungs, switch_rung, max_esc, caps, ws,
             lines.append(f"provider switch (phase boundary, ask the user first): {_launch_ref(switch_rung)}")
         esc_noun = "escalation" if max_esc == 1 else "escalations"
         lines.append(
-            f"escalate on (orch.py escalate): outcome rework | {thresholds[1]}+ review findings your brief did not flag "
-            f"(workers: {thresholds[0]}+) | a child's STATUS: ESCALATE; at most {max_esc} {esc_noun}; never step down mid-phase"
+            f"escalate on (orch.py escalate): outcome rework | {thresholds[1]}+ findings exposing a gap in your brief or plan "
+            f"(references/supervision.md) (workers: {thresholds[0]}+) | a child's STATUS: ESCALATE"
         )
+        lines.append(f"escalation cap: at most {max_esc} {esc_noun}; never step down mid-phase")
     else:
         lines.append(f"model: {_launch_ref(cand)}")
         if deg_line:
@@ -4062,7 +4075,7 @@ def _summarize_groups(groups, now):
             return (st_rank, r_ts, pct)
         return (st_rank, pct, r_ts)
 
-    return min(groups, key=_sort_key)
+    return min([g for g in groups if not _is_lock_carrier(g)] or groups, key=_sort_key)
 
 
 def _is_error_exhaustion(entry):
@@ -4299,17 +4312,21 @@ def _probe(a, ap, cache_home=None, unsaved=False):
                     g.pop("resets_at", None)
                 cleared_names.append(g.get("name") or "group")
         cleared_locks = []
-        for g in (groups if has_groups else []):
+        for g in list(groups if has_groups else []):
             locks = g.get("exhausted_models") if isinstance(g, dict) else None
             if isinstance(locks, dict) and locks:
+                carrier = _is_lock_carrier(g)
                 live = {k: v for k, v in locks.items() if (parse_time(v, now) or now) > now}
                 cleared_locks.extend(k for k in locks if k not in live)
                 if live:
                     g["exhausted_models"] = live
                 else:
                     g.pop("exhausted_models", None)
+                    if carrier:
+                        groups.remove(g)
         if cleared_locks:
-            edit_provider(ap, pid, {"groups": groups}, now=now)
+            has_groups = bool(groups)
+            edit_provider(ap, pid, {"groups": groups} if groups else {}, now=now, clear_keys=() if groups else ("groups",))
             for mid in cleared_locks:
                 emit(f"{pid} ({mid}): expired individual lockout cleared -> ok")
 
@@ -4396,7 +4413,8 @@ def _probe(a, ap, cache_home=None, unsaved=False):
             continue
 
         if "groups" in result:
-            existing_groups = [eg for eg in (p.get("groups") or []) if isinstance(eg, dict)]
+            all_groups = [eg for eg in (p.get("groups") or []) if isinstance(eg, dict)]
+            existing_groups = [eg for eg in all_groups if not _is_lock_carrier(eg)]
             g_model_map = {}
             for eg in existing_groups:
                 for em in eg.get("models") or []:
@@ -4444,12 +4462,18 @@ def _probe(a, ap, cache_home=None, unsaved=False):
                 for eg in existing_groups:
                     if id(eg) not in matched_ids:
                         persisted_groups.append(eg)
-            # Individual-quota model locks outlive the probe: each stays on the pool that lists its model until it expires.
-            for eg in existing_groups:
+            # Individual-quota model locks outlive the probe until they expire: each moves to the pool that lists its model,
+            # else to a one-model carrier entry that the provider summary ignores.
+            carriers = []
+            for eg in all_groups:
                 for mid, until in (eg.get("exhausted_models") or {}).items():
+                    if not _locked(eg, mid, None, now):
+                        continue
                     tgt = next((g for g in persisted_groups if norm(mid) in {norm(x) for x in g.get("models") or []}), None)
-                    if tgt is not None and _locked(eg, mid, None, now):
-                        tgt["exhausted_models"] = {**(tgt.get("exhausted_models") or {}), mid: until}
+                    if tgt is None:
+                        tgt = {"name": mid, "models": [mid]}
+                        carriers.append(tgt)
+                    tgt["exhausted_models"] = {**(tgt.get("exhausted_models") or {}), mid: until}
 
             best = _summarize_groups(persisted_groups, now)
             st = best["status"]
@@ -4489,7 +4513,7 @@ def _probe(a, ap, cache_home=None, unsaved=False):
                 "status": st,
                 "used_percent": best["used_percent"],
                 "window": best["window"],
-                "groups": persisted_groups,
+                "groups": persisted_groups + carriers,
             }
             clear = []
             if best.get("resets_at"):
@@ -4701,7 +4725,7 @@ def log_cmd(a):
     }
     if _opt_bool(a, "provisional"):
         entry["provisional"] = True
-    if _opt_int(a, "unflagged") is not None:  # orchestrator: review findings its brief did not flag
+    if _opt_int(a, "unflagged") is not None:  # orchestrator: findings exposing a gap in its brief or plan (references/supervision.md)
         entry["unflagged"] = _opt_int(a, "unflagged")
     ref = _opt_str(a, "ref")
     if ref:
@@ -5718,6 +5742,9 @@ def check(a):
                             errs.append(f"assets {p.get('id')} group {g.get('name')}: bad status")
                         if g.get("models") is not None and not isinstance(g.get("models"), list):
                             errs.append(f"assets {p.get('id')} group {g.get('name')}: models must be a list")
+                        em = g.get("exhausted_models")
+                        if em is not None and (not isinstance(em, dict) or any(parse_time(v, now) is None for v in em.values())):
+                            errs.append(f"assets {p.get('id')} group {g.get('name')}: exhausted_models must map model ids to timestamps")
         followups = loaded_assets.get("followups")
         if followups is not None:
             if not isinstance(followups, list):
@@ -5745,6 +5772,12 @@ def check(a):
                             errs.append(
                                 f"assets followups[{idx}].needs: bad value {needs_val} "
                                 "(expected provider:<id>/<tier|model> or provider:<id>/<group>/<tier>)"
+                            )
+                    elif needs_val.startswith("!"):
+                        fam, _, tier = needs_val[1:].lower().partition("/")
+                        if fam not in {str(m.get("family") or "").lower() for m in c.get("models", [])} or tier.upper() not in FLOORS:
+                            errs.append(
+                                f"assets followups[{idx}].needs: bad value {needs_val} (expected !<family>/<tier>: a catalog family and T1-T4)"
                             )
         if "compat" in loaded_assets:
             errs.append("assets compat: removed in 0.14.0 (legacy repo policy is no longer supported); delete the key")
@@ -6536,7 +6569,7 @@ def build_parser():
             p.add_argument("--reviewer")
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
-            p.add_argument("--unflagged", type=int, metavar="N", help="orchestrator: review findings its brief did not flag")
+            p.add_argument("--unflagged", type=int, metavar="N", help="orchestrator: findings exposing a gap in its brief or plan")
             p.add_argument("--repo", help=argparse.SUPPRESS)
             p.add_argument("--provisional", action="store_true",
                            help="work ran below the required tier (below_tier or ui_fallback proceed); needs a tier-meeting re-review")
