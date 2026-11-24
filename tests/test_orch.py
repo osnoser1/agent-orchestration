@@ -6643,7 +6643,8 @@ class TestQualityEscalation(unittest.TestCase):
             "event": "escalate", "role": "orchestrator", "ref": "PR-7", "from": "antigravity:gemini-4-argon@high",
             "to": "codex:gpt-6-2-sol@medium", "cause": "status", "approved": True})
         # unknown current score: the user's approval stands in for the proof
-        rc, lines = self.esc("claude:claude-fable-5-2@high", "claude:claude-fable-5-2", approved=True, to="claude:claude-opus-5-5@xhigh", ref="PR-8")
+        rc, lines = self.esc("claude:claude-fable-5-2@high", "claude:claude-fable-5-2,claude:claude-opus-5-5", approved=True,
+                             to="claude:claude-opus-5-5@xhigh", ref="PR-8")
         self.assertEqual(rc, 0, lines)
         self.assertEqual(self.rows()[-1]["to"], "claude:claude-opus-5-5@xhigh")
         n = len(self.rows())
@@ -6659,8 +6660,8 @@ class TestQualityEscalation(unittest.TestCase):
             self.assertTrue(lines[-1].startswith("action: fix "), lines)
         self.assertEqual(len(self.rows()), n)
         ap = self.prefs("  escalation: {findings: 3, max: 1}\n")  # the cap still applies
-        rc, lines = self.esc("claude:claude-fable-5-2@high", "claude:claude-fable-5-2", approved=True, to="claude:claude-opus-5-5@xhigh",
-                             ref="PR-8", assets=ap)
+        rc, lines = self.esc("claude:claude-fable-5-2@high", "claude:claude-fable-5-2,claude:claude-opus-5-5", approved=True,
+                             to="claude:claude-opus-5-5@xhigh", ref="PR-8", assets=ap)
         self.assertEqual(lines[-1], "action: escalation cap reached (1 of 1) for PR-8: report it to the user with the evidence")
 
     def test_current_pair_added_by_catalog_id(self):
@@ -7095,7 +7096,8 @@ class TestRetroSelectionRules(unittest.TestCase):
         self.assertFalse(match(by["claude-opus-5-5"], "!anthropic/T4"))  # same family
         self.assertFalse(match(by["gemini-4-hydrogen"], "!anthropic/T4"))  # xhigh 54 < 57
         self.assertFalse(match(by["gpt-6-2-sol"], "!anthropic/T4"))  # 57.26 only at the emergency effort max
-        self.assertTrue(match(by["gemini-4-hydrogen"], "!anthropic"))
+        self.assertFalse(match(by["gemini-4-hydrogen"], "!anthropic"))
+        self.assertFalse(match(by["gemini-4-hydrogen"], "!anthropic/"))
         self.assertFalse(match(by["claude-haiku-5-5"], "!anthropic"))
 
     # ---------- C4: the orchestrator's findings trigger without a same-provider rung ----------
@@ -7124,6 +7126,167 @@ class TestRetroSelectionRules(unittest.TestCase):
             rc, lines = self.esc("antigravity:gemini-4-argon@high", "antigravity:gemini-4-argon,codex:gpt-6-2-sol", cause)
             self.assertEqual(rc, 3, lines)
             self.assertTrue(lines[-1].startswith("action: ask the user once before switching the orchestrator's provider to "), lines)
+
+
+class TestCrossFamilyReviewFixes(unittest.TestCase):
+    """Regressions for cross-family review findings 1-10 on PRs #32 and #37."""
+
+    NOW = "2026-11-20T21:00:00Z"
+    INDIV = "Individual quota reached. You have reached the quota for this model. Resets in 2h47m8s."
+    UNTIL = "2026-11-20T23:47:08+00:00"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.assets = os.path.join(self.dir, "assets.yaml")
+        self.ledger = os.path.join(self.dir, "ledger.jsonl")
+        _write(self.assets, "version: 1\nproviders:\n  - id: antigravity\n    status: ok\n  - id: claude\n    status: ok\n  - id: codex\n    status: ok\n")
+
+    def esc(self, current, available, role="implementer", cause="rework", ref="PR-F", **kw):
+        base = dict(assets=self.assets, catalog=CATALOG_PATH, now=self.NOW, ledger=self.ledger, role=role, ref=ref, current=current,
+                    cause=cause, available=available, findings=None, complexity=None, risk=None, coordination=None, implementer=None,
+                    dry_run=True, repo="demo", full=False, approved=False, to=None)
+        if role in ("implementer", "reviewer"):
+            base.update(complexity="hard", risk="low")
+        else:
+            base.update(coordination=0)
+        base.update(kw)
+        rc, out = _run(orch.escalate_cmd, _Args(**base))
+        return rc, out.strip().splitlines()
+
+    # Finding 1: effort step must meet the role's tier floor (reviewer may fall below only when no tier-meeting candidate exists)
+    def test_f1_effort_step_respects_tier_floor_after_reclassification(self):
+        avail = "claude:claude-haiku-5-5,claude:claude-opus-5-5,codex:gpt-6-2-sol"
+        rc, lines = self.esc("claude:claude-haiku-5-5@medium", avail)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> claude/claude-opus-5-5 @ high", lines[0])
+        rc, lines = self.esc("claude:claude-haiku-5-5@medium", avail, role="reviewer", implementer="claude:claude-opus-5-5")
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> codex/gpt-6-2-sol @ medium", lines[0])
+        # reviewer with no tier-meeting candidate may still climb haiku's effort below T3
+        rc, lines = self.esc("claude:claude-haiku-5-5@medium", "claude:claude-haiku-5-5,codex:gpt-6-2-sol",
+                             role="reviewer", implementer="codex:gpt-6-2-sol")
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> claude/claude-haiku-5-5 @ high", lines[0])
+
+    # Finding 2: orchestrator escalation searches full auto/explicit rungs without ladder slicing
+    def test_f2_orchestrator_escalation_full_rung_search(self):
+        # (a) auto ladder not truncated at max_escalations + 1 from cheapest start
+        avail_a = "claude:claude-haiku-5-5,claude:claude-sonnet-5-5,claude:claude-opus-5-5"
+        rc, lines = self.esc("claude:claude-sonnet-5-5@medium", avail_a, role="orchestrator", coordination=0)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> claude/claude-sonnet-5-5 @ high", lines[0])
+        rc, lines = self.esc("claude:claude-sonnet-5-5@high", avail_a, role="orchestrator", coordination=0)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> claude/claude-opus-5-5 @ medium", lines[0])
+        # (b) effort step first before same-provider model step
+        rc, lines = self.esc("codex:gpt-6-2-sol@low", "codex:gpt-6-1-terra,codex:gpt-6-2-sol", role="orchestrator", coordination=0)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> codex/gpt-6-2-sol @ medium", lines[0])
+        # (c) other-provider search inspects all providers, not just one pre-sliced switch rung
+        ap = os.path.join(self.dir, "three.yaml")
+        _write(ap, "version: 1\nproviders:\n  - id: claude\n    status: ok\n    policy: ending\n"
+                   "  - id: codex\n    status: ok\n    policy: normal\n  - id: antigravity\n    status: ok\n    policy: preserve\n")
+        avail_c = "claude:claude-opus-5-5,codex:gpt-6-2-sol,antigravity:gemini-4-neon"
+        rc, lines = self.esc("codex:gpt-6-2-sol@high", avail_c, role="orchestrator", coordination=1, assets=ap)
+        self.assertEqual(rc, 3, lines)
+        self.assertIn("antigravity/gemini-4-neon @ medium", lines[-1])
+        # explicit ladder searches all surviving entries beyond max_escalations + 1
+        exp = os.path.join(self.dir, "exp.yaml")
+        _write(exp, "version: 1\npreferences:\n  orchestrator:\n    max_escalations: 1\n"
+                    "    ladder: [claude:claude-haiku-5-5@medium, claude:claude-sonnet-5-5@medium, claude:claude-sonnet-5-5@high, claude:claude-opus-5-5@high]\n"
+                    "providers:\n  - id: claude\n    status: ok\n")
+        rc, lines = self.esc("claude:claude-sonnet-5-5@medium", avail_a, role="orchestrator", coordination=0, assets=exp)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("-> claude/claude-sonnet-5-5 @ high", lines[0])
+
+    # Finding 3: --approved --to emergency effort order (max < ultra) and provider:model pair check
+    def test_f3_approved_to_emergency_order_and_pair_offer(self):
+        rc, lines = self.esc("claude:claude-fable-5-2@max", "claude:claude-fable-5-2", approved=True, to="claude:claude-fable-5-2@ultra")
+        self.assertEqual(rc, 0, lines)
+        rc, lines = self.esc("claude:claude-fable-5-2@ultra", "claude:claude-fable-5-2", approved=True, to="claude:claude-fable-5-2@max")
+        self.assertEqual(rc, 1, lines)
+        # unoffered model on an offered provider is rejected; --current pair itself is accepted even if omitted from --available
+        rc, lines = self.esc("claude:claude-sonnet-5-5@xhigh", "claude:claude-sonnet-5-5", approved=True, to="claude:claude-opus-5-5@xhigh")
+        self.assertEqual(rc, 1, lines)
+        rc, lines = self.esc("codex:gpt-6-2-sol@xhigh", "claude:claude-opus-5-5", approved=True, to="codex:gpt-6-2-sol@max")
+        self.assertEqual(rc, 0, lines)
+
+    # Finding 4: _phase_effort review never steps to a lower-scoring effort (terra none 30.52 -> medium 38.17, not low 29.42)
+    def test_f4_phase_effort_review_requires_strictly_higher_score(self):
+        ap = os.path.join(self.dir, "pe.yaml")
+        _write(ap, "version: 1\npreferences:\n  orchestrator:\n    phase_effort: on\nproviders:\n  - id: codex\n    status: ok\n")
+        rc, out = _run(orch.select, _sel(ap, "codex:gpt-6-1-terra", role="orchestrator", coordination=0, complexity=None, risk=None,
+                                         phase="review", current="codex:gpt-6-1-terra@none", full=False))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("phase effort: review -> codex/gpt-6-1-terra @ medium", out)
+
+    # Finding 5: history --by normalises provider and model even when effort is missing (@?)
+    def test_f5_history_by_merges_effortless_provider_and_model_spellings(self):
+        with open(self.ledger, "w", encoding="utf-8") as fh:
+            for row in ({"event": "select", "ref": "PR-1", "provider": "claudeAgent", "model": "Claude Opus 5.5"},
+                        {"event": "select", "ref": "PR-2", "provider": "claudeagent", "model": "claude-opus-5-5"}):
+                fh.write(json.dumps(row) + "\n")
+        rc, out = _run(orch.history_cmd, _Args(ledger=self.ledger, assets=self.assets, ref=None, last=None, now=self.NOW,
+                                               full=False, role="implementer", by="model,effort"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("claudeagent:claude-opus-5-5@?: 2 item(s)", out)
+        self.assertIn("ok: 1 combination(s) for role implementer", out)
+
+    # Findings 6, 8, 9: carrier resume needs, second pre-probe individual lock, find_usable_in_assets ignores carriers
+    def test_legacy_carrier_named_resume_need_still_matches_its_model(self):
+        cat = orch.load_file(os.path.join(os.path.dirname(orch.__file__), "..", "catalog.yaml"))
+        argon = next(m for m in cat["models"] if m["id"] == "gemini-4-argon")
+        need = "provider:antigravity/gemini-4-argon/T3"  # written by v0.21.0/0.21.1
+        self.assertTrue(orch._model_matches_need(argon, need, provider_id="antigravity", group_name="Gemini Models"))
+        neon = next(m for m in cat["models"] if m["id"] == "gemini-4-neon")
+        self.assertFalse(orch._model_matches_need(neon, need, provider_id="antigravity", group_name="Gemini Models"))
+
+    def test_f6_f8_f9_individual_locks_carriers_and_resume_needs(self):
+        _write(self.assets, "version: 1\nproviders:\n  - id: antigravity\n    status: ok\n    probe: {kind: antigravity}\n")
+        # F8: two individual locks before first probe both succeed
+        self.assertEqual(_run(orch.exhaust, _exh(self.assets, "antigravity", self.INDIV, model="gemini-4-argon"))[0], 0)
+        rc, out = _run(orch.exhaust, _exh(self.assets, "antigravity", self.INDIV, model="gemini-4-hydrogen"))
+        self.assertEqual(rc, 0, out)
+        # F9: pre-probe carrier does not hide usable gemini-4-neon for !anthropic/T4; after expiry carrier is not a pool
+        cat = orch.load_file(CATALOG_PATH)
+        self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now(self.NOW), "!anthropic/T4"), ["antigravity"])
+        self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now("2026-11-21T00:00:00Z"), "provider:antigravity/gemini-4-argon"), ["antigravity"])
+        # a legacy carrier-named need (v0.21.0/0.21.1) becomes due once the lock expired (23:47) instead of never
+        self.assertEqual(orch.find_usable_in_assets(cat, orch.load_file(self.assets), orch.get_now("2026-11-21T00:00:00Z"), "provider:antigravity/gemini-4-argon/T3"), ["antigravity"])
+        # F6 (carrier): resume needs is provider:antigravity/gemini-4-argon (never carrier group /T3), stays due after probe moves it
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="low", ref="PR-C", full=False))
+        self.assertEqual(rc, 4, out)
+        self.assertEqual(orch.load_file(self.assets)["followups"][0]["needs"], "provider:antigravity/gemini-4-argon")
+        # F6 (real ok pool): individual lock emits model-scoped need so unlocked siblings do not mark it ready early
+        _write(self.assets, TestRetroSelectionRules.ULTRA)
+        self.assertEqual(_run(orch.exhaust, _exh(self.assets, "antigravity", self.INDIV, model="gemini-4-argon"))[0], 0)
+        rc, out = _run(orch.select, _sel(self.assets, "antigravity:gemini-4-argon", risk="low", ref="PR-P", full=False))
+        self.assertEqual(rc, 4, out)
+        self.assertEqual(orch.load_file(self.assets)["followups"][0]["needs"], "provider:antigravity/gemini-4-argon")
+        self.assertEqual(orch.pending_ready_followups(cat, orch.load_file(self.assets), orch.get_now("2026-11-20T21:01:00Z")), [])
+        self.assertEqual(len(orch.pending_ready_followups(cat, orch.load_file(self.assets), orch.get_now("2026-11-21T00:00:00Z"))), 1)
+
+    # Finding 7: flow-map key unquoting, colon model ids, alias dedup in exhaust, latest timestamp in model_lock
+    def test_f7_yaml_quoted_colon_keys_and_model_lock_shadowing(self):
+        parsed = orch.load_yaml('m: {"gemini-4-argon": 2026-11-20T23:47:08+00:00, "qwen3:32b": "2026-11-20T23:00:00+00:00"}\n')
+        self.assertEqual(parsed["m"], {"gemini-4-argon": self.UNTIL, "qwen3:32b": "2026-11-20T23:00:00+00:00"})
+        # colon model id round-trips through exhaust and passes check
+        _write(self.assets, "version: 1\nproviders:\n  - id: ollama\n    status: ok\n")
+        self.assertEqual(_run(orch.exhaust, _exh(self.assets, "ollama", self.INDIV, model="qwen3:32b"))[0], 0)
+        self.assertEqual(orch.load_file(self.assets)["providers"][0]["groups"][0]["exhausted_models"], {"qwen3:32b": self.UNTIL})
+        self.assertEqual(_run(orch.check, _Args(assets=self.assets, catalog=CATALOG_PATH, now=self.NOW, lockfile="", full=False))[0], 0)
+        # expired alias/display-name key must not shadow a fresh lock; exhaust drops alias duplicates
+        g = {"exhausted_models": {"Gemini 4 Argon": "2026-11-20T20:00:00+00:00", "gemini-4-argon": self.UNTIL}}
+        m_argon = orch._rung_model(orch.load_file(CATALOG_PATH), "gemini-4-argon")
+        until, expired = orch.model_lock(g, "gemini-4-argon", m_argon, orch.get_now(self.NOW))
+        self.assertFalse(expired)
+        self.assertEqual(until.isoformat(timespec="seconds"), self.UNTIL)
+        _write(self.assets, TestRetroSelectionRules.ULTRA.replace(
+            "        window: 7d\n", '        window: 7d\n        exhausted_models: {"Gemini 4 Argon": 2026-11-20T20:00:00+00:00}\n', 1))
+        self.assertEqual(_run(orch.exhaust, _exh(self.assets, "antigravity", self.INDIV, model="gemini-4-argon"))[0], 0)
+        self.assertEqual(orch.load_file(self.assets)["providers"][0]["groups"][0]["exhausted_models"], {"gemini-4-argon": self.UNTIL})
 
 
 if __name__ == "__main__":

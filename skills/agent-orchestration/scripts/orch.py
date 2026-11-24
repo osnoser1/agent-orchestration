@@ -238,13 +238,31 @@ def _split(s):
     return parts
 
 
+def _split_kv(p):
+    q = None
+    for i, c in enumerate(p):
+        if q:
+            if c == q:
+                q = None
+        elif c in "\"'":
+            q = c
+        elif c == ":":
+            return p[:i], p[i + 1 :]
+    return p, ""
+
+
+def _unquote_key(k):
+    k = k.strip()
+    return k[1:-1] if len(k) > 1 and k[0] in "\"'" and k[-1] == k[0] else k
+
+
 def _value(s):
     s = s.strip()
     if s.startswith("{") and s.endswith("}"):
         d = {}
         for p in _split(s[1:-1]):
-            k, _, v = p.partition(":")
-            d[k.strip()] = _value(v)
+            k, v = _split_kv(p)
+            d[_unquote_key(k)] = _value(v)
         return d
     if s.startswith("[") and s.endswith("]"):
         return [_value(p) for p in _split(s[1:-1])]
@@ -272,8 +290,8 @@ def load_yaml(text):
             return res, i
         d = {}
         while i < len(lines) and lines[i][0] == ind and not lines[i][1].startswith("- "):
-            k, _, v = lines[i][1].partition(":")
-            k, v = k.strip(), v.strip()
+            k, v = _split_kv(lines[i][1])
+            k, v = _unquote_key(k), v.strip()
             i += 1
             if v == "":
                 if i < len(lines) and lines[i][0] > ind:
@@ -483,9 +501,11 @@ def model_lock(g, mid, model_obj, now):
     if not isinstance(locks, dict):
         return None
     keys = _model_keys(mid, model_obj)
-    until = next((parse_time(v, now) for k, v in locks.items() if norm(k) in keys), False)
-    if until is False:
+    matches = [parse_time(v, now) for k, v in locks.items() if norm(k) in keys]
+    if not matches:
         return None
+    valid = [dt for dt in matches if dt is not None]
+    until = max(valid) if valid else None
     return until, until is None or until <= now
 
 
@@ -578,15 +598,17 @@ def _model_matches_need(m, need, floors=None, emerg=None, provider_id=None, grou
         if len(parts) == 2:
             return _model_matches_need(m, parts[1], floors=floors, emerg=emerg)
         if len(parts) == 3:
-            if not group_name or norm(group_name) != norm(parts[1]):
+            # v0.21.0/0.21.1 named a lock carrier after its model (`provider:<p>/<model>/<tier>`): match that model too.
+            own = norm(parts[1]) in {norm(x) for x in [m.get("id"), m.get("name"), *(m.get("aliases") or [])] if x}
+            if not own and (not group_name or norm(group_name) != norm(parts[1])):
                 return False
             return _model_matches_need(m, parts[2], floors=floors, emerg=emerg)
         return False
-    if n.startswith("!"):  # `!<family>/<tier>`: a model of any other family, meeting the tier when one is given
-        fam, _, tier = n[1:].partition("/")
-        if not fam or str(m.get("family") or "").lower() == fam:
+    if n.startswith("!"):  # `!<family>/<tier>`: a model of any other family, meeting the tier
+        fam, sep, tier = n[1:].partition("/")
+        if not sep or not fam or tier.upper() not in FLOORS or str(m.get("family") or "").lower() == fam:
             return False
-        return not tier or _model_matches_need(m, tier, floors=floors, emerg=emerg)
+        return _model_matches_need(m, tier, floors=floors, emerg=emerg)
     t_key = n[len("tier:"):].upper() if n.startswith("tier:") else n.upper()
     if t_key in FLOORS:
         fl = (floors or FLOORS).get(t_key, FLOORS[t_key])
@@ -642,14 +664,15 @@ def find_usable_in_available(catalog, assets, now, need, available, fail_on_low=
         if p.get("pay_per_use") or p.get("policy") == "avoid" or prov_st in blocked:
             continue
         g = model_group(p, mid, m)
-        gname = g.get("name") if isinstance(g, dict) else None
+        real_g = g if isinstance(g, dict) and not _is_lock_carrier(g) else None
+        gname = real_g.get("name") if real_g is not None else None
         if not _model_matches_need(m, need, floors=floors, emerg=emerg, provider_id=prov, group_name=gname):
             continue
         if g is not None:
             gst, _ = group_state(g, now)
             if gst in blocked or _locked(g, mid, m, now):
                 continue
-            _add(f"{prov} ({g.get('name') or 'group'})")
+            _add(f"{prov} ({real_g.get('name') or 'group'})" if real_g is not None else prov)
         else:
             _add(prov)
 
@@ -682,10 +705,9 @@ def find_usable_in_assets(catalog, assets, now, need, fail_on_low=False):
         if prov_st in blocked:
             continue
         groups = p.get("groups")
-        if isinstance(groups, list) and groups and partitions_quota(p):
-            for g in groups:
-                if not isinstance(g, dict):
-                    continue
+        real_groups = [g for g in groups if isinstance(g, dict) and not _is_lock_carrier(g)] if isinstance(groups, list) else []
+        if real_groups and partitions_quota(p):
+            for g in real_groups:
                 gst, _ = group_state(g, now)
                 if gst in blocked:
                     continue
@@ -719,7 +741,7 @@ def find_usable_in_assets(catalog, assets, now, need, fail_on_low=False):
                             floors=floors,
                             emerg=emerg,
                             provider_id=pid,
-                            group_name=cap.get("name") if cap is not None else None,
+                            group_name=cap.get("name") if cap is not None and not _is_lock_carrier(cap) else None,
                         )
                     ):
                         _add(pid)
@@ -927,7 +949,8 @@ def exhausted_tier_candidates(
             {
                 "pair": pair,
                 "provider": prov,
-                "group": g.get("name") if isinstance(g, dict) else None,
+                "group": g.get("name") if isinstance(g, dict) and not _is_lock_carrier(g) else None,
+                "individual_only": bool(lock_until and prov_st != "exhausted" and gst != "exhausted"),
                 "model": m,
                 "effort": be[0],
                 "score": be[1],
@@ -943,7 +966,10 @@ def exhausted_tier_candidates(
     dts_all = [c["reset_dt"] for c in ex_cands if c["reset_dt"] is not None]
     earliest_dt = min(dts_all) if dts_all else None
     ex_scopes = {(c["provider"], c["group"]) for c in ex_cands}
-    if ex_cands and len(ex_scopes) == 1 and ex_cands[0]["group"]:
+    indiv_models = {(c["provider"], c["model"]["id"]) for c in ex_cands}
+    if ex_cands and all(c["individual_only"] for c in ex_cands) and len(indiv_models) == 1:
+        resume_needs = f"provider:{ex_cands[0]['provider']}/{ex_cands[0]['model']['id']}"
+    elif ex_cands and not any(c["individual_only"] for c in ex_cands) and len(ex_scopes) == 1 and ex_cands[0]["group"]:
         resume_needs = f"provider:{ex_cands[0]['provider']}/{ex_cands[0]['group']}/{tier}"
     else:
         resume_needs = tier
@@ -1900,13 +1926,13 @@ def _phase_effort(catalog, oprefs, phase, cur):
     if oprefs["phase_effort"] != "on":
         return f"note: phase effort is off (preferences.orchestrator.phase_effort); stay on {here}", None
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
-    rated = [e for e, _ in _rated_efforts(m, emerg, max_effort=oprefs["max_effort"])] if m else []
-    rank = EFFORT_ORDER.get(eff, 99)
+    rated = _rated_efforts(m, emerg, max_effort=oprefs["max_effort"]) if m else []
+    rank, cur_sc = EFFORT_ORDER.get(eff, 99), _rung_score(m, eff)
     new = eff
     if phase == "review":
-        new = next((e for e in rated if EFFORT_ORDER.get(e, 99) > rank), eff)
+        new = next((e for e, v in rated if EFFORT_ORDER.get(e, 99) > rank and (cur_sc is None or v > cur_sc)), eff)
     elif phase == "supervise":
-        new = next((e for e in reversed(rated) if EFFORT_ORDER["low"] <= EFFORT_ORDER.get(e, 99) < rank), eff)
+        new = next((e for e, _ in reversed(rated) if EFFORT_ORDER["low"] <= EFFORT_ORDER.get(e, 99) < rank), eff)
     to = f"{prov}/{m['id'] if m else mid} @ {new}"
     return f"phase effort: {phase} -> {to}", (f"at this phase boundary switch the orchestrator in place to {to}" if new != eff else f"stay on {here}")
 
@@ -3330,7 +3356,7 @@ def _format_yaml_field(ind, k, v):
                     if isinstance(iv, list):
                         rendered = "[" + ", ".join(_yaml_scalar(x) for x in iv) + "]"
                     elif isinstance(iv, dict):
-                        rendered = "{" + ", ".join(f"{dk}: {_yaml_scalar(dv)}" for dk, dv in iv.items()) + "}"
+                        rendered = "{" + ", ".join(f'"{str(dk).replace(chr(34), chr(39))}": {_yaml_scalar(dv)}' for dk, dv in iv.items()) + "}"
                     else:
                         rendered = _yaml_scalar(iv)
                     prefix = f"{pad}  - " if first else f"{pad}    "
@@ -3496,7 +3522,8 @@ def _find_provider_group(p, group_arg=None, model_arg=None, catalog=None):
         cid = name_map.get(gn) or group_arg
         return model_group(p, cid, cat_by_id.get(norm(cid)))
     if model_arg:
-        raw_mid = model_arg.partition(":")[2] if ":" in model_arg else model_arg
+        pid = (p or {}).get("id") or ""
+        raw_mid = model_arg.partition(":")[2] if ":" in model_arg and norm(model_arg.partition(":")[0]) == norm(pid) else model_arg
         cid = name_map.get(norm(raw_mid)) or raw_mid
         return model_group(p, cid, cat_by_id.get(norm(cid)))
     return None
@@ -3671,13 +3698,12 @@ def exhaust(a):
         catalog_path = _opt_str(a, "catalog") or DEF_CATALOG
         catalog = load_catalog_with_local(catalog_path, ap) if os.path.exists(catalog_path) else {"models": []}
         groups = [g for g in ((p or {}).get("groups") or []) if isinstance(g, dict)]
+        raw_mid = (model_arg.partition(":")[2] if ":" in model_arg and norm(model_arg.partition(":")[0]) == norm(a.provider) else model_arg) if model_arg else None
         if groups:
             target_g = _find_provider_group(p, group_arg=group_arg, model_arg=model_arg, catalog=catalog)
-            if target_g is None and model_arg and not group_arg and not partitions_quota(p):
-                # Another per-model cap on an ungrouped account: add its own one-model group.
-                name_map = _catalog_name_map(catalog)
-                raw_mid = model_arg.partition(":")[2] if ":" in model_arg else model_arg
-                cid = name_map.get(norm(raw_mid)) or raw_mid
+            if target_g is None and model_arg and not group_arg and (individual or not partitions_quota(p)):
+                # Another per-model cap on an ungrouped account, or an individual-quota carrier for a model not in any group yet.
+                cid = _catalog_name_map(catalog).get(norm(raw_mid)) or raw_mid
                 target_g = {"name": cid, "models": [cid]}
                 groups.append(target_g)
             if target_g is None:
@@ -3685,10 +3711,10 @@ def exhaust(a):
                 _action("rerun exhaust with a --group name or --model id listed in the provider's groups in assets.yaml")
                 return 1
             if individual:
-                name_map = _catalog_name_map(catalog)
-                raw_mid = model_arg.partition(":")[2] if ":" in model_arg else model_arg
-                cid = name_map.get(norm(raw_mid)) or raw_mid
-                target_g["exhausted_models"] = {**(target_g.get("exhausted_models") or {}), cid: until}
+                cid = _catalog_name_map(catalog).get(norm(raw_mid)) or raw_mid
+                same = _model_keys(cid, _rung_model(catalog, cid))
+                old = {k: v for k, v in (target_g.get("exhausted_models") or {}).items() if norm(k) not in same}
+                target_g["exhausted_models"] = {**old, cid: until}
                 edit_provider(ap, a.provider, {"groups": groups}, now=now)
                 print(f"{a.provider} ({cid} in {target_g.get('name')}): individually exhausted until {until}{unparsed_txt}")
                 return _exhaust_next_action(a, ap)
@@ -3720,7 +3746,6 @@ def exhaust(a):
 
         # Provider has no groups block yet; seed the targeted group entry so subsequent probe merges it.
         name_map = _catalog_name_map(catalog)
-        raw_mid = (model_arg.partition(":")[2] if ":" in model_arg else model_arg) if model_arg else None
         cid = (name_map.get(norm(raw_mid)) or raw_mid) if raw_mid else None
         gname = group_arg or cid or "default"
         if individual:  # the first probe moves this lock into the pool that lists the model
@@ -4906,11 +4931,20 @@ def history_by(a, ledger_path, ap, role):
     catalog = load_catalog_with_local(_opt_str(a, "catalog") or DEF_CATALOG, ap)
 
     shown = {}  # group key -> the most recent verbatim spelling
+    names = _catalog_name_map(catalog)
 
     def combo(e, raw=None):
         raw = raw or f"{e.get('provider') or '?'}:{e.get('model') or '?'}@{e.get('effort') or '?'}"
-        k = _canon_pme(raw, catalog, key=True) or raw
-        shown[k] = _canon_pme(raw, catalog) or raw
+        k, disp = _canon_pme(raw, catalog, key=True), _canon_pme(raw, catalog)
+        if not k:
+            pair, sep, eff = raw.strip().rpartition("@")
+            prov, psep, mid = (pair if sep else raw).partition(":")
+            prov, mid = prov.strip() or "?", (mid.strip() if psep else "") or "?"
+            eff = (eff.strip().lower() if sep else "") or "?"
+            canon_mid = norm(names.get(norm(mid), mid)) if mid != "?" else "?"
+            k = f"{norm(prov) if prov != '?' else '?'}:{canon_mid}@{eff}"
+            disp = f"{prov}:{canon_mid}@{eff}"
+        shown[k] = disp
         return k
 
     open_by_ref, attempts, escalations = {}, [], {}
@@ -4965,49 +4999,59 @@ def _rung_score(m, eff):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def _effort_step(catalog, usable, current, m_cur, cur_sc, max_effort=None):
+def _effort_step(catalog, usable, current, m_cur, cur_sc, max_effort=None, floor=0):
     """The next higher rated non-emergency effort (<= max_effort) of the current pair, when that pair is in `usable`, scoring
-    above `cur_sc` (any rated score when `cur_sc` is unknown); None otherwise."""
+    above `cur_sc` (any rated score when `cur_sc` is unknown) and meeting `floor`; None otherwise."""
     prov, _, eff = current
     cur_c = next((c for c in usable if norm(c["provider"]) == norm(prov) and c["model"]["id"] == m_cur["id"]), None)
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     hit = next(((e, v) for e, v in _rated_efforts(m_cur, emerg, max_effort=max_effort)
-                if EFFORT_ORDER.get(e, 99) > EFFORT_ORDER.get(eff, 99) and (cur_sc is None or v > cur_sc)), None) if cur_c else None
+                if EFFORT_ORDER.get(e, 99) > EFFORT_ORDER.get(eff, 99) and v >= floor and (cur_sc is None or v > cur_sc)), None) if cur_c else None
     return {**cur_c, "effort": hit[0], "score": hit[1], "from_score": cur_sc} if hit else None
 
 
 def escalation_target(catalog, assets, avail, floors, tier, now, current, exclude_model=None):
     """Next worker rung above `current` `(provider, model, effort)`, or None. (1) The same model's next higher rated effort
-    that scores higher, while the pair is usable (skipped for a reviewer on the implementer's model `exclude_model`).
-    (2) Only when the current score is known: a model scoring strictly higher at its lowest rated effort from its
-    tier-meeting effort up, taken in `candidates()` order at `tier` with the same provider first, or for a reviewer in the
-    reviewer fallback order (different family, then same family; tier-meeting, then below tier), never the implementer's."""
+    meeting `floors[tier]` and scoring higher, while usable (skipped for a reviewer on `exclude_model`).
+    (2) Only when the current score is known: a tier-meeting model scoring strictly higher in `candidates()` order (same
+    provider first), or for a reviewer in the reviewer fallback order (tier-meeting different/same family, then below-tier
+    effort step or different/same family only when no tier-meeting candidate exists), never the implementer's."""
     m_cur = _rung_model(catalog, current[1])
     if not m_cur:
         return None
-    cur_sc = _rung_score(m_cur, current[2])
-    usable, _, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, task_floor=floors[tier])
-    if not (exclude_model and m_cur["id"] == exclude_model["id"]):
-        step = _effort_step(catalog, usable, current, m_cur, cur_sc)
+    cur_sc, floor = _rung_score(m_cur, current[2]), floors[tier]
+    usable, _, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, task_floor=floor)
+    can_step = not (exclude_model and m_cur["id"] == exclude_model["id"])
+    if can_step:
+        step = _effort_step(catalog, usable, current, m_cur, cur_sc, floor=floor)
         if step:
             return step
-    if cur_sc is None:
-        return None
     emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
     keep = lambda c: not (norm(c["provider"]) == norm(current[0]) and c["model"]["id"] == m_cur["id"]) and not (  # noqa: E731
         exclude_model and c["model"]["id"] == exclude_model["id"])
+    meet = [c for c in sorted(candidates(catalog, assets, avail, floor, floors, now)[0], key=lambda c: c["key"]) if keep(c)]
+    if cur_sc is None:
+        if exclude_model and can_step and not meet:
+            return _effort_step(catalog, usable, current, m_cur, None, floor=0)
+        return None
 
     def up(c, start):
         hit = next(((e, v) for e, v in _rated_efforts(c["model"], emerg) if EFFORT_ORDER.get(e, 99) >= start and v > cur_sc), None)
         return {**c, "effort": hit[0], "score": hit[1], "from_score": cur_sc} if hit else None
 
-    meet = [c for c in sorted(candidates(catalog, assets, avail, floors[tier], floors, now)[0], key=lambda c: c["key"]) if keep(c)]
     if exclude_model:
-        below = [c for c in sorted(usable, key=lambda c: (-c["score"], c["key"])) if keep(c)]
         diff = lambda c: c["model"]["family"] != exclude_model["family"]  # noqa: E731
-        order = ((meet, diff), (meet, lambda c: not diff(c)), (below, diff), (below, lambda c: not diff(c)))
-        return next((t for pool, pred in order for c in pool if pred(c)
-                     for t in [up(c, EFFORT_ORDER.get(c["effort"], 99) if pool is meet else 0)] if t), None)
+        hit = next((t for pred in (diff, lambda c: not diff(c)) for c in meet if pred(c)
+                    for t in [up(c, EFFORT_ORDER.get(c["effort"], 99))] if t), None)
+        if hit or meet:
+            return hit
+        if can_step:
+            step = _effort_step(catalog, usable, current, m_cur, cur_sc, floor=0)
+            if step:
+                return step
+        below = [c for c in sorted(usable, key=lambda c: (-c["score"], c["key"])) if keep(c)]
+        return next((t for pred in (diff, lambda c: not diff(c)) for c in below if pred(c)
+                     for t in [up(c, 0)] if t), None)
     ups = [t for c in meet for t in [up(c, EFFORT_ORDER.get(c["effort"], 99))] if t]
     return next((c for c in ups if norm(c["provider"]) == norm(current[0])), ups[0] if ups else None)
 
@@ -5035,22 +5079,41 @@ def _emergency_higher(catalog, assets, avail, now, cur_sc, exclude_model=None):
 
 def _orchestrator_escalation(catalog, assets, avail, floors, coord, now, current, m_cur, cur_sc):
     """`(rung, cross_provider, notes)`: with an unknown current score only the same model's next higher rated effort (<=
-    max_effort); else the first ladder rung of the current provider scoring above `cur_sc`, else the first other-provider
-    rung (the ladder's provider-switch rung) scoring above it, else None."""
-    prov = current[0]
+    max_effort, meeting the tier floor); for explicit ladders search all surviving entries (same provider first); for auto
+    ladders take the effort step first, then every usable tier-meeting same-provider candidate in rank order (no slice),
+    then other-provider tier-meeting candidates in rank order."""
+    oprefs, _ = _orchestrator_prefs(assets)
+    tier, max_effort = oprefs["tiers"][coord], oprefs["max_effort"]
+    floor, prov = floors[tier], current[0]
     if cur_sc is None:
-        max_effort = _orchestrator_prefs(assets)[0]["max_effort"]
         usable, notes, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, max_effort=max_effort, exclude_coordinator=True)
-        return _effort_step(catalog, usable, current, m_cur, None, max_effort=max_effort), False, notes
-    own = [p for p in avail if norm(p.partition(":")[0]) == norm(prov)]
+        return _effort_step(catalog, usable, current, m_cur, None, max_effort=max_effort, floor=floor), False, notes
+    if oprefs["ladder"] != "auto":
+        surviving, exp_notes = _eval_explicit_ladder(oprefs["ladder"], catalog, assets, avail, tier, floor, floors, max_effort, now)
+        if surviving:
+            same_ok = lambda r: not (r["model"]["id"] == m_cur["id"] and EFFORT_ORDER.get(r["effort"], 99) <= EFFORT_ORDER.get(current[2], 99))  # noqa: E731
+            hit = next((r for r in surviving if norm(r["provider"]) == norm(prov) and r["score"] > cur_sc and same_ok(r)), None)
+            if hit:
+                return hit, False, []
+            hit = next((r for r in surviving if norm(r["provider"]) != norm(prov) and r["score"] > cur_sc), None)
+            return hit, True, exp_notes
+    usable, _, _ = candidates(catalog, assets, avail, 0, floors, now, pick_top=True, max_effort=max_effort, exclude_coordinator=True)
+    step = _effort_step(catalog, usable, current, m_cur, cur_sc, max_effort=max_effort, floor=floor)
+    if step:
+        return step, False, []
+    cands, notes, _ = candidates(catalog, assets, avail, floor, floors, now, max_effort=max_effort, exclude_coordinator=True)
+    cands.sort(key=lambda c: c["key"])
+    emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
+
+    def up(c):
+        hit = next(((e, v) for e, v in _rated_efforts(c["model"], emerg, max_effort=max_effort) if v >= floor and v > cur_sc), None)
+        return {**c, "effort": hit[0], "score": hit[1], "from_score": cur_sc} if hit else None
+
+    own = next((t for c in cands if norm(c["provider"]) == norm(prov) and c["model"]["id"] != m_cur["id"] for t in [up(c)] if t), None)
     if own:
-        _, rungs, _, _, _ = _compute_orchestrator_ladder(catalog, assets, own, floors, coord, now)
-        hit = next((r for r in rungs if r["score"] > cur_sc), None)
-        if hit:
-            return hit, False, []
-    _, rungs, switch, notes, _ = _compute_orchestrator_ladder(catalog, assets, avail, floors, coord, now)
-    hit = next((r for r in rungs + [switch] if r and norm(r["provider"]) != norm(prov) and r["score"] > cur_sc), None)
-    return hit, True, notes
+        return own, False, []
+    other = next((t for c in cands if norm(c["provider"]) != norm(prov) for t in [up(c)] if t), None)
+    return other, True, notes
 
 
 def escalate_cmd(a):
@@ -5112,10 +5175,13 @@ def escalate_cmd(a):
         to_sc = _rung_score(m_to, to[2])
         if cur_sc is not None and to_sc is not None and to_sc <= cur_sc:
             return fix(f"--to {_show_entry(to_raw)} scores {to_sc}, not above the current {cur_sc}", "--to (a rung scoring above --current)")
-        if m_to["id"] == m_cur["id"] and EFFORT_ORDER.get(to[2], 99) <= EFFORT_ORDER.get(cur[2], 99):
+        eff_rank = {**EFFORT_ORDER, **{e: len(EFFORT_ORDER) + i for i, e in enumerate(
+            dict.fromkeys(list(catalog.get("emergency_efforts") or []) + ["max", "ultra"]))}}
+        if m_to["id"] == m_cur["id"] and eff_rank.get(to[2], 99) <= eff_rank.get(cur[2], 99):
             return fix(f"--to {_show_entry(to_raw)} is the current model at the same or a lower effort", "--to (a higher effort or another model)")
-        if not any(norm(pr.partition(":")[0]) == norm(to[0]) for pr in avail + [f"{cur[0]}:{cur[1]}"]):
-            return fix(f"--to provider {to[0]} is not in --available", "--to (a provider:model@effort from --available)")
+        offered = avail + [f"{cur[0]}:{m_cur['id']}"]
+        if not any(norm(pr.partition(":")[0]) == norm(to[0]) and (_rung_model(catalog, pr.partition(":")[2]) or {}).get("id") == m_to["id"] for pr in offered):
+            return fix(f"--to pair {to[0]}:{m_to['id']} is not in --available", "--to (a provider:model@effort from --available)")
         if impl and m_to["id"] == impl["id"]:
             return fix("--to is the implementer's model", "--to (a model other than the implementer's)")
     cross_role = {"implementer": ("coordination", "implementer"), "reviewer": ("coordination",), "orchestrator": ("complexity", "risk", "implementer")}

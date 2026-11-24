@@ -177,6 +177,7 @@ class EscalateNeverStepsDown(unittest.TestCase):
         models = {m["id"]: m for m in catalog["models"]}
         ids = list(models)
         efforts = list(orch.EFFORT_ORDER) + list(catalog.get("emergency_efforts", []))
+        emerg = set(catalog.get("emergency_efforts", ["max", "ultra"]))
         pairs = lambda keep: ",".join("%s:%s" % (p, m) for p in ("codex", "claudeAgent") for m in ids if keep(m))  # noqa: E731
         best = lambda m: max([v for v in (models[m].get("scores") or {}).values()] or [0])  # noqa: E731
         tmp = tempfile.mkdtemp()
@@ -189,6 +190,7 @@ class EscalateNeverStepsDown(unittest.TestCase):
             hl, every = ["--complexity", "hard", "--risk", "low"], pairs(lambda m: True)
             roles = [("implementer", hl, every), ("implementer", ["--complexity", "trivial", "--risk", "low"], every),
                      ("reviewer", hl + ["--implementer", ids[(i + 1) % len(ids)]], every),
+                     ("orchestrator", ["--coordination", "0"], every),
                      ("orchestrator", ["--coordination", "1"], every),
                      ("orchestrator", ["--coordination", "1", "--findings", "9"], every)]
             if fam:  # only same-family models offered and the strongest of them implemented: the reviewer must skip it
@@ -200,6 +202,9 @@ class EscalateNeverStepsDown(unittest.TestCase):
                             "findings" if findings else "rework", "--available", avail, *more, "--ledger", ledger,  # real run: logging is under test
                             "--assets", os.path.join(tmp, "quota.yaml"), "--catalog", CATALOG, "--now", NOW]
                     impl = more[-1] if role == "reviewer" else None
+                    floor = (orch.FLOORS[orch.ORCH_TIERS_DEFAULT[int(more[1])]] if role == "orchestrator"
+                             else orch.FLOORS[orch.TIER[more[1]][more[3]]])
+                    cur_sc = orch._rung_score(models[mid], eff)
                     case = "%s %s@%s %s" % (role, mid, eff, " ".join(more))
                     out = io.StringIO()
                     try:
@@ -218,8 +223,17 @@ class EscalateNeverStepsDown(unittest.TestCase):
                     cont = "\naction: no same-provider rung above " in "\n" + text
                     if len(rows) != (1 if rc == 0 and not cont else 0):
                         problems.append("%s: rc %s logged %d row(s)" % (case, rc, len(rows)))
+                    # Finding 2 invariant: an auto orchestrator with a higher same-provider tier-meeting rung (<= high) must climb it
+                    if role == "orchestrator" and cur_sc is not None:
+                        same_up = any(
+                            v >= floor and v > cur_sc and not (m == mid and orch.EFFORT_ORDER.get(e, 99) <= orch.EFFORT_ORDER.get(eff, 99))
+                            for m in ids if models[m].get("cost") != "emergency" and not models[m].get("coordinator")
+                            for e, v in orch._rated_efforts(models[m], emerg, max_effort="high")
+                        )
+                        if same_up and (rc != 0 or cont):
+                            problems.append("%s: dropped higher same-provider orchestrator rung (rc %s)" % (case, rc))
                     if rc != 0:
-                        if rc not in (2, 3) or (findings and orch._rung_score(models[mid], eff) is not None):
+                        if rc not in (2, 3) or (findings and cur_sc is not None):
                             problems.append("%s: rc %s\n%s" % (case, rc, text))
                         continue
                     if cont:
@@ -234,13 +248,21 @@ class EscalateNeverStepsDown(unittest.TestCase):
                     if role == "orchestrator" and hit.group(1) != "codex":
                         problems.append("%s -> %s: orchestrator left its provider without approval" % (case, hit.group(1)))
                     to_m, to_e = orch._rung_model(catalog, hit.group(2)), hit.group(3)
-                    cur_sc, to_sc = orch._rung_score(models[mid], eff), orch._rung_score(to_m, to_e)
+                    to_sc = orch._rung_score(to_m, to_e)
                     if to_sc is None:
                         problems.append("%s -> %s@%s: target unrated" % (case, to_m["id"], to_e))
                     elif cur_sc is not None and not to_sc > cur_sc:
                         problems.append("%s -> %s@%s: %s <= %s" % (case, to_m["id"], to_e, to_sc, cur_sc))
                     elif cur_sc is None and not (to_m["id"] == mid and orch.EFFORT_ORDER.get(to_e, 99) > orch.EFFORT_ORDER.get(eff, 99)):
                         problems.append("%s (unscored) -> %s@%s: not the same model at a higher effort" % (case, to_m["id"], to_e))
+                    # Finding 1 invariant: target meets the role's tier floor (reviewers may fall below only when no tier-meeting candidate exists)
+                    avail_mids = {p.partition(":")[2] for p in avail.split(",")}
+                    must_meet = role != "reviewer" or any(
+                        m != impl and models[m].get("cost") != "emergency" and orch.best_effort(models[m], floor, emerg) is not None
+                        for m in avail_mids if m in models
+                    )
+                    if to_sc is not None and must_meet and to_sc < floor:
+                        problems.append("%s -> %s@%s: %s < tier floor %s" % (case, to_m["id"], to_e, to_sc, floor))
                     if role == "reviewer" and to_m["id"] == impl:
                         problems.append("%s -> %s: the implementer's model" % (case, to_m["id"]))
         self.assertGreater(runs, 300)
