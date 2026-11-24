@@ -7337,14 +7337,14 @@ class TestLandCheck(unittest.TestCase):
             rc, out = self.run_lc(available=avail)
             self.assertEqual(rc, 3, out)
             self.assertIn("renews 2026-11-20T21:30:00+00:00", out)
-            self.assertIn("action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land", out)
-        # land_hold_hours: 0 disables future-reset holds; 10h reset lands under 4h and holds under 12h
+            self.assertIn("action: hold landing until 2026-11-20T21:32:00+00:00; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check", out)
+        # land_hold_hours: 0 disables future-reset holds; 10h reset lands with scheduled wakeup under 4h and holds under 12h
         self.write_assets(grp % "2026-11-20T21:30:00+00:00", prefs="  land_hold_hours: 0\n")
         self.assertEqual(self.run_lc()[0], 0)
         self.write_assets(grp % "2026-11-21T07:00:00+00:00")
         rc, out = self.run_lc()
         self.assertEqual(rc, 0, out)
-        self.assertIn("action: land now; the cross-family review stays queued as a post-merge follow-up (needs !anthropic/T4)", out)
+        self.assertIn("action: land now; schedule a wakeup at 2026-11-21T07:02:00+00:00 to run the cross-family review (needs !anthropic/T4), fix forward on its findings, then followups --done PR-37", out)
         self.write_assets(grp % "2026-11-21T07:00:00+00:00", prefs="  land_hold_hours: 12\n")
         rc, out = self.run_lc()
         self.assertEqual(rc, 3, out)
@@ -7373,6 +7373,13 @@ class TestLandCheck(unittest.TestCase):
         rc, out = self.run_lc()
         self.assertEqual(rc, 0, out)
         self.assertIn("renews unknown", out)
+        self.assertIn("the next probe/followups --due shows it as due; run it then and fix forward", out)
+        # Cadence-only reset (session / 5h / weekly) is treated as unknown, not a moving future timestamp
+        for cad in ("session", "5h", "weekly"):
+            self.write_assets(f"  - id: antigravity\n    status: exhausted\n    resets: {cad}\n")
+            rc, out = self.run_lc()
+            self.assertEqual(rc, 0, f"cadence={cad}: {out}")
+            self.assertIn("renews unknown", out, f"cadence={cad}: {out}")
         rc, out = self.run_lc(available="claude:claude-opus-5-5")
         self.assertEqual(rc, 0, out)
         self.assertIn("no matching model offered", out)
@@ -7391,6 +7398,42 @@ class TestLandCheck(unittest.TestCase):
             self.assertEqual(rc, want, f"land_hold_hours={val}: {out}")
             if want == 1:
                 self.assertIn("preferences.land_hold_hours", out)
+
+    def test_ref_normalization_current_task_mixed_kinds_and_dedup(self):
+        ex30 = "  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-20T21:30:00+00:00\n"
+        # Blocker: current-task entry matches any --ref and names stored ref in --done when usable
+        self.write_assets(ex30, "  - kind: preferred-review\n    ref: current-task\n    needs: '!anthropic/T4'\n")
+        rc, out = self.run_lc(ref="PR-37")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("current-task (applies to any --ref)", out)
+        self.assertIn("hold landing until 2026-11-20T21:32:00+00:00", out)
+        self.write_assets("  - id: antigravity\n    status: ok\n", "  - kind: preferred-review\n    ref: current-task\n    needs: '!anthropic/T4'\n")
+        rc, out = self.run_lc(ref="PR-37")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("followups --done current-task", out)
+        # Normalized ref matching ("PR #37" and " PR-37" match --ref PR-37) and stored ref quoted in --done
+        for stored in ("PR #37", " PR-37"):
+            self.write_assets("  - id: antigravity\n    status: ok\n", f"  - kind: preferred-review\n    ref: '{stored}'\n    needs: '!anthropic/T4'\n")
+            rc, out = self.run_lc(ref="PR-37")
+            self.assertEqual(rc, 3, f"stored={stored!r}: {out}")
+            self.assertIn(f"followups --done '{stored}'", out)
+        # Mixed follow-up kinds for same ref: warns instead of suggesting bare --done
+        mixed = self.FU + "  - kind: ui-review\n    ref: PR-37\n    needs: ui-ux-review\n"
+        self.write_assets("  - id: antigravity\n    status: ok\n", mixed)
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 3, out)
+        self.assertIn("would also clear ui-review", out)
+        self.assertNotIn("then clear it with followups --done PR-37", out)
+        self.write_assets("  - id: antigravity\n    status: exhausted\n    exhausted_until: 2026-11-21T07:00:00+00:00\n", mixed)
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("would also clear ui-review", out)
+        # Duplicate identical follow-ups group as (×2)
+        self.write_assets(ex30, self.FU + self.FU)
+        rc, out = self.run_lc()
+        self.assertEqual(rc, 3, out)
+        self.assertEqual(len([l for l in out.splitlines() if l.startswith("followup:")]), 1, out)
+        self.assertIn("(×2)", out)
 
 
 if __name__ == "__main__":

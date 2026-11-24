@@ -41,7 +41,7 @@ After review findings are resolved and before landing, verify six items:
 3. **User-visible evidence**: when the change is user-visible, verify concrete visual or behavioral evidence (screenshots, recordings, or transcripts) scaled to `preferences.evidence` and repo `Evidence:`.
 4. **Repo budgets and limits**: verify any size, bundle, performance, lint, or schema budgets the target repository defines.
 5. **Maintainability**: confirm clean module boundaries and proportionate tests; `orch.py scope` lists stray scratch files (check debug leftovers yourself).
-6. **Pending cross-family review (high risk)**: on `high` risk, run `scripts/orch.py land-check --ref <item> --risk high` (with `--available` when discovered) and follow its `action:` line. Without Python, hold landing when a cross-family review is pending and its family is usable now or renews within `preferences.land_hold_hours` (default 4 h).
+6. **Pending cross-family review (high risk)**: on `high` risk, run `scripts/orch.py land-check --ref <item> --risk high` (with `--available` when discovered) and follow its `action:` line (holding until renewal + 2 min, or landing while scheduling the post-merge cross-family review and fixing forward). Without Python, hold landing when a cross-family review is pending and a family other than the implementer's is usable now or renews within `preferences.land_hold_hours` (default 4 h, waking at renewal + 2 min); otherwise land, keep the follow-up queued, and schedule the review at renewal + 2 min (or on the next `probe`) to fix forward.
 
 Send any follow-up fixes to the implementing child via the harness's continue mechanism (`references/harnesses.md`).
 

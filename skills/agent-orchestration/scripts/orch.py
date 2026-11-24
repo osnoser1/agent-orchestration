@@ -4678,23 +4678,30 @@ def followups_cmd(a):
     return 0
 
 
+def _concrete_reset(now, *vals):
+    """Earliest future concrete timestamp/date among `vals` (ignores rolling cadences like `5h` or `weekly`)."""
+    dts = [dt for v in vals if (dt := parse_time(v, now)) and dt > now]
+    return min(dts) if dts else None
+
+
 def _cand_reset_dt(p, prov_st, g, mid, m, now, fail_on_low=False):
-    """Earliest time a blocked candidate becomes usable again, or None when unknown."""
+    """Earliest concrete time a blocked candidate becomes usable again, or None when unknown/cadence-only."""
     gst = group_state(g, now)[0] if g is not None else "ok"
     dts = [u] if (u := _locked(g, mid, m, now)) else []
+    p_vals = (p.get("exhausted_until"), p.get("resets_at"), p.get("resets"), p.get("renews"))
     if g is not None and gst == "exhausted":
-        dt = parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or candidate_next_reset(p, g, now)
+        dt = parse_time(g.get("exhausted_until") or g.get("resets_at"), now) or _concrete_reset(now, g.get("resets_at"), p.get("resets"), p.get("renews"))
         if not (dt and dt > now):
             return None
         dts.append(dt)
     if prov_st == "exhausted":
-        dt = parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or provider_next_reset(p, now)
+        dt = parse_time(p.get("exhausted_until") or p.get("resets_at"), now) or _concrete_reset(now, *p_vals)
         if dt and dt > now:
             dts.append(dt)
         elif not (g is not None and gst == "exhausted" and partitions_quota(p)):
             return None
     if not dts and fail_on_low and (prov_st == "low" or gst == "low"):
-        dt = candidate_next_reset(p, g, now) if g is not None else provider_next_reset(p, now)
+        dt = _concrete_reset(now, *([g.get("resets_at")] if g is not None else []), *p_vals)
         if dt and dt > now:
             dts.append(dt)
     return max(dts) if dts else None
@@ -4745,6 +4752,25 @@ def _earliest_need_reset(catalog, assets, now, need, available=None, fail_on_low
     return matched, (min(dts) if dts else None)
 
 
+def _is_land_followup(fu):
+    need = str(fu.get("needs") or "").strip()
+    return bool(need) and (fu.get("kind") == "preferred-review" or (fu.get("kind") == "resume" and need.startswith("!")))
+
+
+def _land_ref_key(ref):
+    s = str(ref or "").strip()
+    return re.sub(r"[^a-z0-9]+", "-", _clean_ref(s).lower()).strip("-") if s else ""
+
+
+def _done_hint(all_fus, done_ref, lead="then clear it with"):
+    qref = f"'{done_ref}'" if re.search(r"[\s#'\"$]", done_ref) else done_ref
+    others = [x for x in all_fus if str(x.get("ref") or "") == done_ref and not _is_land_followup(x)]
+    if not others:
+        return f"{lead} followups --done {qref}"
+    kinds = ", ".join(dict.fromkeys(str(x.get("kind") or "other") for x in others))
+    return f"then remove only this entry in assets.yaml (followups --done {qref} would also clear {kinds})"
+
+
 def land_check_cmd(a):
     _begin(a)
     if a.risk in ("low", "medium"):
@@ -4759,41 +4785,56 @@ def land_check_cmd(a):
     prefs = (assets or {}).get("preferences") or {}
     raw_hh = prefs.get("land_hold_hours") if isinstance(prefs, dict) else None
     hold_hours = float(raw_hh) if (isinstance(raw_hh, (int, float)) and not isinstance(raw_hh, bool) and raw_hh >= 0) else DEFAULT_LAND_HOLD_HOURS
+    all_fus = [fu for fu in (assets.get("followups") or []) if isinstance(fu, dict)]
+    target_key = _land_ref_key(a.ref)
     fus = [
-        fu for fu in (assets.get("followups") or [])
-        if isinstance(fu, dict) and str(fu.get("ref") or "") == a.ref and str(fu.get("needs") or "").strip()
-        and (fu.get("kind") == "preferred-review" or (fu.get("kind") == "resume" and str(fu.get("needs") or "").strip().startswith("!")))
+        (fu, str(fu.get("ref") or ""), sk == "current-task" and target_key != "current-task")
+        for fu in all_fus
+        if _is_land_followup(fu) and (sk := _land_ref_key(fu.get("ref"))) and (sk == target_key or sk == "current-task")
     ]
     if not fus:
         _action("land now")
         return 0
-    lines, usable_need, soon_dts, all_needs, cutoff = [], None, [], [], now + timedelta(hours=hold_hours)
-    for fu in fus:
+    lines, usable_pick, soon_dts, later_picks, all_needs = [], None, [], [], []
+    cutoff = now + timedelta(hours=hold_hours)
+    for fu, stored_ref, any_ref in fus:
         need, fol = str(fu.get("needs") or "").strip(), fu.get("fail_on_low") is True
         all_needs.append(need)
         usable = find_usable_in_available(catalog, assets, now, need, avail, fail_on_low=fol) if avail is not None else find_usable_in_assets(catalog, assets, now, need, fail_on_low=fol)
         if usable:
-            status, usable_need = "usable now", usable_need or need
+            status = "usable now"
+            usable_pick = usable_pick or (need, stored_ref)
         else:
             matched, dt = _earliest_need_reset(catalog, assets, now, need, available=avail, fail_on_low=fol)
             if dt is not None:
                 status = f"renews {dt.isoformat(timespec='seconds')}"
                 if dt <= cutoff:
                     soon_dts.append(dt)
+                else:
+                    later_picks.append((dt, need, stored_ref))
             else:
                 status = "renews unknown" if matched else "no matching model offered"
-        lines.append(f"followup: {fu.get('kind')} {a.ref} needs {need} — {status}")
-    for line in _capped(lines):
+        ref_label = f"{stored_ref.strip()} (applies to any --ref)" if any_ref else stored_ref.strip()
+        lines.append(f"followup: {fu.get('kind')} {ref_label} needs {need} — {status}")
+    counts = {}
+    for line in lines:
+        counts[line] = counts.get(line, 0) + 1
+    for line in _capped([f"{line} (×{n})" if n > 1 else line for line, n in counts.items()]):
         print(line)
-    if usable_need is not None:
-        _action(f"hold landing: run the cross-family review now (needs {usable_need}; select --role reviewer …), then clear it with followups --done {a.ref}")
+    if usable_pick is not None:
+        need, done_ref = usable_pick
+        _action(f"hold landing: run the cross-family review now (needs {need}; select --role reviewer …), {_done_hint(all_fus, done_ref)}")
         return 3
     if soon_dts:
-        _action(f"hold landing until {_plus_margin(min(soon_dts))}; schedule a wakeup, run the cross-family review, then land")
+        _action(f"hold landing until {_plus_margin(min(soon_dts))}; schedule a wakeup, run the cross-family review, then land; at the wakeup, rerun land-check")
         return 3
+    if later_picks:
+        dt, need, done_ref = min(later_picks, key=lambda x: x[0])
+        _action(f"land now; schedule a wakeup at {_plus_margin(dt)} to run the cross-family review (needs {need}), fix forward on its findings, {_done_hint(all_fus, done_ref, lead='then')}")
+        return 0
     uniq = list(dict.fromkeys(all_needs))
     needs_str = ", ".join(uniq[:3]) + (f" (+{len(uniq) - 3} more)" if len(uniq) > 3 else "")
-    _action(f"land now; the cross-family review stays queued as a post-merge follow-up (needs {needs_str})")
+    _action(f"land now; the cross-family review stays queued as a post-merge follow-up (needs {needs_str}); the next probe/followups --due shows it as due; run it then and fix forward")
     return 0
 
 
