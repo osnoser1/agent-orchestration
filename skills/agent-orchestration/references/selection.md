@@ -41,7 +41,7 @@ Evaluate rated non-emergency efforts in order (`none < low < medium < high < xhi
 3. **Missing efforts**: evaluate only rated efforts during selection. When no rated effort meets the floor and higher non-emergency efforts are missing, skip the model and note those efforts for one-time research (`references/research-unrated.md`).
 
 ## Filter and ranking order
-When `assets.yaml` is missing, default every discovered provider to `status: ok` and `policy: normal`. Expired `exhausted_until` / `resets_at` timestamps (provider or group) clear to `ok` automatically.
+When `assets.yaml` is missing, default every discovered provider to `status: ok` and `policy: normal`. Expired `exhausted_until` / `resets_at` timestamps (provider or group) clear to `ok` automatically. `--available` takes the discovery pairs inline or as `@<file>` (commas or newlines; `#` comments ignored).
 
 **Quota pools**: a pool is one provider entry in `assets.yaml` (an account or subscription shared by all its models and by every conversation on that account), or one `groups[]` entry when the provider declares quota groups (e.g. Antigravity reports one group for its Gemini models including `Orchestrator (Neon)`, one for Claude/GPT, and one for Argon). A per-model cap that a subscription enforces apart from the shared pool (e.g. a top model's weekly limit) locks only that model (`orch.py exhaust` scope rules in `references/quota-errors.md`). On exhaustion, pick a fallback whose pool still has quota for that model; when the whole pool is exhausted, the fallback comes from another pool. Same-pool upgrades at a `stage` phase boundary are not fallbacks and stay valid.
 

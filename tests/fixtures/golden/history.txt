@@ -60,14 +60,14 @@ PR-1: codex:gpt-6-2-sol @ medium; reviewer none; rework
 ok: 3 ref(s); 0 pending follow-up(s)
 === history --role implementer --by model,effort --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
-claudeagent:claude-sonnet-5-5@high: 1 item(s); rework 0%; findings avg n/a; escalations 0; cost normal
+claudeAgent:claude-sonnet-5-5@high: 1 item(s); rework 0%; findings avg n/a; escalations 0; cost normal
 codex:gpt-6-2-sol@medium: 1 item(s); rework 100%; findings avg n/a; escalations 1; cost normal
 codex:gpt-6-luna@low: 1 item(s); rework n/a; findings avg n/a; escalations 0; cost cheap
 codex:gpt-6-2-sol@high: 0 item(s); rework n/a; findings avg n/a; escalations 1; cost normal
 ok: 4 combination(s) for role implementer
 === history --role implementer --by model,effort --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
-claudeagent:claude-sonnet-5-5@high: 1 item(s); rework 0%; findings avg n/a; escalations 0; cost normal
+claudeAgent:claude-sonnet-5-5@high: 1 item(s); rework 0%; findings avg n/a; escalations 0; cost normal
 codex:gpt-6-2-sol@medium: 1 item(s); rework 100%; findings avg n/a; escalations 1; cost normal
 codex:gpt-6-luna@low: 1 item(s); rework n/a; findings avg n/a; escalations 0; cost cheap
 codex:gpt-6-2-sol@high: 0 item(s); rework n/a; findings avg n/a; escalations 1; cost normal
@@ -85,12 +85,12 @@ ok: 2 ref(s); 1 pending follow-up(s)
 === history --role reviewer --by model,effort --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
 antigravity:gemini-4-neon@high: 1 item(s); rework 0%; findings avg 2.0; escalations 0; cost normal
-claudeagent:claude-sonnet-5-5@xhigh: 1 item(s); rework 0%; findings avg 0.0; escalations 0; cost normal
+claudeAgent:claude-sonnet-5-5@xhigh: 1 item(s); rework 0%; findings avg 0.0; escalations 0; cost normal
 ok: 2 combination(s) for role reviewer
 === history --role reviewer --by model,effort --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
 antigravity:gemini-4-neon@high: 1 item(s); rework 0%; findings avg 2.0; escalations 0; cost normal
-claudeagent:claude-sonnet-5-5@xhigh: 1 item(s); rework 0%; findings avg 0.0; escalations 0; cost normal
+claudeAgent:claude-sonnet-5-5@xhigh: 1 item(s); rework 0%; findings avg 0.0; escalations 0; cost normal
 ok: 2 combination(s) for role reviewer
 === history --role orchestrator --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
@@ -102,9 +102,9 @@ PR-1: claudeAgent:claude-opus-5-5 @ high; reviewer none; ok; role orchestrator
 ok: 1 ref(s); 0 pending follow-up(s)
 === history --role orchestrator --by model,effort --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
 rc: 0
-claudeagent:claude-opus-5-5@high: 1 item(s); rework 0%; findings avg n/a; unflagged avg 1.0; escalations 0; cost expensive
+claudeAgent:claude-opus-5-5@high: 1 item(s); rework 0%; findings avg n/a; unflagged avg 1.0; escalations 0; cost expensive
 ok: 1 combination(s) for role orchestrator
 === history --role orchestrator --by model,effort --ledger <TMP>/ledger.jsonl --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
 rc: 0
-claudeagent:claude-opus-5-5@high: 1 item(s); rework 0%; findings avg n/a; unflagged avg 1.0; escalations 0; cost expensive
+claudeAgent:claude-opus-5-5@high: 1 item(s); rework 0%; findings avg n/a; unflagged avg 1.0; escalations 0; cost expensive
 ok: 1 combination(s) for role orchestrator
