@@ -347,6 +347,17 @@ def check_base(root, report, cfg, current, base, run):
             "%d file(s) under %s changed since %s (e.g. %s) but version is %s (was %s); run: python3 tools/repo.py bump <X.Y.Z>"
             % (len(touched), ", ".join(guards), base, touched[0], current, old),
         )
+        return
+    rc, tip_text = run(["git", "show", "%s:%s" % (base, first["file"])], root)
+    tip_hit = find_version(tip_text, first["pattern"]) if rc == 0 else None
+    if tip_hit is not None and SEMVER.match(tip_hit[0]):
+        tip = tip_hit[0]
+        if semver_tuple(current) <= semver_tuple(tip):
+            report.error(
+                "version",
+                "version %s is not above %s on %s; rebase on %s, then run: python3 tools/repo.py bump --next <level>"
+                % (current, tip, base, base),
+            )
 
 
 # ---------- rule: harness ----------
@@ -839,6 +850,16 @@ def self_test_cases():
          lambda r: (_git_repo(r), _append(r, "skills/agent-orchestration/SKILL.md", "More text.\n"),
                     _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"),
                     _edit(r, "skills/agent-orchestration/SKILL.md", '"1.0.0"', '"1.0.1"')), "HEAD"),
+        ("shipped file changed, version stale vs base tip (--base)", "version",
+         lambda r: (_git_repo(r),
+                    _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"),
+                    _edit(r, "skills/agent-orchestration/SKILL.md", '"1.0.0"', '"1.0.1"'),
+                    sh(["git"] + GIT_FIXTURE_CFG + ["commit", "-q", "-am", "main bump"], r),
+                    sh(["git", "branch", "main-tip"], r),
+                    sh(["git", "checkout", "-q", "HEAD~1"], r),
+                    _append(r, "skills/agent-orchestration/SKILL.md", "More text.\n"),
+                    _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"),
+                    _edit(r, "skills/agent-orchestration/SKILL.md", '"1.0.0"', '"1.0.1"')), "main-tip"),
         ("shipped file renamed away (--base)", "version",
          lambda r: (_git_repo(r), sh(["git", "mv", "skills/agent-orchestration/references/harnesses.md", "moved.md"], r)), "HEAD"),
         ("unshipped file changed (--base)", None, lambda r: (_git_repo(r), _append(r, "README.md", "\nMore.\n")), "HEAD"),
@@ -1221,14 +1242,14 @@ def build_parser():
         prog="repo.py",
         description="Maintainer tooling for this repository.",
         epilog=exits,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, width=154),
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def add(name, help_text, example):
         p = sub.add_parser(
             name, help=help_text, description=help_text, epilog="example: python3 tools/repo.py " + example,
-            formatter_class=argparse.RawDescriptionHelpFormatter,
+            formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, width=154),
         )
         p.add_argument("--root", default=REPO_ROOT, help="repository root (default: this repository)")
         p.add_argument("--full", action="store_true", help="print every line and remove the list caps")
