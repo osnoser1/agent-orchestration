@@ -854,7 +854,7 @@ def self_test_cases():
          lambda r: (_git_repo(r),
                     _edit(r, ".claude-plugin/plugin.json", "1.0.0", "1.0.1"),
                     _edit(r, "skills/agent-orchestration/SKILL.md", '"1.0.0"', '"1.0.1"'),
-                    sh(["git", "commit", "-am", "main bump"], r),
+                    sh(["git"] + GIT_FIXTURE_CFG + ["commit", "-q", "-am", "main bump"], r),
                     sh(["git", "branch", "main-tip"], r),
                     sh(["git", "checkout", "-q", "HEAD~1"], r),
                     _append(r, "skills/agent-orchestration/SKILL.md", "More text.\n"),
