@@ -158,9 +158,14 @@ class OrchContract(unittest.TestCase):
         cases["launch"] = self.launch_cases(w, assets, avail)
         cases["followups"] = [Case(["followups", "--due", "--available", "claude:claude-opus-5-5", *w.common(assets)], 3, ORCH_FINAL,
                                    last="item-29", env=env, cwd=w.dir)]
-        cases["log"] = [Case(["log", "--complexity", "standard", "--risk", "low", "--provider", "claude", "--model", "claude-opus-5-5",
-                              "--effort", "high", "--ledger", os.path.join(w.dir, "ledger.jsonl"), *w.common()],
-                             3, re.compile(r"^logged \S"), env=env, cwd=w.dir)]
+        cases["log"] = [
+            Case(["log", "--complexity", "standard", "--risk", "low", "--provider", "claude", "--model", "claude-opus-5-5",
+                  "--effort", "high", "--ledger", os.path.join(w.dir, "ledger.jsonl"), *w.common()],
+                 3, re.compile(r"^logged \S"), env=env, cwd=w.dir),
+            Case(["log", "--event", "complete", "--ref", "NO-SELECT", "--outcome", "ok",
+                  "--ledger", os.path.join(w.dir, "ledger.jsonl"), *w.common()],
+                 3, ORCH_FINAL, rc=1, env=env, cwd=w.dir),
+        ]
         hist = os.path.join(w.dir, "history-ledger.jsonl")
         with open(hist, "w", encoding="utf-8") as fh:
             for i in range(40):
