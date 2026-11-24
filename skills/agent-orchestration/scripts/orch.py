@@ -4898,26 +4898,97 @@ def log_cmd(a):
         print(f"error: invalid outcome: {outcome}")
         _action("rerun log with --outcome " + "|".join(VALID_OUTCOMES))
         return 1
-    surface = _opt_str(a, "surface") or "subagent"
-    if surface not in VALID_SURFACES:
-        print(f"error: invalid surface: {surface}")
+    raw_surface = _opt_str(a, "surface")
+    if raw_surface is not None and raw_surface not in VALID_SURFACES:
+        print(f"error: invalid surface: {raw_surface}")
         _action("rerun log with a valid --surface subagent|conversation")
         return 1
 
-    raw_repo = _opt_str(a, "repo") or os.getcwd()
-    repo = os.path.basename(os.path.normpath(raw_repo)) or "unknown"
+    fclass = _opt_str(a, "failure_class")
+    if fclass and fclass not in VALID_FAILURE_CLASSES:
+        print(f"error: invalid failure class: {fclass}")
+        _action("rerun log with --failure-class " + "|".join(VALID_FAILURE_CLASSES))
+        return 1
+    role = _opt_str(a, "role") or "implementer"
+    if role not in VALID_ROLES:
+        print(f"error: invalid role: {role}")
+        _action("rerun log with --role " + "|".join(VALID_ROLES))
+        return 1
+    rubric_raw = _opt_str(a, "rubric")
+    rubric = None
+    if rubric_raw is not None:
+        rubric = _parse_rubric(rubric_raw)
+        if rubric is None:
+            print(f"error: invalid rubric: {rubric_raw}")
+            _action("rerun log with --rubric size=N,uncertainty=N,deps=N,consequences=N,verification=N,coordination=N (N in 0..2)")
+            return 1
+
+    ref = _opt_str(a, "ref")
+    clean_ref = _clean_ref(ref) if ref else None
+    attempt = read_ledger_refs(ledger_path)[0].get((clean_ref, role), {}) if clean_ref and os.path.exists(ledger_path) else {}
+    prior_select, prior_complete = attempt.get("select"), attempt.get("complete")
+
+    core_fields = ("complexity", "risk", "provider", "model", "effort")
+    all_five_given = all(_opt_str(a, k) is not None for k in core_fields)
+    inherited = []
+    if event == "select":
+        missing = [f"--{k}" for k in core_fields if _opt_str(a, k) is None]
+        if missing:
+            print(f"error: select requires {', '.join(missing)}")
+            _action(f"rerun log with {', '.join(missing)}")
+            return 1
+        vals = {k: _opt_str(a, k) for k in core_fields}
+        surface = raw_surface or "subagent"
+        repo = os.path.basename(os.path.normpath(_opt_str(a, "repo") or os.getcwd())) or "unknown"
+    else:
+        vals, missing = {}, []
+        for k in core_fields:
+            v = _opt_str(a, k)
+            if v is not None:
+                vals[k] = v
+            elif prior_select and prior_select.get(k):
+                vals[k] = prior_select[k]
+                inherited.append(k)
+            else:
+                missing.append(f"--{k}")
+        if missing:
+            if not clean_ref:
+                print(f"error: complete without --ref requires {', '.join(missing)}")
+                _action(f"fix by passing {', '.join(missing)} or --ref <item> to inherit from its select")
+            else:
+                print(f"error: no select for {clean_ref} ({role}) to inherit {', '.join(missing)} from")
+                _action(f"fix by logging a select for {clean_ref} ({role}) first, or pass {', '.join(missing)}")
+            return 1
+        if raw_surface is not None:
+            surface = raw_surface
+        elif prior_select and prior_select.get("surface") in VALID_SURFACES:
+            surface = prior_select["surface"]
+            inherited.append("surface")
+        else:
+            surface = "subagent"
+        raw_repo = _opt_str(a, "repo")
+        if raw_repo is not None:
+            repo = os.path.basename(os.path.normpath(raw_repo)) or "unknown"
+        elif prior_select and prior_select.get("repo"):
+            repo = prior_select["repo"]
+            inherited.append("repo")
+        else:
+            repo = os.path.basename(os.path.normpath(os.getcwd())) or "unknown"
+        if rubric is None and prior_select and isinstance(prior_select.get("rubric"), dict):
+            rubric = prior_select["rubric"]
+            inherited.append("rubric")
 
     entry = {
         "ts": now.isoformat(timespec="seconds"),
         "event": event,
         "repo": repo,
         "surface": surface,
-        "complexity": a.complexity,
-        "risk": a.risk,
+        "complexity": vals["complexity"],
+        "risk": vals["risk"],
         "ui": bool(a.ui),
-        "provider": a.provider,
-        "model": a.model,
-        "effort": a.effort,
+        "provider": vals["provider"],
+        "model": vals["model"],
+        "effort": vals["effort"],
         "reviewer": _opt_str(a, "reviewer"),
         "outcome": outcome,
         "findings": _opt_int(a, "findings"),
@@ -4926,29 +4997,12 @@ def log_cmd(a):
         entry["provisional"] = True
     if _opt_int(a, "unflagged") is not None:  # orchestrator: findings exposing a gap in its brief or plan (references/escalation.md)
         entry["unflagged"] = _opt_int(a, "unflagged")
-    ref = _opt_str(a, "ref")
-    if ref:
-        entry["ref"] = _clean_ref(ref)
-    fclass = _opt_str(a, "failure_class")
+    if clean_ref:
+        entry["ref"] = clean_ref
     if fclass:
-        if fclass not in VALID_FAILURE_CLASSES:
-            print(f"error: invalid failure class: {fclass}")
-            _action("rerun log with --failure-class " + "|".join(VALID_FAILURE_CLASSES))
-            return 1
         entry["failure_class"] = fclass
-    role = _opt_str(a, "role") or "implementer"
-    if role not in VALID_ROLES:
-        print(f"error: invalid role: {role}")
-        _action("rerun log with --role " + "|".join(VALID_ROLES))
-        return 1
     entry["role"] = role
-    rubric_raw = _opt_str(a, "rubric")
-    if rubric_raw is not None:
-        rubric = _parse_rubric(rubric_raw)
-        if rubric is None:
-            print(f"error: invalid rubric: {rubric_raw}")
-            _action("rerun log with --rubric size=N,uncertainty=N,deps=N,consequences=N,verification=N,coordination=N (N in 0..2)")
-            return 1
+    if rubric is not None:
         entry["rubric"] = rubric
     requested = _opt_str(a, "requested")
     effective = _opt_str(a, "effective")
@@ -4970,23 +5024,30 @@ def log_cmd(a):
             _action("rerun log with --effective provider:model@effort")
             return 1
         entry["effective"] = canon_eff
-    mismatch_msg = None
+    warnings, notes = [], []
+    if outcome in ("quota", "failed", "stall") and not fclass:
+        if outcome == "quota":
+            entry["failure_class"] = "quota"
+            notes.append("note: inferred --failure-class quota from --outcome quota")
+        else:
+            warnings.append(f'warning: --outcome {outcome} logged without --failure-class; rerun orch.py failure "<error>" --ref {clean_ref or "<ref>"} for the flags')
+    if event == "complete" and clean_ref and not prior_select and all_five_given:
+        warnings.append(f"warning: complete for {clean_ref} ({role}) has no earlier select; log the select first")
+    if event == "select" and surface in ("subagent", "conversation") and ("requested" not in entry or "effective" not in entry):
+        warnings.append("warning: post-dispatch check missing (references/harnesses.md, **Requested vs effective model (after every dispatch)**)")
+    if event == "complete" and clean_ref and prior_complete:
+        warnings.append(f"warning: {clean_ref} ({role}) already has a complete for this attempt (outcome {prior_complete.get('outcome')}); "
+                        "history keeps the latest — log one complete per attempt, after the review gate")
     if "requested" in entry and "effective" in entry and (
             _canon_pme(effective, cat, key=True) != _canon_pme(requested, cat, key=True)):
         entry["mismatch"] = True
-        mismatch_msg = f"warning: effective {entry['effective']} differs from requested {entry['requested']}; check the thread settings"
+        warnings.append(f"warning: effective {entry['effective']} differs from requested {entry['requested']}; check the thread settings")
+    if inherited and _FULL:
+        notes.append(f"note: inherited {', '.join(inherited)} from the select of {clean_ref} ({role})")
 
-    dup = None
-    if event == "complete" and entry.get("ref") and os.path.exists(ledger_path):
-        prior = read_ledger_refs(ledger_path)[0].get((entry["ref"], role), {}).get("complete")
-        if prior:
-            dup = (f"warning: {entry['ref']} ({role}) already has a complete for this attempt (outcome {prior.get('outcome')}); "
-                   "history keeps the latest — log one complete per attempt, after the review gate")
     _append_ledger(ledger_path, entry)
-    if dup:
-        print(dup)
-    if mismatch_msg:
-        print(mismatch_msg)
+    for line in (*warnings, *notes):
+        print(line)
     print(f"logged {event} ({repo}) -> {ledger_path}")
     return 0
 
@@ -5018,12 +5079,15 @@ def read_ledger_refs(ledger_path):
     return runs, unreferenced
 
 
-def history_line(ref, run, followups, role="implementer"):
+def history_line(ref, run, followups, role="implementer", has_reviewer=False):
     """One line per ref and role: model, reviewer, outcome, findings, provisional flag, pending follow-up kinds."""
     sel, done = run.get("select") or {}, run.get("complete") or {}
     who = sel or done
     parts = [f"{who.get('provider')}:{who.get('model')} @ {who.get('effort')}" if who else "no select logged"]
-    parts.append(f"reviewer {run.get('reviewer') or 'none'}")
+    rev = run.get("reviewer")
+    if not rev:
+        rev = "unlogged" if role == "implementer" and not has_reviewer and _is_int(done.get("findings")) and done["findings"] > 0 else "none"
+    parts.append(f"reviewer {rev}")
     outcome = done.get("outcome") or "open"
     if done.get("failure_class"):
         outcome += f" ({done['failure_class']})"
@@ -5068,11 +5132,12 @@ def history_cmd(a):
         keep = set(list(dict.fromkeys(ref for ref, _ in keys))[: max(last, 0)])
         keys = [k for k in keys if k[0] in keep]
     shown = set()  # refs whose pending follow-ups are listed (once, on the ref's most recent line)
+    reviewer_refs = {r for r, ro in runs if ro == "reviewer"}
     lines = []
     for ref, role in keys:
         fus = pending.get(ref) if ref not in shown else None
         shown.add(ref)
-        lines.append(history_line(ref, runs[(ref, role)], fus, role))
+        lines.append(history_line(ref, runs[(ref, role)], fus, role, has_reviewer=ref in reviewer_refs))
     logged = {k[0] for k in runs}
     for ref in sorted(pending):  # follow-ups whose item has no ledger entry
         if ref not in logged and (not want or ref == want) and last is None and not want_role:
@@ -6803,13 +6868,13 @@ def build_parser():
         if n == "log":
             p.add_argument("--ledger", help=argparse.SUPPRESS)
             p.add_argument("--event", choices=["select", "complete"], help=argparse.SUPPRESS)
-            p.add_argument("--complexity", required=True, choices=list(TIER))
-            p.add_argument("--risk", required=True, choices=["low", "medium", "high"])
+            p.add_argument("--complexity", choices=list(TIER))
+            p.add_argument("--risk", choices=["low", "medium", "high"])
             p.add_argument("--ui", action="store_true", help=argparse.SUPPRESS)
-            p.add_argument("--surface", choices=list(VALID_SURFACES), default="subagent", help=argparse.SUPPRESS)
-            p.add_argument("--provider", required=True)
-            p.add_argument("--model", required=True)
-            p.add_argument("--effort", required=True)
+            p.add_argument("--surface", choices=list(VALID_SURFACES), default=None, help=argparse.SUPPRESS)
+            p.add_argument("--provider")
+            p.add_argument("--model")
+            p.add_argument("--effort")
             p.add_argument("--reviewer")
             p.add_argument("--outcome", choices=list(VALID_OUTCOMES))
             p.add_argument("--findings", type=int)
@@ -6888,8 +6953,8 @@ def build_parser():
 
 
 def _expand_available(a):
-    """`--available @path`: read the pairs from a file (commas and/or newlines; `#` comments and blank lines ignored) into
-    `a.available` for every command. Returns the unreadable path, else None."""
+    """`--available @path`: read pairs from a file (T3 `orchestrator_capabilities` JSON, or comma/newline-separated pairs
+    with `#` comments) into `a.available` for every command. Returns the unreadable path, else None."""
     raw = getattr(a, "available", None)
     if not isinstance(raw, str) or not raw.startswith("@"):
         return None
@@ -6899,6 +6964,24 @@ def _expand_available(a):
             text = fh.read()
     except (OSError, UnicodeDecodeError):
         return path or raw
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("providers"), list):
+        pairs = []
+        for p in data["providers"]:
+            if not isinstance(p, dict) or not p.get("canRunChildTask") or p.get("disabled") or p.get("enabled") is False:
+                continue
+            pid = p.get("providerInstanceId") or p.get("id")
+            if not isinstance(pid, str) or not pid.strip():
+                continue
+            for m in p.get("models") or []:
+                mid = m.get("id") if isinstance(m, dict) else m
+                if isinstance(mid, str) and mid.strip():
+                    pairs.append(f"{pid.strip()}:{mid.strip()}")
+        a.available = ",".join(pairs)
+        return None
     a.available = ",".join(x.strip() for ln in text.splitlines() for x in ln.partition("#")[0].split(",") if x.strip())
     return None
 

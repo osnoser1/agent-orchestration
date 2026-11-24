@@ -6809,6 +6809,7 @@ class TestLedgerProviderIdsDuplicatesAndAvailableFile(unittest.TestCase):
         ])
         self.assertEqual(len(self.rows()), 3)
         # a role has its own attempt; a new select starts a new attempt; no --ref means nothing to match
+        self.log(ref="PR-9", role="reviewer", requested="codex:gpt-6-2-sol@medium", effective="codex:gpt-6-2-sol@medium")
         self.assertNotIn("warning:", self.log(ref="PR-9", event="complete", outcome="ok", role="reviewer")[1])
         self.log(ref="PR-9")
         self.assertNotIn("warning:", self.log(ref="PR-9", event="complete", outcome="ok")[1])
@@ -7446,6 +7447,117 @@ class TestLandCheck(unittest.TestCase):
         self.assertEqual(rc, 3, out)
         self.assertEqual(len([l for l in out.splitlines() if l.startswith("followup:")]), 1, out)
         self.assertIn("(×2)", out)
+
+
+class TestLogInheritWarningsAndCapabilities(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.assets = os.path.join(self.dir, "assets.yaml")
+        self.ledger = os.path.join(self.dir, "ledger.jsonl")
+        _write(self.assets, "version: 1\nproviders:\n  - id: claudeAgent\n    status: ok\n  - id: codex\n    status: ok\n")
+
+    def cli(self, *args):
+        extra = [] if args[0] == "log" else ["--catalog", CATALOG_PATH]
+        p = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "orch.py"), *args, "--assets", self.assets,
+                            *extra, "--now", "2026-11-20T21:00:00Z"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, cwd=self.dir)
+        return p.returncode, p.stdout
+
+    def rows(self):
+        with open(self.ledger, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def test_complete_inherits_from_select_and_explicit_wins(self):
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "select", "--ref", "PR-10",
+                           "--complexity", "hard", "--risk", "high", "--provider", "codex", "--model", "gpt-6-2-sol",
+                           "--effort", "high", "--surface", "conversation", "--repo", "/tmp/my-repo",
+                           "--rubric", "size=2,uncertainty=1,deps=1,consequences=2,verification=1,coordination=1",
+                           "--requested", "codex:gpt-6-2-sol@high", "--effective", "codex:gpt-6-2-sol@high")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("warning:", out)
+        # Compact complete omits note: inherited; explicit --effort overrides select's effort
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "PR-10",
+                           "--outcome", "ok", "--findings", "0", "--effort", "xhigh")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("inherited", out)
+        self.assertNotIn("warning:", out)
+        row = self.rows()[-1]
+        self.assertEqual((row["complexity"], row["risk"], row["provider"], row["model"], row["effort"]),
+                         ("hard", "high", "codex", "gpt-6-2-sol", "xhigh"))
+        self.assertEqual((row["surface"], row["repo"]), ("conversation", "my-repo"))
+        self.assertEqual(row["rubric"]["consequences"], 2)
+        # --full prints note: inherited ...
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "select", "--ref", "PR-11",
+                           "--complexity", "standard", "--risk", "low", "--provider", "codex", "--model", "gpt-6-2-sol",
+                           "--effort", "medium", "--requested", "codex:gpt-6-2-sol@medium", "--effective", "codex:gpt-6-2-sol@medium")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "PR-11", "--outcome", "ok", "--full")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("note: inherited complexity, risk, provider, model, effort, surface, repo from the select of PR-11 (implementer)", out)
+
+    def test_missing_select_or_flags_errors_and_logs_nothing(self):
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "NOPE", "--outcome", "ok")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("action: fix ", out)
+        self.assertFalse(os.path.exists(self.ledger))
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "select", "--complexity", "standard")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("action: rerun log with ", out)
+        self.assertFalse(os.path.exists(self.ledger))
+
+    def test_incomplete_row_warnings_and_quota_inference(self):
+        # select without --requested/--effective warns
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "select", "--ref", "W-1",
+                           "--complexity", "standard", "--risk", "low", "--provider", "codex", "--model", "gpt-6-2-sol", "--effort", "medium")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("warning: post-dispatch check missing (references/harnesses.md, **Requested vs effective model (after every dispatch)**)", out)
+        # outcome quota without --failure-class infers quota + notes
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "W-1", "--outcome", "quota")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("note: inferred --failure-class quota from --outcome quota", out)
+        self.assertEqual(self.rows()[-1]["failure_class"], "quota")
+        # outcome failed / stall without --failure-class warns
+        for outcome in ("failed", "stall"):
+            rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "W-1", "--outcome", outcome)
+            self.assertEqual(rc, 0, out)
+            self.assertIn(f'warning: --outcome {outcome} logged without --failure-class; rerun orch.py failure "<error>" --ref W-1 for the flags', out)
+        # complete with all 5 flags but no earlier select warns
+        rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "W-2", "--outcome", "ok",
+                           "--complexity", "standard", "--risk", "low", "--provider", "codex", "--model", "gpt-6-2-sol", "--effort", "medium")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("warning: complete for W-2 (implementer) has no earlier select", out)
+
+    def test_history_reviewer_unlogged_when_findings_without_reviewer_attempt(self):
+        with open(self.ledger, "w", encoding="utf-8") as fh:
+            for e in (
+                {"event": "select", "ref": "R-1", "role": "implementer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "medium"},
+                {"event": "complete", "ref": "R-1", "role": "implementer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "medium", "outcome": "ok", "findings": 3},
+                {"event": "select", "ref": "R-2", "role": "implementer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "medium"},
+                {"event": "complete", "ref": "R-2", "role": "implementer", "provider": "codex", "model": "gpt-6-2-sol", "effort": "medium", "outcome": "ok", "findings": 0},
+            ):
+                fh.write(json.dumps(e) + "\n")
+        rc, out = self.cli("history", "--ledger", self.ledger)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("R-1: codex:gpt-6-2-sol @ medium; reviewer unlogged; ok, 3 finding(s)", out)
+        self.assertIn("R-2: codex:gpt-6-2-sol @ medium; reviewer none; ok, 0 finding(s)", out)
+
+    def test_available_reads_t3_capabilities_json(self):
+        caps = {
+            "providers": [
+                {"providerInstanceId": "codex", "canRunChildTask": True, "models": [{"id": "gpt-6-2-sol"}, {"id": "gpt-6-luna"}]},
+                {"providerInstanceId": "disabled-p", "canRunChildTask": True, "disabled": True, "models": [{"id": "gpt-6-2-sol"}]},
+                {"providerInstanceId": "no-child", "canRunChildTask": False, "models": [{"id": "claude-opus-5-5"}]},
+                {"providerInstanceId": "empty-m", "canRunChildTask": True, "models": []},
+            ]
+        }
+        caps_path = os.path.join(self.dir, "caps.json")
+        _write(caps_path, json.dumps(caps))
+        rc, out = self.cli("select", "--complexity", "standard", "--risk", "low", "--available", "@" + caps_path)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("codex/gpt-6-2-sol", out)
+        self.assertNotIn("claude-opus-5-5", out)
 
 
 if __name__ == "__main__":
