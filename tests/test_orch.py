@@ -1619,7 +1619,7 @@ class TestProbeMergeAndExhaustedThreshold(unittest.TestCase):
 
 
 class TestReviewerFallbackOrder(unittest.TestCase):
-    """select always names a reviewer when any non-excluded model exists (references/selection.md)."""
+    """select always names a reviewer when any non-excluded model exists (references/review.md)."""
 
     def _select(self, available, complexity="standard", risk="low", assets_text=None, implementer=None):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4509,7 +4509,7 @@ class TestClassifyAndOrchestratorRole(unittest.TestCase):
         self.assertEqual(
             lines[-1],
             "action: launch the orchestrator on antigravity/gemini-4-neon @ medium; "
-            "climb the ladder only on an escalation trigger (references/selection.md); "
+            "climb the ladder only on an escalation trigger (references/escalation.md); "
             "ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>",
         )
 
@@ -5685,7 +5685,7 @@ class TestDeferGateAndExhaustNext(unittest.TestCase):
         self.assertEqual(
             last,
             "action: switch this conversation to codex/gpt-6-2-sol @ medium in place, or hand off with orch.py launch <spec> "
-            '(references/harnesses.md "Orchestrator\'s own quota"); log it with --role orchestrator --rubric <rubric>',
+            '(references/orchestrator.md "Orchestrator\'s own quota"); log it with --role orchestrator --rubric <rubric>',
         )
 
         # Exhaust the last remaining provider without --ref -> defaults to orchestrator-self, preserving current-task!
@@ -6065,13 +6065,13 @@ class TestLaunchSpec(unittest.TestCase):
                 "model: codex/gpt-6.2-sol @ medium (rung 1 of 2)",
                 "ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high",
                 "provider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high",
-                "escalate on (orch.py escalate): outcome rework | 3+ findings exposing a gap in your brief or plan (references/supervision.md) "
+                "escalate on (orch.py escalate): outcome rework | 3+ findings exposing a gap in your brief or plan (references/escalation.md) "
                 "(workers: 3+) | a child's STATUS: ESCALATE",
                 "escalation cap: at most 2 escalations; never step down mid-phase",
                 "caps: children per pool 2; budget antigravity 10, claudeAgent 4",
                 "workspace: worktree from origin/main; children shared",
                 "rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)",
-                "verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)",
+                "verify: the launcher compares requested vs effective model/effort after launch (references/orchestrator.md)",
             ],
         )
 
@@ -6678,7 +6678,7 @@ class TestQualityEscalation(unittest.TestCase):
         ws = {"present": False}
         line = next(l for l in orch._build_launch_header("orchestrator", cand, [cand], None, 2, {}, ws, "r", "hard", "low", thresholds=(5, 4))
                     if l.startswith("escalate on"))
-        self.assertIn("| 4+ findings exposing a gap in your brief or plan (references/supervision.md) (workers: 5+) |", line)
+        self.assertIn("| 4+ findings exposing a gap in your brief or plan (references/escalation.md) (workers: 5+) |", line)
         self.assertIn("escalation cap: at most 2 escalations; never step down mid-phase",
                       orch._build_launch_header("orchestrator", cand, [cand], None, 2, {}, ws, "r", "hard", "low"))
 

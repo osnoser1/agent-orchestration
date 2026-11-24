@@ -1,6 +1,6 @@
 # Batching, durable state, and supervision loop
 
-Use these rules when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, deferring work after a user hold or a `defer`/`select` hold, or escalating a role whose work falls short.
+Reach this file when coordinating multiple work items, acting on a child's completion, supervising non-notifying children, deferring work after a user hold or a `defer`/`select` hold, retrying a failed child, or replacing one.
 
 ## Conflict-aware batching
 
@@ -33,7 +33,7 @@ Carry everything required to resume cold after context compaction or a new sessi
 
 1. **Provider quota snapshot**: current status, `used_percent`, and `resets_at` from `scripts/orch.py probe`.
 2. **Batch-relevant preferences**: active `assets.yaml` settings (`ui_fallback`, `below_tier`, `new_conversations`, `design_checkpoints`, `evidence`), repo policy lines (`references/repo-policy.md`), and user instructions for the batch.
-3. **Open children**: each active child's ID/link, role, `provider / model @ effort`, target paths/branch, latest status, and for children staged under `below_tier: stage` the current phase, the Phase 2 target model, and the scheduled double-check time (`references/selection.md`).
+3. **Open children**: each active child's ID/link, role, `provider / model @ effort`, target paths/branch, latest status, and for children staged under `below_tier: stage` the current phase, the Phase 2 target model, and the scheduled double-check time (`references/fallbacks.md`).
 4. **Approved checkpoints**: concrete design or scope decisions the user already approved (`references/verification.md`), so resumed sessions reuse the recorded approval directly.
 5. **Remaining batches**: ordered pending batches with their conflict dependencies and briefs, or the user-local plan file path holding them.
 6. **Self-healing rule**: put the literal line *"If the plan file is missing, rebuild it from this summary before continuing."* at the top of the plan file and in every state summary (the orchestrator's own and any supervision prompt).
@@ -48,7 +48,7 @@ When a child reports completion (a harness task notification, or its final or `f
 
 ## Supervision loop
 
-Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Brief such children to message the orchestrator at each milestone where the harness lets them (`references/brief-template.md`), so the loop is a fallback for silence, not the main signal. Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`; harness rules keep authority under Precedence 2 in `references/repo-policy.md`).
+Scope the supervision loop strictly to children that do **not** send automatic completion wakeups to the orchestrator (top-level conversations, detached CLI runs, or harnesses without completion notices). Brief such children to message the orchestrator at each milestone where the harness lets them (`references/brief-template.md`), so the loop is a fallback for silence, not the main signal. Children that notify the orchestrator on completion rely on their completion wakeup alone (`references/harnesses.md`).
 
 When several non-notifying children run for long, schedule a recurring supervision check using the harness's scheduler (`Scheduled resume` in `references/harnesses.md`); in harnesses without a background scheduler, run the check on each user turn.
 
@@ -57,7 +57,7 @@ On each check:
 1. **Read cheaply**: inspect each open non-notifying child with a small read limit (recent messages/run state only).
 2. **Classify and act**:
    - **Healthy**: active run in progress, or waiting on an awaited task/subagent → leave running, and run the scope check on its working diff (`references/verification.md`).
-   - **Staged Phase 1 done**: apply the phase-boundary switch in `references/selection.md`.
+   - **Staged Phase 1 done**: apply the phase-boundary switch in `references/fallbacks.md`.
    - **Stopped by quota**: run the quota-recovery decision order in `references/harnesses.md`.
    - **Idle with pending work**: diagnose why it stopped and send one continuation message. When a Gemini child exhibits the `"ended turn while waiting"` quirk (`catalog.yaml`, `references/harnesses.md`), resend and instruct it to block in one foreground command.
    - **Polling**: recent activity shows the same short command repeated (a loop of seconds, each a model turn) → steer it once to the harness wait (`WAITING` in `references/brief-template.md`) and, while an Antigravity Gemini child runs a long background command, check at least every 30 min (sized to the ~50 min drain reported in issue 14; *unverified* as a general figure).
@@ -69,7 +69,7 @@ On each check:
 
 ## Failure-mode retries
 
-Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (loads `Known failures:` from `--repo` automatically, or pass `--known 'REGEX=>ACTION'` to override) and follow its `action:` line. It prints the `log:` flags (they carry the class) and the action, which already applies the ledger's retry count `n/2` (`--full` also prints `class:` and `retries:`): log the outcome with `scripts/orch.py log --event complete` plus those flags (`--ref` is a short item label, never a path). A stall has no error text: use its row.
+Run `python3 scripts/orch.py failure "<error text>" --ref <item>` (loads `Known failures:` from `--repo` automatically, or pass `--known 'REGEX=>ACTION'` to override) and follow its `action:` line, which already applies the ledger's retry count; log the outcome with `scripts/orch.py log --event complete` plus the `log:` flags it prints (`--ref` is a short item label, never a path). A stall has no error text: use its row.
 
 Without Python, map how the child failed to the next action:
 
@@ -82,27 +82,9 @@ Without Python, map how the child failed to the next action:
 | Stall | The harness row's stall handling in `references/harnesses.md`; for non-notifying children, the supervision loop above. | `stall` |
 | Unknown | Retry once; a failed retry counts toward the two below. | `failed` |
 
-After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count. `failure` counts ledger lines carrying that `--ref` and a `--failure-class` of `context-cap`, `tool`, or `unknown`, and restarts the count at an `--outcome ok` completion without `--failure-class`; give each item its own `--ref`.
+After two failed retries of the same item, stop retrying it and report it to the user with the evidence (error text, last messages, ledger lines). Count per item across models, and only retries or replacements under the context-cap, tool or harness error, and unknown rows; quota switches, scheduled resumes, stall continuations, and infrastructure reruns do not count. `failure` counts these from the ledger by `--ref` and restarts at an `--outcome ok` completion without `--failure-class`, so give each item its own `--ref`.
 
 *Done when*: each failed child's next action is taken from the `action:` line (or the table), its outcome is logged, and any item past two failed retries is reported to the user with evidence.
-
-## Quality escalation (`orch.py escalate`)
-
-Escalate any role (implementer, reviewer, or orchestrator) when its work falls short, on any one trigger: `outcome: rework`; important review findings at the escalation threshold (`preferences.escalation.findings`, default 3; for the orchestrator, `unflagged` findings at `preferences.orchestrator.unflagged_findings`, counting only gaps in its own brief or plan, such as a missing requirement, a wrong design decision, or an unstated constraint or acceptance criterion, never implementation defects); or a child's `STATUS: ESCALATE` (`references/brief-template.md`).
-
-On `STATUS: ESCALATE`, first rerun `orch.py classify` with the child's `ASSESSMENT` (keep your `coordination` score), so its `--complexity`/`--risk` raise the tier floor. Then run `python3 scripts/orch.py escalate --role <role> --ref <item> --current <provider:model@effort> --cause rework|findings|status --available <provider:model,...> [--findings N]`, adding `--complexity`/`--risk` for workers, `--implementer` for a reviewer, or `--coordination` for the orchestrator, and follow its `action:` line; it logs the escalation with its cause. When the line asks the user (unknown current score, emergency-only rung, or the orchestrator's provider switch on `rework` or `status`), rerun it after approval with `--approved --to <provider:model@effort>` to log the approved switch.
-
-After the switch, log the new rung with `log --event select` (`references/improvement.md`; an orchestrator switching itself verifies and logs per `references/harnesses.md`, Orchestrator's own quota, step 3) and re-review the change as a delta (`references/selection.md`, Re-reviews).
-
-Without Python:
-
-1. **Order**: the next higher rated effort of the same model first (skipped for a reviewer on the implementer's model), then the first model in the worker ranking order (`references/selection.md`), same provider first, at its lowest effort that scores strictly higher; reviewers take the reviewer fallback order instead. The target always scores strictly higher, so an escalation never steps down; when nothing scores higher, report to the user.
-2. **Unscored rung**: a current rung without a rated score proves nothing; climb only to a higher rated effort of the same model, else ask the user.
-3. **Cap**: at most two escalations per item and role (`preferences.escalation.max`; orchestrator `preferences.orchestrator.max_escalations`). At the cap, report the item to the user with the evidence.
-4. **Providers**: workers cross providers as a routine decision. The orchestrator climbs its own provider's ladder (effort capped at `high`, `references/selection.md`) and asks the user before a provider switch, at a phase boundary only; on `findings` with no higher same-provider rung it continues on its current rung.
-5. **Exclusions**: a reviewer escalates only to a model other than the implementer's; emergency efforts and models, pay-per-use, `policy: avoid`, and exhausted pools stay out. When only emergency models or efforts score higher, ask the user once (`SKILL.md` Step 7).
-
-*Done when*: every trigger went through `orch.py escalate` (or the rules above), its `action:` line was followed, the escalation is logged with its cause, and the change got a delta re-review.
 
 ## Confirm stop before replacement
 

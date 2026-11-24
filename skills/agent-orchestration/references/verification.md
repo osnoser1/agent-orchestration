@@ -20,7 +20,7 @@ When the implementer reports, and before the review pass, run `python3 scripts/o
 
 ## Agent-facing doc review
 
-Agent-facing docs (`AGENTS.md`, `CLAUDE.md`, skills, references, or catalog text that agents read) get the review → fix → re-review loop from `references/brief-template.md` as part of the independent review (`SKILL.md` Step 5.3): the reviewer runs it on those files, so the author's own pass never stands alone. For docs you edit yourself as orchestrator, delegate that review to a fresh reviewer chosen by the reviewer order in `references/selection.md` from any usable model (the order ends at the same model in a fresh conversation, so quota is the only blocker). When none is usable, say so in the report before opening the PR.
+Agent-facing docs (`AGENTS.md`, `CLAUDE.md`, skills, references, or catalog text that agents read) get the review → fix → re-review loop from `references/brief-template.md` as part of the independent review (`SKILL.md` Step 5.3): the reviewer runs it on those files, so the author's own pass never stands alone. For docs you edit yourself as orchestrator, delegate that review to a fresh reviewer chosen by the reviewer order in `references/review.md` from any usable model (the order ends at the same model in a fresh conversation, so quota is the only blocker). When none is usable, say so in the report before opening the PR.
 
 *Done when*: a delegated reviewer's final pass finds zero defects, or its residual findings are listed under `## Obstacles / not verified`, or the report names that no model was usable, before the PR.
 
@@ -36,7 +36,7 @@ For user-visible changes whose look, layout, copy, or interaction behavior is a 
 
 After cross-family review findings are resolved and before landing, verify five items:
 
-1. **Diff and one key test**: read the diff and run one key verification command yourself. When a diff is too large to read cheaply in orchestrator context, delegate reading it to a `cheap` subagent (or reuse the reviewer **evidence pack** from `references/selection.md`) and judge its `path:line` summary yourself.
+1. **Diff and one key test**: read the diff and run one key verification command yourself. When a diff is too large to read cheaply in orchestrator context, delegate reading it to a `cheap` subagent (or reuse the reviewer **evidence pack** from `references/review.md`) and judge its `path:line` summary yourself.
 2. **Dependency and tooling proportionality**: re-run `orch.py scope` (**Scope check before review**) on the diff after review fixes, and flag new dependencies, scripts, or abstractions that are disproportionately large for the problem solved.
 3. **User-visible evidence**: when the change is user-visible, verify concrete visual or behavioral evidence (screenshots, recordings, or transcripts) scaled to `preferences.evidence` and repo `Evidence:`.
 4. **Repo budgets and limits**: verify any size, bundle, performance, lint, or schema budgets the target repository defines.

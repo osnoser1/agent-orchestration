@@ -14,7 +14,7 @@ preferences:
   # evidence: "red-green tests; browser screenshots on UI changes"  # optional user evidence priorities / deprioritized checks
   tier_floors: {T1: 20, T2: 40, T3: 50, T4: 57}   # optional override of references/selection.md floors
   # escalation: {findings: 3, max: 2}            # orch.py escalate for workers: findings that trigger it; escalations per item (0..3)
-  # orchestrator:                                 # select --role orchestrator (references/selection.md)
+  # orchestrator:                                 # select --role orchestrator (references/orchestrator.md)
   #   tiers: {0: T1, 1: T2, 2: T3}                # coordination score -> orchestrator tier
   #   max_effort: high                            # never above high
   #   defaults: {codex: medium, claude: high}     # starting effort per provider id (raised to meet the tier)

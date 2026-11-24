@@ -2257,7 +2257,7 @@ orchestrator tier T1 (>= 20; coordination 0)
 ladder: codex/gpt-6-luna @ high -> codex/gpt-6-2-sol @ low -> codex/gpt-6-2-sol @ medium
 provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2274,7 +2274,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   rung: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
   switch: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2288,7 +2288,7 @@ ladder: codex/gpt-6-2-sol @ low -> codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-s
 provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2306,7 +2306,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   switch: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2320,7 +2320,7 @@ ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
 provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: no non-emergency effort (<= high) reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2338,7 +2338,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort (<= high) reaches 50
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2353,7 +2353,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
 note: provider exhausted: spent
 note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
 note: pay-per-use/avoid, skipped: openai-api
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2372,7 +2372,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
   note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2388,7 +2388,7 @@ note: no non-emergency effort (<= high) reaches 40: claudeAgent_claude_extra:cla
 note: provider exhausted: spent
 note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
 note: pay-per-use/avoid, skipped: openai-api
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2407,7 +2407,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
   note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2423,7 +2423,7 @@ note: no non-emergency effort (<= high) reaches 50: claudeAgent_claude_extra:cla
 note: provider exhausted: spent
 note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
 note: pay-per-use/avoid, skipped: openai-api
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2441,7 +2441,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
   note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2454,7 +2454,7 @@ orchestrator tier T1 (>= 20; coordination 0)
 ladder: codex/gpt-6-1-terra @ none -> codex/gpt-6-1-terra @ medium -> codex/gpt-6-1-terra @ high
 note: emergency, skipped: codex:gpt-6-2-astra, claudeAgent:claude-fable-5-2
 note: coordinator mode excluded: adds a second coordinator under yours: antigravity:gemini-pro-orchestrator-neon
-action: launch the orchestrator on codex/gpt-6-1-terra @ none; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ none; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2471,7 +2471,7 @@ ladder: codex/gpt-6-1-terra @ none -> codex/gpt-6-1-terra @ medium -> codex/gpt-
   note: codex:gpt-6-2-astra: emergency, skipped
   note: antigravity:gemini-pro-orchestrator-neon: coordinator mode excluded: adds a second coordinator under yours
   note: claudeAgent:claude-fable-5-2: emergency, skipped
-action: launch the orchestrator on codex/gpt-6-1-terra @ none; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ none; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2484,7 +2484,7 @@ orchestrator tier T2 (>= 40; coordination 1)
 ladder: codex/gpt-6-1-terra @ high
 note: emergency, skipped: codex:gpt-6-2-astra, claudeAgent:claude-fable-5-2
 note: coordinator mode excluded: adds a second coordinator under yours: antigravity:gemini-pro-orchestrator-neon
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2499,7 +2499,7 @@ ladder: codex/gpt-6-1-terra @ high
   note: codex:gpt-6-2-astra: emergency, skipped
   note: antigravity:gemini-pro-orchestrator-neon: coordinator mode excluded: adds a second coordinator under yours
   note: claudeAgent:claude-fable-5-2: emergency, skipped
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2538,7 +2538,7 @@ orchestrator tier T1 (>= 20; coordination 0)
 ladder: codex/gpt-6-luna @ high -> codex/gpt-6-1-terra @ none -> codex/gpt-6-1-terra @ medium
 note: provider exhausted: spent (2)
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2555,7 +2555,7 @@ ladder: codex/gpt-6-luna @ high -> codex/gpt-6-1-terra @ none -> codex/gpt-6-1-t
   note: spent:claude-opus-5-5: provider exhausted
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2569,7 +2569,7 @@ ladder: codex/gpt-6-1-terra @ high
 note: provider exhausted: spent (2)
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2585,7 +2585,7 @@ ladder: codex/gpt-6-1-terra @ high
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2640,7 +2640,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2659,7 +2659,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2674,7 +2674,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2693,7 +2693,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2708,7 +2708,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2727,7 +2727,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota.yaml
 followups:
   - kind: ui-review
@@ -2740,7 +2740,7 @@ orchestrator tier T1 (>= 20; coordination 0)
 ladder: codex/gpt-6-luna @ high -> codex/gpt-6-2-sol @ low
 provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ low
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2756,7 +2756,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   rung: codex / gpt-6-2-sol @ low (score 40.55, policy ending)
   switch: antigravity / gemini-4-neon @ low (score 44, policy spend-first)
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2770,7 +2770,7 @@ ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
 provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2787,7 +2787,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   switch: antigravity / gemini-4-neon @ medium (score 55, policy spend-first)
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2801,7 +2801,7 @@ ladder: codex/gpt-6-2-sol @ medium -> codex/gpt-6-2-sol @ high
 provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon @ medium
 note: no non-emergency effort (<= high) reaches 50: claudeAgent:claude-sonnet-5-5, codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2819,7 +2819,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: claudeAgent:claude-sonnet-5-5: no non-emergency effort (<= high) reaches 50
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 50
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2834,7 +2834,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
 note: provider exhausted: spent
 note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
 note: pay-per-use/avoid, skipped: openai-api
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2852,7 +2852,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
   note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ low; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2868,7 +2868,7 @@ note: no non-emergency effort (<= high) reaches 40: claudeAgent_claude_extra:cla
 note: provider exhausted: spent
 note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
 note: pay-per-use/avoid, skipped: openai-api
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2887,7 +2887,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
   note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2903,7 +2903,7 @@ note: no non-emergency effort (<= high) reaches 50: claudeAgent_claude_extra:cla
 note: provider exhausted: spent
 note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
 note: pay-per-use/avoid, skipped: openai-api
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2921,7 +2921,7 @@ provider switch (phase boundary, ask the user first): claudeAgent_claude_extra/c
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
   note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
-action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on antigravity/gemini-4-hydrogen @ high; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2934,7 +2934,7 @@ orchestrator tier T1 (>= 20; coordination 0)
 ladder: codex/gpt-6-1-terra @ medium -> codex/gpt-6-1-terra @ high
 note: emergency, skipped: codex:gpt-6-2-astra, claudeAgent:claude-fable-5-2
 note: coordinator mode excluded: adds a second coordinator under yours: antigravity:gemini-pro-orchestrator-neon
-action: launch the orchestrator on codex/gpt-6-1-terra @ medium; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ medium; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2950,7 +2950,7 @@ ladder: codex/gpt-6-1-terra @ medium -> codex/gpt-6-1-terra @ high
   note: codex:gpt-6-2-astra: emergency, skipped
   note: antigravity:gemini-pro-orchestrator-neon: coordinator mode excluded: adds a second coordinator under yours
   note: claudeAgent:claude-fable-5-2: emergency, skipped
-action: launch the orchestrator on codex/gpt-6-1-terra @ medium; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ medium; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2963,7 +2963,7 @@ orchestrator tier T2 (>= 40; coordination 1)
 ladder: codex/gpt-6-1-terra @ high
 note: emergency, skipped: codex:gpt-6-2-astra, claudeAgent:claude-fable-5-2
 note: coordinator mode excluded: adds a second coordinator under yours: antigravity:gemini-pro-orchestrator-neon
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -2978,7 +2978,7 @@ ladder: codex/gpt-6-1-terra @ high
   note: codex:gpt-6-2-astra: emergency, skipped
   note: antigravity:gemini-pro-orchestrator-neon: coordinator mode excluded: adds a second coordinator under yours
   note: claudeAgent:claude-fable-5-2: emergency, skipped
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3017,7 +3017,7 @@ orchestrator tier T1 (>= 20; coordination 0)
 ladder: codex/gpt-6-luna @ high -> codex/gpt-6-1-terra @ none
 note: provider exhausted: spent (2)
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3033,7 +3033,7 @@ ladder: codex/gpt-6-luna @ high -> codex/gpt-6-1-terra @ none
   note: spent:claude-opus-5-5: provider exhausted
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
-action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-luna @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3047,7 +3047,7 @@ ladder: codex/gpt-6-1-terra @ high
 note: provider exhausted: spent (2)
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3063,7 +3063,7 @@ ladder: codex/gpt-6-1-terra @ high
   note: spent:gpt-6-2-sol: provider exhausted
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
-action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/selection.md); log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-1-terra @ high; climb the ladder only on an escalation trigger (references/escalation.md); log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3118,7 +3118,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3136,7 +3136,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3151,7 +3151,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3169,7 +3169,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3184,7 +3184,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
 note: no non-emergency effort (<= high) reaches 40: codex:gpt-6-luna
 note: group Claude and GPT models exhausted: antigravity:claude-opus-5-5
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review
@@ -3202,7 +3202,7 @@ provider switch (phase boundary, ask the user first): antigravity/gemini-4-neon 
   note: codex:gpt-6-luna: no non-emergency effort (<= high) reaches 40
   note: antigravity:claude-opus-5-5: group Claude and GPT models exhausted
 note: phase effort is off (preferences.orchestrator.phase_effort); stay on claudeAgent/claude-opus-5-5 @ high
-action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/selection.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
+action: launch the orchestrator on codex/gpt-6-2-sol @ medium; climb the ladder only on an escalation trigger (references/escalation.md); ask the user before the provider switch; log it with --role orchestrator --rubric <rubric>
 --- quota-orch.yaml
 followups:
   - kind: ui-review

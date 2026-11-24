@@ -1,9 +1,11 @@
 {
   "skills/agent-orchestration/references/repo-policy.md": ["Precedence"],
-  "skills/agent-orchestration/references/selection.md": [
-    "Effort knee and missing efforts",
-    "Filter and ranking order",
+  "skills/agent-orchestration/references/fallbacks.md": [
     "Preferred-model fallback (`preferences.ui_fallback`) and follow-ups",
     "Below-tier handling (`preferences.below_tier`) and follow-ups"
+  ],
+  "skills/agent-orchestration/references/selection.md": [
+    "Effort knee and missing efforts",
+    "Filter and ranking order"
   ]
 }
