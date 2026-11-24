@@ -928,9 +928,10 @@ def release_state(root, run=sh, check_fn=run_checks):
         problems.append("git status failed")
     elif out.strip():
         problems.append("working tree is not clean")
+    # Any clean worktree works: the HEAD == origin/main check below pins the commit, not the branch name.
     rc, out = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], root)
-    if rc != 0 or out.strip() != "main":
-        problems.append("not on main (on %s)" % (out.strip() or "unknown"))
+    if rc == 0 and out.strip() != "main":
+        notes.append("releasing from %s at origin/main" % (out.strip() if out.strip() not in ("", "HEAD") else "detached HEAD"))
     rc, _ = run(["git", "fetch", "--quiet", "origin", "main"], root)
     if rc != 0:
         problems.append("git fetch origin main failed")

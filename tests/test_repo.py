@@ -174,8 +174,28 @@ class TestRelease(unittest.TestCase):
     def test_dirty_tree(self):
         self.assertBlocked(FakeRun({("git", "status", "--porcelain"): (0, " M x\n")}), "working tree is not clean")
 
-    def test_not_on_main(self):
-        self.assertBlocked(FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "feat/x\n")}), "not on main (on feat/x)")
+    def test_detached_head_at_origin_main_releases(self):
+        rc, lines = self.release(FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "HEAD\n")}))
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("note: releasing from detached HEAD at origin/main", lines)
+
+    def test_branch_at_origin_main_releases_with_note(self):
+        run = FakeRun({("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "feat/x\n")})
+        rc, lines = self.release(run, publish=True)
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("note: releasing from feat/x at origin/main", lines)
+        self.assertEqual([c for c in run.calls if c in self.ALL], self.ALL)
+
+    def test_on_main_adds_no_branch_note(self):
+        rc, lines = self.release(FakeRun())
+        self.assertEqual(rc, 0, lines)
+        self.assertFalse(any("releasing from" in l for l in lines), lines)
+
+    def test_branch_not_at_origin_main_is_blocked(self):
+        self.assertBlocked(FakeRun({
+            ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "feat/x\n"),
+            ("git", "rev-parse", "origin/main"): (0, "def456\n"),
+        }), "HEAD is not origin/main")
 
     def test_head_differs_from_origin(self):
         self.assertBlocked(FakeRun({("git", "rev-parse", "origin/main"): (0, "def456\n")}), "HEAD is not origin/main")
@@ -197,7 +217,7 @@ class TestRelease(unittest.TestCase):
     def test_all_problems_are_reported_together(self):
         rc, lines = self.release(FakeRun({
             ("git", "status", "--porcelain"): (0, " M x\n"),
-            ("git", "rev-parse", "--abbrev-ref", "HEAD"): (0, "dev\n"),
+            ("git", "rev-parse", "origin/main"): (0, "def456\n"),
         }))
         self.assertEqual(rc, 1)
         self.assertEqual(len([l for l in lines if l.startswith("error: release:")]), 2)
