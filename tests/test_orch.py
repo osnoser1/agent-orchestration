@@ -7290,6 +7290,17 @@ class TestCrossFamilyReviewFixes(unittest.TestCase):
         self.assertEqual(orch.load_file(self.assets)["providers"][0]["groups"][0]["exhausted_models"], {"gemini-4-argon": self.UNTIL})
 
 
+class TestAvailableCapabilitiesErrors(unittest.TestCase):
+    def test_broken_or_empty_capabilities_json_is_an_error(self):
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp)
+        for name, text, why in (("bad.json", '{"providers":[', "not valid JSON"),
+                                ("empty.json", '{"providers":[]}', "no provider that can run a child task")):
+            path = os.path.join(tmp, name)
+            _write(path, text)
+            a = _Args(available="@" + path)
+            self.assertIn(why, orch._expand_available(a))
+
+
 class TestLandCheck(unittest.TestCase):
     NOW = "2026-11-20T21:00:00Z"
     AVAIL = "claude:claude-opus-5-5,antigravity:gemini-4-neon"
@@ -7512,7 +7523,7 @@ class TestLogInheritWarningsAndCapabilities(unittest.TestCase):
         rc, out = self.cli("log", "--ledger", self.ledger, "--event", "select", "--ref", "W-1",
                            "--complexity", "standard", "--risk", "low", "--provider", "codex", "--model", "gpt-6-2-sol", "--effort", "medium")
         self.assertEqual(rc, 0, out)
-        self.assertIn("warning: post-dispatch check missing (references/harnesses.md, **Requested vs effective model (after every dispatch)**)", out)
+        self.assertIn("warning: post-dispatch check missing: after dispatch, log the select with --requested/--effective (references/harnesses.md, **Requested vs effective model (after every dispatch)**)", out)
         # outcome quota without --failure-class infers quota + notes
         rc, out = self.cli("log", "--ledger", self.ledger, "--event", "complete", "--ref", "W-1", "--outcome", "quota")
         self.assertEqual(rc, 0, out)

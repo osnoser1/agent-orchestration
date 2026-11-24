@@ -16,8 +16,8 @@
                     [--user-hold --needs N [--after ISO] [--on-recovery]] [--catalog F] [--assets F] [--now ISO]
   orch.py followups [--due] [--add --kind K --ref R --needs N [--after ISO]] [--done R]
                     [--available ...] [--catalog F] [--assets F] [--now ISO]
-  orch.py log       --complexity C --risk R --provider P --model M --effort E
-                    [--role implementer|reviewer|orchestrator] [--rubric K=N,...] [--requested P:M@E] [--effective P:M@E]
+  orch.py log       --event select --complexity C --risk R --provider P --model M --effort E  (a complete inherits these
+                    from its select: --event complete --ref ITEM [--role R] --outcome O) [--role implementer|reviewer|orchestrator] [--rubric K=N,...] [--requested P:M@E] [--effective P:M@E]
                     [--ui] [--reviewer R] [--surface subagent|conversation] [--event select|complete]
                     [--outcome ok|failed|quota|stall|rework] [--findings N] [--unflagged N] [--repo NAME] [--provisional]
                     [--ref ITEM] [--failure-class C] [--assets F] [--ledger F] [--now ISO]
@@ -5034,7 +5034,7 @@ def log_cmd(a):
     if event == "complete" and clean_ref and not prior_select and all_five_given:
         warnings.append(f"warning: complete for {clean_ref} ({role}) has no earlier select; log the select first")
     if event == "select" and surface in ("subagent", "conversation") and ("requested" not in entry or "effective" not in entry):
-        warnings.append("warning: post-dispatch check missing (references/harnesses.md, **Requested vs effective model (after every dispatch)**)")
+        warnings.append("warning: post-dispatch check missing: after dispatch, log the select with --requested/--effective (references/harnesses.md, **Requested vs effective model (after every dispatch)**)")
     if event == "complete" and clean_ref and prior_complete:
         warnings.append(f"warning: {clean_ref} ({role}) already has a complete for this attempt (outcome {prior_complete.get('outcome')}); "
                         "history keeps the latest — log one complete per attempt, after the review gate")
@@ -6868,7 +6868,7 @@ def build_parser():
         if n == "log":
             p.add_argument("--ledger", help=argparse.SUPPRESS)
             p.add_argument("--event", choices=["select", "complete"], help=argparse.SUPPRESS)
-            p.add_argument("--complexity", choices=list(TIER))
+            p.add_argument("--complexity", choices=list(TIER), help="select: required with --risk/--provider/--model/--effort; complete: inherited from its select")
             p.add_argument("--risk", choices=["low", "medium", "high"])
             p.add_argument("--ui", action="store_true", help=argparse.SUPPRESS)
             p.add_argument("--surface", choices=list(VALID_SURFACES), default=None, help=argparse.SUPPRESS)
@@ -6964,10 +6964,13 @@ def _expand_available(a):
             text = fh.read()
     except (OSError, UnicodeDecodeError):
         return path or raw
+    looks_json = text.lstrip()[:1] in ("{", "[")
     try:
         data = json.loads(text)
     except ValueError:
         data = None
+    if looks_json and data is None:
+        return f"{path} (not valid JSON)"
     if isinstance(data, dict) and isinstance(data.get("providers"), list):
         pairs = []
         for p in data["providers"]:
@@ -6980,6 +6983,8 @@ def _expand_available(a):
                 mid = m.get("id") if isinstance(m, dict) else m
                 if isinstance(mid, str) and mid.strip():
                     pairs.append(f"{pid.strip()}:{mid.strip()}")
+        if not pairs:
+            return f"{path} (capabilities JSON lists no provider that can run a child task)"
         a.available = ",".join(pairs)
         return None
     a.available = ",".join(x.strip() for ln in text.splitlines() for x in ln.partition("#")[0].split(",") if x.strip())
@@ -6990,7 +6995,7 @@ def main():
     a = build_parser().parse_args()
     bad = _expand_available(a)
     if bad:
-        print(f"error: --available file {_show_entry(bad)} is not readable")
+        print(f"error: --available file {_show_entry(bad)}" + ("" if bad.endswith(")") else " is not readable"))
         print(f"error: 1 problem(s); action: fix --available (comma-separated <provider>:<model-id> pairs, or @<readable file>) and rerun {a.cmd}")
         return 1
     return {
