@@ -92,6 +92,7 @@ def matrix():
         esc("reviewer", "claudeAgent:claude-sonnet-5-5@xhigh", AVAIL["main"], *hl, "--implementer", "claude-opus-5-5"),
         esc("orchestrator", "claudeAgent:claude-opus-5-5@medium", AVAIL["main"], "--coordination", "1", assets="quota-orch.yaml"),
         esc("orchestrator", "codex:gpt-6-2-sol@high", AVAIL["main"], "--coordination", "2"),
+        esc("orchestrator", "codex:gpt-6-2-sol@high", AVAIL["main"], "--coordination", "2", "--findings", "9", cause="findings"),
         esc("orchestrator", "antigravity:gemini-pro-orchestrator-neon@high", AVAIL["main"], "--coordination", "0"),
         esc("implementer", "codex:gpt-6-2-sol@xhigh", AVAIL["main"], *hl, ref="PR-1"),
         esc("implementer", "codex:gpt-6-2-sol@medium", AVAIL["main"], *hl, "--findings", "1", cause="findings"),
