@@ -12,7 +12,7 @@ Works in multi-provider harnesses and inside single-provider harnesses. Models a
 | `skills/agent-orchestration/catalog.yaml` | Shared model facts: Artificial Analysis scores per effort, cost class, strengths, quirks | PRs |
 | `~/.config/agent-orchestration/assets.yaml` | **Your** providers, probe config, policy, preferences, and live quota state (outside the repo; template: `skills/agent-orchestration/assets/assets.example.yaml`) | automatic probe / you |
 | `skills/agent-orchestration/references/` | Selection & fallback rules, batching & supervision loop, verification & design checkpoints, repo policy contract, delegation surface & harness matrix, brief template, quota probe/error rules, unrated-model research, improvement loop | rarely |
-| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `classify`, `select`, `launch`, `followups`, `log`, `history`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
+| `skills/agent-orchestration/scripts/orch.py` | **Optional**, stdlib-only Python 3.9+ helper (`probe`, `classify`, `select`, `launch`, `followups`, `log`, `history`, `escalate`, `exhaust`, `status`, `failure`, `scope`, `policy`, `check`) | rarely |
 
 Selection in brief (rules live in `skills/agent-orchestration/references/selection.md`): complexity × risk sets a tier floor; usable rated models that meet it are ranked by preferred strength or family, quota health, policy, reset time, cost, and effort; the reviewer is chosen when its step starts, capability before independence. Two preferences cover shortfalls: `preferences.ui_fallback` (`proceed|defer|ask`) when a preferred UI/UX or family model is exhausted, and `preferences.below_tier` (`stage|wait|proceed`, default `stage`) when every tier-meeting model is out of quota, where `stage` prepares on a below-tier model and switches the same child to the tier-meeting model for the change and review.
 
@@ -75,6 +75,9 @@ python3 skills/agent-orchestration/scripts/orch.py followups --due
 python3 skills/agent-orchestration/scripts/orch.py log --complexity hard --risk high \
   --provider antigravity --model gemini-4-neon --effort high --outcome ok --findings 1 --repo my-app
 python3 skills/agent-orchestration/scripts/orch.py history --last 5   # per ref: model, reviewer, outcome, findings, provisional, pending follow-ups
+python3 skills/agent-orchestration/scripts/orch.py history --role implementer --by model,effort   # per model@effort: rework, findings, escalations, cost
+python3 skills/agent-orchestration/scripts/orch.py escalate --role implementer --ref PR-42 --current codex:gpt-6-2-sol@medium \
+  --cause rework --complexity standard --risk low --available codex:gpt-6-2-sol,claude:claude-opus-5-5   # next rung up, logged
 python3 skills/agent-orchestration/scripts/orch.py exhaust antigravity "Individual quota reached… Resets in 4h29m1s"
 python3 skills/agent-orchestration/scripts/orch.py status claude ok
 python3 skills/agent-orchestration/scripts/orch.py failure "prompt is too long" --ref PR-42   # log flags + next action
