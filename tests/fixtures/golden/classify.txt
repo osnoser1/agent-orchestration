@@ -1,0 +1,84 @@
+=== classify --size 0 --uncertainty 0 --deps 0 --consequences 0 --verification 0 --coordination 0 --assets <TMP>/quota.yaml
+rc: 0
+complexity: trivial (size 0 + uncertainty 0 + deps 0 + verification 0 = 0)
+risk: low (consequences 0)
+orchestrator: T1 (coordination 0)
+rubric: size=0,uncertainty=0,deps=0,consequences=0,verification=0,coordination=0
+action: select --complexity trivial --risk low for workers and select --role orchestrator --coordination 0 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 0 --uncertainty 0 --deps 0 --consequences 0 --verification 0 --coordination 0 --assets <TMP>/quota.yaml --full
+rc: 0
+complexity: trivial (size 0 + uncertainty 0 + deps 0 + verification 0 = 0)
+risk: low (consequences 0)
+orchestrator: T1 (coordination 0)
+rubric: size=0,uncertainty=0,deps=0,consequences=0,verification=0,coordination=0
+action: select --complexity trivial --risk low for workers and select --role orchestrator --coordination 0 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 1 --uncertainty 0 --deps 0 --consequences 0 --verification 0 --coordination 0 --assets <TMP>/quota.yaml
+rc: 0
+complexity: trivial (size 1 + uncertainty 0 + deps 0 + verification 0 = 1)
+risk: low (consequences 0)
+orchestrator: T1 (coordination 0)
+rubric: size=1,uncertainty=0,deps=0,consequences=0,verification=0,coordination=0
+action: select --complexity trivial --risk low for workers and select --role orchestrator --coordination 0 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 1 --uncertainty 0 --deps 0 --consequences 0 --verification 0 --coordination 0 --assets <TMP>/quota.yaml --full
+rc: 0
+complexity: trivial (size 1 + uncertainty 0 + deps 0 + verification 0 = 1)
+risk: low (consequences 0)
+orchestrator: T1 (coordination 0)
+rubric: size=1,uncertainty=0,deps=0,consequences=0,verification=0,coordination=0
+action: select --complexity trivial --risk low for workers and select --role orchestrator --coordination 0 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 1 --uncertainty 1 --deps 1 --consequences 1 --verification 1 --coordination 1 --assets <TMP>/quota.yaml
+rc: 0
+complexity: hard (size 1 + uncertainty 1 + deps 1 + verification 1 = 4)
+risk: medium (consequences 1)
+orchestrator: T2 (coordination 1)
+rubric: size=1,uncertainty=1,deps=1,consequences=1,verification=1,coordination=1
+action: select --complexity hard --risk medium for workers and select --role orchestrator --coordination 1 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 1 --uncertainty 1 --deps 1 --consequences 1 --verification 1 --coordination 1 --assets <TMP>/quota.yaml --full
+rc: 0
+complexity: hard (size 1 + uncertainty 1 + deps 1 + verification 1 = 4)
+risk: medium (consequences 1)
+orchestrator: T2 (coordination 1)
+rubric: size=1,uncertainty=1,deps=1,consequences=1,verification=1,coordination=1
+action: select --complexity hard --risk medium for workers and select --role orchestrator --coordination 1 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 2 --uncertainty 1 --deps 2 --consequences 1 --verification 1 --coordination 2 --assets <TMP>/quota.yaml
+rc: 0
+complexity: hard (size 2 + uncertainty 1 + deps 2 + verification 1 = 6)
+risk: medium (consequences 1)
+orchestrator: T3 (coordination 2)
+rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2
+action: select --complexity hard --risk medium for workers and select --role orchestrator --coordination 2 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 2 --uncertainty 1 --deps 2 --consequences 1 --verification 1 --coordination 2 --assets <TMP>/quota.yaml --full
+rc: 0
+complexity: hard (size 2 + uncertainty 1 + deps 2 + verification 1 = 6)
+risk: medium (consequences 1)
+orchestrator: T3 (coordination 2)
+rubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2
+action: select --complexity hard --risk medium for workers and select --role orchestrator --coordination 2 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 2 --uncertainty 2 --deps 2 --consequences 2 --verification 2 --coordination 2 --assets <TMP>/quota.yaml
+rc: 0
+complexity: frontier (size 2 + uncertainty 2 + deps 2 + verification 2 = 8)
+risk: high (consequences 2)
+orchestrator: T3 (coordination 2)
+rubric: size=2,uncertainty=2,deps=2,consequences=2,verification=2,coordination=2
+action: select --complexity frontier --risk high for workers and select --role orchestrator --coordination 2 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 2 --uncertainty 2 --deps 2 --consequences 2 --verification 2 --coordination 2 --assets <TMP>/quota.yaml --full
+rc: 0
+complexity: frontier (size 2 + uncertainty 2 + deps 2 + verification 2 = 8)
+risk: high (consequences 2)
+orchestrator: T3 (coordination 2)
+rubric: size=2,uncertainty=2,deps=2,consequences=2,verification=2,coordination=2
+action: select --complexity frontier --risk high for workers and select --role orchestrator --coordination 2 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 0 --uncertainty 2 --deps 0 --consequences 2 --verification 0 --coordination 1 --assets <TMP>/quota.yaml
+rc: 0
+complexity: standard (size 0 + uncertainty 2 + deps 0 + verification 0 = 2)
+risk: high (consequences 2)
+orchestrator: T2 (coordination 1)
+rubric: size=0,uncertainty=2,deps=0,consequences=2,verification=0,coordination=1
+action: select --complexity standard --risk high for workers and select --role orchestrator --coordination 1 for the orchestrator; pass --rubric <rubric> to log
+=== classify --size 0 --uncertainty 2 --deps 0 --consequences 2 --verification 0 --coordination 1 --assets <TMP>/quota.yaml --full
+rc: 0
+complexity: standard (size 0 + uncertainty 2 + deps 0 + verification 0 = 2)
+risk: high (consequences 2)
+orchestrator: T2 (coordination 1)
+rubric: size=0,uncertainty=2,deps=0,consequences=2,verification=0,coordination=1
+action: select --complexity standard --risk high for workers and select --role orchestrator --coordination 1 for the orchestrator; pass --rubric <rubric> to log

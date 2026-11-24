@@ -1,0 +1,1 @@
+GOAL: Golden-test brief.

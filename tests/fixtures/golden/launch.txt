@@ -1,0 +1,251 @@
+=== launch <TMP>/orchestrator.launch.yaml --no-probe --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+role: orchestrator · hard/medium · tier T3 (coordination 2)
+requested: codex:gpt-6.2-sol@medium
+ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high ; provider switch: claudeAgent/claude-opus-5-5 @ high
+note: provider switch is not an escalation (score 51.84 <= ladder top 54.89)
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role orchestrator --complexity hard --risk medium --provider codex --model gpt-6.2-sol --effort medium --rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 --requested codex:gpt-6.2-sol@medium --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: orchestrator launch",
+  "message": "ORCHESTRATOR \u2014 repeat this block, updated, at every phase boundary\nmodel: codex/gpt-6.2-sol @ medium (rung 1 of 2)\nladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high\nprovider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high\nescalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; at most 2 escalations; never step down mid-phase\ncaps: children per pool 2; budget antigravity 10, claudeAgent 4\nworkspace: worktree from origin/main; children shared\nrubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "codex",
+    "model": "gpt-6.2-sol",
+    "options": [
+      {
+        "id": "reasoningEffort",
+        "value": "medium"
+      },
+      {
+        "id": "serviceTier",
+        "value": "default"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "worktree",
+    "baseRef": "origin/main",
+    "startFromOrigin": true
+  },
+  "clientRequestId": "launch-golden-orchestrator-launch-codex-gpt-6.2-sol-medium-202611202100"
+}
+=== launch <TMP>/orchestrator.launch.yaml --no-probe --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+role: orchestrator · hard/medium · tier T3 (coordination 2)
+requested: codex:gpt-6.2-sol@medium
+ladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high ; provider switch: claudeAgent/claude-opus-5-5 @ high
+  rung: codex / gpt-6-2-sol @ medium (score 52.68, policy ending)
+  rung: codex / gpt-6-2-sol @ high (score 54.89, policy ending)
+  switch: claudeAgent / claude-opus-5-5 @ high (score 51.84, policy preserve)
+  note: provider switch is not an escalation (score 51.84 <= ladder top 54.89)
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role orchestrator --complexity hard --risk medium --provider codex --model gpt-6.2-sol --effort medium --rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 --requested codex:gpt-6.2-sol@medium --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: orchestrator launch",
+  "message": "ORCHESTRATOR \u2014 repeat this block, updated, at every phase boundary\nmodel: codex/gpt-6.2-sol @ medium (rung 1 of 2)\nladder: codex/gpt-6.2-sol @ medium -> codex/gpt-6.2-sol @ high\nprovider switch (phase boundary, ask the user first): claudeAgent/claude-opus-5-5 @ high\nescalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; at most 2 escalations; never step down mid-phase\ncaps: children per pool 2; budget antigravity 10, claudeAgent 4\nworkspace: worktree from origin/main; children shared\nrubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "codex",
+    "model": "gpt-6.2-sol",
+    "options": [
+      {
+        "id": "reasoningEffort",
+        "value": "medium"
+      },
+      {
+        "id": "serviceTier",
+        "value": "default"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "worktree",
+    "baseRef": "origin/main",
+    "startFromOrigin": true
+  },
+  "clientRequestId": "launch-golden-orchestrator-launch-codex-gpt-6.2-sol-medium-202611202100"
+}
+=== launch <TMP>/orchestrator.launch.yaml --no-probe --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+role: orchestrator · hard/medium · tier T3 (coordination 2)
+requested: antigravity:gemini-4-hydrogen@high
+ladder: antigravity/gemini-4-hydrogen @ high ; provider switch: claudeAgent_claude_extra/claude-opus-5-5 @ high
+note: no non-emergency effort (<= high) reaches 50: claudeAgent_claude_extra:claude-haiku-5-5
+note: provider exhausted: spent
+note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
+note: pay-per-use/avoid, skipped: openai-api
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role orchestrator --complexity hard --risk medium --provider antigravity --model gemini-4-hydrogen --effort high --rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 --requested antigravity:gemini-4-hydrogen@high --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: orchestrator launch",
+  "message": "ORCHESTRATOR \u2014 repeat this block, updated, at every phase boundary\nmodel: antigravity/gemini-4-hydrogen @ high (rung 1 of 1)\nladder: antigravity/gemini-4-hydrogen @ high\nprovider switch (phase boundary, ask the user first): claudeAgent_claude_extra/claude-opus-5-5 @ high\nescalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; at most 2 escalations; never step down mid-phase\ncaps: children per pool 2; budget antigravity 10, claudeAgent 4\nworkspace: worktree from origin/main; children shared\nrubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "antigravity",
+    "model": "gemini-4-hydrogen",
+    "options": [
+      {
+        "id": "thought_level",
+        "value": "high"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "worktree",
+    "baseRef": "origin/main",
+    "startFromOrigin": true
+  },
+  "clientRequestId": "launch-golden-orchestrator-launch-antigravity-gemini-4-hydrogen-high-202611202100"
+}
+=== launch <TMP>/orchestrator.launch.yaml --no-probe --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+role: orchestrator · hard/medium · tier T3 (coordination 2)
+requested: antigravity:gemini-4-hydrogen@high
+ladder: antigravity/gemini-4-hydrogen @ high ; provider switch: claudeAgent_claude_extra/claude-opus-5-5 @ high
+  rung: antigravity / gemini-4-hydrogen @ high (score 51, policy spend-first)
+  switch: claudeAgent_claude_extra / claude-opus-5-5 @ high (score 51.84, policy normal, status low)
+  note: claudeAgent_claude_extra:claude-haiku-5-5: no non-emergency effort (<= high) reaches 50
+  note: spent:gpt-6-2-sol: provider exhausted
+  note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
+  note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role orchestrator --complexity hard --risk medium --provider antigravity --model gemini-4-hydrogen --effort high --rubric size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 --requested antigravity:gemini-4-hydrogen@high --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: orchestrator launch",
+  "message": "ORCHESTRATOR \u2014 repeat this block, updated, at every phase boundary\nmodel: antigravity/gemini-4-hydrogen @ high (rung 1 of 1)\nladder: antigravity/gemini-4-hydrogen @ high\nprovider switch (phase boundary, ask the user first): claudeAgent_claude_extra/claude-opus-5-5 @ high\nescalate on (orch.py escalate): outcome rework | 3+ review findings your brief did not flag (workers: 3+) | a child's STATUS: ESCALATE; at most 2 escalations; never step down mid-phase\ncaps: children per pool 2; budget antigravity 10, claudeAgent 4\nworkspace: worktree from origin/main; children shared\nrubric: size=2,uncertainty=1,deps=2,consequences=1,verification=1,coordination=2 (hard/medium)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "antigravity",
+    "model": "gemini-4-hydrogen",
+    "options": [
+      {
+        "id": "thought_level",
+        "value": "high"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "worktree",
+    "baseRef": "origin/main",
+    "startFromOrigin": true
+  },
+  "clientRequestId": "launch-golden-orchestrator-launch-antigravity-gemini-4-hydrogen-high-202611202100"
+}
+=== launch <TMP>/reviewer.launch.yaml --no-probe --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+role: reviewer · hard/high · tier T4 (implementer gpt-6-2-sol)
+requested: antigravity:gemini-4-neon@high
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role reviewer --complexity hard --risk high --provider antigravity --model gemini-4-neon --effort high --rubric size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 --requested antigravity:gemini-4-neon@high --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: reviewer launch",
+  "message": "REVIEWER \u2014 repeat this block, updated, at every phase boundary\nmodel: antigravity/gemini-4-neon @ high\nworkspace: root\nrubric: size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 (hard/high)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "antigravity",
+    "model": "gemini-4-neon",
+    "options": [
+      {
+        "id": "thought_level",
+        "value": "high"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "root"
+  },
+  "clientRequestId": "launch-golden-reviewer-launch-antigravity-gemini-4-neon-high-202611202100"
+}
+=== launch <TMP>/reviewer.launch.yaml --no-probe --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+role: reviewer · hard/high · tier T4 (implementer gpt-6-2-sol)
+requested: antigravity:gemini-4-neon@high
+reviewer (T4, different family): antigravity / gemini-4-neon @ high (score 60, policy spend-first)
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role reviewer --complexity hard --risk high --provider antigravity --model gemini-4-neon --effort high --rubric size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 --requested antigravity:gemini-4-neon@high --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: reviewer launch",
+  "message": "REVIEWER \u2014 repeat this block, updated, at every phase boundary\nmodel: antigravity/gemini-4-neon @ high\nworkspace: root\nrubric: size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 (hard/high)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "antigravity",
+    "model": "gemini-4-neon",
+    "options": [
+      {
+        "id": "thought_level",
+        "value": "high"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "root"
+  },
+  "clientRequestId": "launch-golden-reviewer-launch-antigravity-gemini-4-neon-high-202611202100"
+}
+=== launch <TMP>/reviewer.launch.yaml --no-probe --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z
+rc: 0
+role: reviewer · hard/high · tier T4 (implementer gpt-6-2-sol)
+requested: claudeAgent_claude_extra:claude-opus-5-5@xhigh
+note: provider exhausted: spent
+note: group Claude and GPT models exhausted: antigravity:claude-sonnet-5-5
+note: pay-per-use/avoid, skipped: openai-api
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role reviewer --complexity hard --risk high --provider claudeAgent_claude_extra --model claude-opus-5-5 --effort xhigh --rubric size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 --requested claudeAgent_claude_extra:claude-opus-5-5@xhigh --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: reviewer launch",
+  "message": "REVIEWER \u2014 repeat this block, updated, at every phase boundary\nmodel: claudeAgent_claude_extra/claude-opus-5-5 @ xhigh\nworkspace: root\nrubric: size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 (hard/high)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "claudeAgent_claude_extra",
+    "model": "claude-opus-5-5",
+    "options": [
+      {
+        "id": "effort",
+        "value": "xhigh"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "root"
+  },
+  "clientRequestId": "launch-golden-reviewer-launch-claudeAgent_claude_extra-claude-opus-5-5-xhigh-202611202100"
+}
+=== launch <TMP>/reviewer.launch.yaml --no-probe --available claudeAgent_claude_extra:claude-opus-5-5,claudeAgent_claude_extra:claude-haiku-5-5,spent:gpt-6-2-sol,antigravity:gemini-4-hydrogen,antigravity:claude-sonnet-5-5,openai-api:gpt-6-2-sol --out <TMP>/payload.json --assets <TMP>/quota.yaml --catalog <REPO>/skills/agent-orchestration/catalog.yaml --now 2026-11-20T21:00:00Z --full
+rc: 0
+role: reviewer · hard/high · tier T4 (implementer gpt-6-2-sol)
+requested: claudeAgent_claude_extra:claude-opus-5-5@xhigh
+reviewer (T4, different family): claudeAgent_claude_extra / claude-opus-5-5 @ xhigh (score 57.44, policy normal, status low)
+  note: spent:gpt-6-2-sol: provider exhausted
+  note: antigravity:claude-sonnet-5-5: group Claude and GPT models exhausted
+  note: openai-api:gpt-6-2-sol: pay-per-use/avoid, skipped
+payload: <TMP>/payload.json
+log: orch.py log --event select --surface conversation --repo golden --role reviewer --complexity hard --risk high --provider claudeAgent_claude_extra --model claude-opus-5-5 --effort xhigh --rubric size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 --requested claudeAgent_claude_extra:claude-opus-5-5@xhigh --effective <P:M@E>
+action: call t3_thread_launch with the JSON in <TMP>/payload.json; then read the new thread's model (t3_thread_configure with only threadId) and run the log: line above with --effective <P:M@E> filled in
+--- payload.json
+{
+  "title": "golden: reviewer launch",
+  "message": "REVIEWER \u2014 repeat this block, updated, at every phase boundary\nmodel: claudeAgent_claude_extra/claude-opus-5-5 @ xhigh\nworkspace: root\nrubric: size=1,uncertainty=1,deps=1,consequences=2,verification=1,coordination=0 (hard/high)\nverify: the launcher compares requested vs effective model/effort after launch (references/orchestrator-launch.md)\n\nGOAL: Golden-test brief.\n",
+  "modelSelection": {
+    "instanceId": "claudeAgent_claude_extra",
+    "model": "claude-opus-5-5",
+    "options": [
+      {
+        "id": "effort",
+        "value": "xhigh"
+      }
+    ]
+  },
+  "workspaceStrategy": {
+    "type": "root"
+  },
+  "clientRequestId": "launch-golden-reviewer-launch-claudeAgent_claude_extra-claude-opus-5-5-xhigh-202611202100"
+}
